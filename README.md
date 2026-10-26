@@ -147,8 +147,14 @@ mini_ha/mini_ha.code-workspace
 * *(First time only)*: Under PlatformIO Project Tasks $\rightarrow$ Platform $\rightarrow$ Click **Upload Filesystem Image** to write the `/config/` JSON files to LittleFS.
 
 ### 4. Flashing Slaves
-1. In the bottom status bar, switch to `env:esp8266_d1mini (slave_firmware)` or `env:esp32_c3 (slave_firmware)`.
-2. Connect your board via USB and click **Upload**.
+In the bottom status bar, select your target board environment:
+* **NodeMCU 1.0 (ESP-12E)**: `env:nodemcuv2 (slave_firmware)`
+* **WEMOS D1 Mini**: `env:esp8266_d1mini (slave_firmware)`
+* **Generic ESP8266 (ESP-12E/ESP-07)**: `env:esp8266_generic (slave_firmware)`
+* **ESP32-C3 DevKit**: `env:esp32_c3 (slave_firmware)`
+* **Classic ESP32 Dev Board**: `env:esp32dev (slave_firmware)`
+
+Connect your board via USB and click **Upload** (or run `pio run -e <env_name> -t upload`).
 
 ---
 

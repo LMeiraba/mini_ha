@@ -18,6 +18,7 @@
       --text-main: #f8fafc;
       --text-sub: #94a3b8;
       --primary: #3b82f6;
+      --primary-hover: #2563eb;
       --primary-glow: rgba(59, 130, 246, 0.25);
       --success: #10b981;
       --warning: #f59e0b;
@@ -82,7 +83,7 @@
       gap: 6px;
       background: #0f172a;
       border: 1px solid var(--card-border);
-      padding: 5px 10px;
+      padding: 5px 12px;
       border-radius: 20px;
       font-size: 12px;
       font-weight: 500;
@@ -343,25 +344,41 @@
       transition: width 0.4s ease;
     }
 
-    /* Empty state */
+    /* Parent-Friendly Empty State */
     .empty-state {
       text-align: center;
-      padding: 50px 20px;
+      padding: 40px 20px;
       color: var(--text-sub);
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      margin-top: 20px;
+    }
+
+    .empty-icon {
+      font-size: 48px;
+      margin-bottom: 12px;
     }
 
     .empty-state h3 {
-      font-size: 17px;
+      font-size: 18px;
       margin-bottom: 8px;
       color: var(--text-main);
+    }
+
+    .empty-state p {
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 320px;
+      margin: 0 auto 16px;
     }
 
     /* Modal */
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(4px);
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(5px);
       display: none;
       align-items: center;
       justify-content: center;
@@ -380,7 +397,7 @@
     }
 
     .modal-title {
-      font-size: 18px;
+      font-size: 17px;
       font-weight: 700;
       margin-bottom: 14px;
       display: flex;
@@ -405,7 +422,7 @@
       background: #0b101c;
       border: 1px solid #25314d;
       border-radius: 8px;
-      padding: 9px 12px;
+      padding: 10px 12px;
       color: #fff;
       font-size: 14px;
     }
@@ -421,20 +438,47 @@
     }
 
     .btn {
-      flex: 1;
       background: var(--primary);
       color: #fff;
       border: none;
-      padding: 11px;
+      padding: 10px 16px;
       border-radius: 8px;
       font-size: 14px;
       font-weight: 600;
       cursor: pointer;
+      transition: background 0.15s;
     }
+    .btn:hover { background: var(--primary-hover); }
 
     .btn-secondary {
       background: #1f293d;
       color: var(--text-main);
+    }
+
+    .btn-text {
+      background: none;
+      border: none;
+      color: #60a5fa;
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: underline;
+      padding: 6px;
+    }
+
+    .qr-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+      margin: 14px 0;
+    }
+
+    .qr-image {
+      width: 200px;
+      height: 200px;
+      border-radius: 10px;
+      background: #fff;
+      padding: 8px;
     }
 
     /* Toast */
@@ -456,10 +500,10 @@
       pointer-events: none;
     }
     .toast.show { transform: translateX(-50%) translateY(0); }
+    .toast-success { background: #065f46; border-color: #047857; }
     .toast-error { background: #7f1d1d; border-color: #991b1b; }
     .toast-info { background: #1e293b; }
   </style>
-  <!-- MQTT.js library over CDN for WSS connection -->
   <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
 </head>
 <body>
@@ -472,29 +516,62 @@
 
     <div class="status-badge">
       <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">Connecting...</span>
+      <span id="statusText">Ready</span>
     </div>
 
     <div class="header-actions">
-      <button class="icon-btn" onclick="openSettingsModal()" title="Settings">⚙️</button>
+      <button class="icon-btn" onclick="openShareModal()" title="Share with Family">📤</button>
+      <button class="icon-btn" onclick="openSettingsModal()" title="Admin Settings">⚙️</button>
     </div>
   </header>
 
   <main>
-    <div id="emptyState" class="empty-state">
-      <h3>Waiting for Master Hub...</h3>
-      <p>Ensure your Master ESP32 is powered on and connected to the MQTT broker.</p>
-      <button class="btn btn-secondary" style="max-width: 200px; margin: 16px auto 0;" onclick="openSettingsModal()">Configure Connection</button>
+    <!-- Friendly Empty State for Unconfigured Phones -->
+    <div id="emptyState" class="empty-state" style="display:none;">
+      <div class="empty-icon">🏠</div>
+      <h3>Welcome to Mini-HA</h3>
+      <p>Scan your home's <strong>QR Code</strong> or tap an <strong>Invite Link</strong> sent by your home administrator to connect instantly.</p>
+      <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
+        <button class="btn" onclick="promptPasteLink()">Paste Invite Link</button>
+        <button class="btn-text" onclick="openSettingsModal()">Advanced: Configure Manually</button>
+      </div>
     </div>
 
     <div class="nodes-grid" id="nodesGrid"></div>
   </main>
 
-  <!-- Connection Setup Modal -->
+  <!-- Share / Invite Family Modal -->
+  <div class="modal-backdrop" id="shareModal">
+    <div class="modal-card">
+      <div class="modal-title">
+        <span>Share with Family</span>
+        <button class="icon-btn" style="width:28px; height:28px;" onclick="closeShareModal()">✕</button>
+      </div>
+      <p style="font-size:12px; color:var(--text-sub); line-height:1.4;">
+        Have your parents scan this QR code with their camera, or send them the link on WhatsApp. It connects their phone automatically with zero setup!
+      </p>
+
+      <div class="qr-container">
+        <img id="shareQrImg" class="qr-image" alt="QR Code">
+      </div>
+
+      <div class="form-group">
+        <label>Invite Link</label>
+        <input type="text" id="shareLinkInput" readonly style="font-size:12px; color:#93c5fd;">
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeShareModal()">Close</button>
+        <button class="btn" onclick="copyShareLink()">Copy WhatsApp Link</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Connection Setup Modal (Admin only) -->
   <div class="modal-backdrop" id="settingsModal">
     <div class="modal-card">
       <div class="modal-title">
-        <span>Connection Setup</span>
+        <span>Admin Connection Setup</span>
         <button class="icon-btn" style="width:28px; height:28px;" onclick="closeSettingsModal()">✕</button>
       </div>
 

@@ -38,6 +38,7 @@ struct SystemSecurityConfig {
 };
 
 extern SystemSecurityConfig sysSecurity;
+extern void publishMqttState();
 
 // =========================================================================
 // SESSION & USER AUTHENTICATION MANAGER (NO BROWSER PROMPT, COOKIE/HEADER AUTH)
@@ -474,6 +475,11 @@ inline void setupWebEndpoints() {
     int slot = doc["slot"].as<int>();
     int val = doc["val"].as<int>();
     executeAction(target, slot, val, "Web UI Control");
+    GenericNodeTelemetry* ns = getOrCreateNodeState(target);
+    if (ns && slot >= 1 && slot <= MAX_GPIO_SLOTS) {
+      ns->relayStates[slot - 1] = (val == 1);
+    }
+    publishMqttState();
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Command dispatched\"}");
   });
 

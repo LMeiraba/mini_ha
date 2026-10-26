@@ -192,6 +192,7 @@ void maintainMqtt() {
     Serial.printf("[MQTT] Connecting to %s:%d...\n", sysSecurity.mqttBroker.c_str(), sysSecurity.mqttPort);
 
     secureClient.setInsecure();
+    secureClient.setTimeout(3); // 3-second non-blocking timeout to prevent bus starvation
     mqttClient.setServer(sysSecurity.mqttBroker.c_str(), sysSecurity.mqttPort);
     mqttClient.setCallback(mqttCallback);
     mqttClient.setBufferSize(4096);
@@ -333,6 +334,7 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
         int state = pkt.payload.substring(stIdx + 7).toInt();
         if (slot >= 0 && slot < MAX_GPIO_SLOTS) {
           ns->relayStates[slot] = (state == 1);
+          publishMqttState();
         }
       }
     }

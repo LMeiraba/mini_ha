@@ -38,6 +38,10 @@ inline GenericNodeTelemetry* getOrCreateNodeState(const String& nodeId) {
 }
 
 void executeAction(const String& targetNode, int slot, int state, const String& reason);
+extern void publishMqttNotification(const String& title, const String& msg, const String& level);
+
+#define MAX_CONFIGURED_RULES 16
+static bool ruleActiveState[MAX_CONFIGURED_RULES] = {false};
 
 inline void evaluateDynamicRules() {
   if (!LittleFS.exists(RULES_CONFIG_PATH)) return;
@@ -50,8 +54,13 @@ inline void evaluateDynamicRules() {
   if (err) return;
 
   JsonArray rules = doc["rules"].as<JsonArray>();
+  int rIdx = 0;
   for (JsonObject rule : rules) {
-    if (!rule["enabled"].as<bool>()) continue;
+    if (rIdx >= MAX_CONFIGURED_RULES) break;
+    if (!rule["enabled"].as<bool>()) {
+      ruleActiveState[rIdx++] = false;
+      continue;
+    }
 
     bool allConditionsMet = true;
     JsonArray conditions = rule["conditions"].as<JsonArray>();
@@ -92,6 +101,16 @@ inline void evaluateDynamicRules() {
     }
 
     if (allConditionsMet) {
+      // Rising edge check: only notify once when condition first becomes true
+      if (!ruleActiveState[rIdx]) {
+        ruleActiveState[rIdx] = true;
+        if (rule.containsKey("notify") && rule["notify"].as<bool>()) {
+          String notifTitle = rule.containsKey("notify_title") ? rule["notify_title"].as<String>() : rule["name"].as<String>();
+          String notifMsg = rule.containsKey("notify_msg") ? rule["notify_msg"].as<String>() : "Automation rule triggered!";
+          publishMqttNotification(notifTitle, notifMsg, "warning");
+        }
+      }
+
       JsonArray actions = rule["actions"].as<JsonArray>();
       for (JsonObject act : actions) {
         String target = act["target"].as<String>();
@@ -100,6 +119,9 @@ inline void evaluateDynamicRules() {
         String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
         executeAction(target, slot, val, reason);
       }
+    } else {
+      ruleActiveState[rIdx] = false;
     }
+    rIdx++;
   }
 }

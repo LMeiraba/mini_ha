@@ -3,6 +3,7 @@ let mqttClient = null;
 let currentSchema = null;
 let currentState = null;
 let authReplyCallback = null;
+let isHubOnline = true;
 
 // Service Worker Registration
 if ('serviceWorker' in navigator) {
@@ -162,9 +163,11 @@ function connectMqtt() {
 
       const schemaTopic = `miniha/${home.homeId}/schema`;
       const stateTopic = `miniha/${home.homeId}/state`;
+      const statusTopic = `miniha/${home.homeId}/status`;
+      const notifyTopic = `miniha/${home.homeId}/notify`;
       const authReplyWildcard = `miniha/${home.homeId}/auth/reply/+`;
 
-      mqttClient.subscribe([schemaTopic, stateTopic, authReplyWildcard], (err) => {
+      mqttClient.subscribe([schemaTopic, stateTopic, statusTopic, notifyTopic, authReplyWildcard], (err) => {
         if (!err) {
           console.log(`[MQTT] Subscribed to ${home.homeId} topics`);
         } else {
@@ -178,7 +181,11 @@ function connectMqtt() {
         const data = JSON.parse(payload.toString());
         const home = getHomeConfig();
 
-        if (topic === `miniha/${home.homeId}/schema`) {
+        if (topic === `miniha/${home.homeId}/status`) {
+          handleHubStatusUpdate(data);
+        } else if (topic === `miniha/${home.homeId}/notify`) {
+          handleNotification(data);
+        } else if (topic === `miniha/${home.homeId}/schema`) {
           handleSchemaUpdate(data);
         } else if (topic === `miniha/${home.homeId}/state`) {
           handleStateUpdate(data);
@@ -412,13 +419,15 @@ function renderSlots(node, isGuest) {
     const name = s.name || `Slot ${slotNum}`;
 
     if (type === 1) { // Relay
+      const cannotToggle = (!isHubOnline || isGuest);
+      const disabledTitle = !isHubOnline ? 'Master Hub is offline' : (isGuest ? 'Guests cannot toggle controls' : '');
       out += `
         <div class="slot-item slot-relay">
           <div class="slot-info">
             <span class="slot-label">${escapeHtml(name)}</span>
             <span class="slot-state-text" id="relay_text_${node.id}_${slotNum}">OFF</span>
           </div>
-          <button class="toggle-btn" id="btn_${node.id}_${slotNum}" ${isGuest ? 'disabled title="Guests cannot toggle controls"' : ''} onclick="toggleRelay('${node.id}', ${slotNum})">
+          <button class="toggle-btn" id="btn_${node.id}_${slotNum}" ${cannotToggle ? `disabled title="${disabledTitle}"` : ''} onclick="toggleRelay('${node.id}', ${slotNum})">
             <span class="toggle-slider"></span>
           </button>
         </div>
@@ -513,6 +522,10 @@ function handleStateUpdate(stateMsg) {
 
 // User Action: Toggle Relay (Sends Command with Token to Master)
 function toggleRelay(nodeId, slot) {
+  if (!isHubOnline) {
+    showToast('Master Hub is offline. Controls locked.', 'error');
+    return;
+  }
   const session = getUserSession();
   if (!session.token) {
     showToast('Please log in first', 'error');
@@ -682,6 +695,131 @@ function saveHomeAndConnect() {
   updateView();
 }
 
+// =========================================================================
+// HUB STATUS (LWT) & NATIVE NOTIFICATIONS
+// =========================================================================
+
+function handleHubStatusUpdate(data) {
+  isHubOnline = (data && data.online !== false);
+  const banner = document.getElementById('hubOfflineBanner');
+  if (isHubOnline) {
+    setStatus('Online', 'online');
+    if (banner) banner.style.display = 'none';
+  } else {
+    setStatus('Hub Offline', 'offline');
+    if (banner) banner.style.display = 'flex';
+  }
+
+  const session = getUserSession();
+  const isGuest = (session.role === 'guest');
+  const cannotToggle = (!isHubOnline || isGuest);
+  const disabledTitle = !isHubOnline ? 'Master Hub is offline' : (isGuest ? 'Guests cannot toggle controls' : '');
+
+  document.querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.disabled = cannotToggle;
+    btn.title = disabledTitle;
+  });
+}
+
+function handleNotification(data) {
+  const title = data.title || 'Mini-HA Alert';
+  const msg = data.msg || 'Automation alert triggered';
+
+  // 1. Phone Vibration (Haptic feedback)
+  if ('vibrate' in navigator) {
+    try { navigator.vibrate([120, 80, 120]); } catch (e) {}
+  }
+
+  // 2. Synthesized pleasant dual-tone chime
+  playNotificationChime();
+
+  // 3. Native Browser Notification (Option A)
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+        navigator.serviceWorker.ready.then(reg => {
+          reg.showNotification(title, {
+            body: msg,
+            icon: './icon.svg',
+            badge: './icon.svg',
+            vibrate: [120, 80, 120],
+            tag: 'miniha-alert'
+          });
+        });
+      } else {
+        new Notification(title, {
+          body: msg,
+          icon: './icon.svg'
+        });
+      }
+    } catch (e) {
+      console.warn('Native notification failed:', e);
+    }
+  }
+
+  // 4. In-App Toast
+  showToast(`🔔 ${title}: ${msg}`, 'warning');
+}
+
+function playNotificationChime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+    gain.gain.setValueAtTime(0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 0.35);
+  } catch (e) {}
+}
+
+async function toggleNotificationPermission() {
+  if (!('Notification' in window)) {
+    showToast('Notifications not supported by this browser', 'error');
+    return;
+  }
+
+  if (Notification.permission === 'granted') {
+    showToast('🔔 Notifications active & enabled', 'success');
+    playNotificationChime();
+    updateNotifButtonState();
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    showToast('Notifications blocked in browser settings', 'error');
+    return;
+  }
+
+  const permission = await Notification.requestPermission();
+  if (permission === 'granted') {
+    showToast('🔔 Push alerts enabled successfully!', 'success');
+    playNotificationChime();
+  } else {
+    showToast('Notification permission was not granted', 'error');
+  }
+  updateNotifButtonState();
+}
+
+function updateNotifButtonState() {
+  const btn = document.getElementById('notifBtn');
+  if (!btn) return;
+  if ('Notification' in window && Notification.permission === 'granted') {
+    btn.style.color = '#60a5fa';
+    btn.style.borderColor = '#2563eb';
+    btn.title = 'Alerts Enabled (Tap to test)';
+  } else {
+    btn.style.color = 'var(--text-sub)';
+    btn.style.borderColor = 'var(--card-border)';
+    btn.title = 'Enable Push Alerts';
+  }
+}
+
 // Toast Notifications
 function showToast(msg, type = 'info') {
   const container = document.getElementById('toast');
@@ -704,6 +842,7 @@ function escapeHtml(str) {
 window.addEventListener('DOMContentLoaded', () => {
   checkUrlInvite();
   updateView();
+  updateNotifButtonState();
   const home = getHomeConfig();
   if (home.brokerUrl) {
     connectMqtt();

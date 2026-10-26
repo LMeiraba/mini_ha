@@ -581,7 +581,61 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Provisioning triggered\"}");
   });
 
-  // 15. Modern Single Page Application (Dashboard + Login)
+  // 15. Dynamic Rules API
+  webServer.on("/api/rules", HTTP_GET, []() {
+    if (!requireRole(ROLE_GUEST)) return;
+    File f = LittleFS.open(RULES_CONFIG_PATH, "r");
+    if (!f) {
+      webServer.send(200, "application/json; charset=utf-8", "{\"rules\":[]}");
+      return;
+    }
+    webServer.streamFile(f, "application/json; charset=utf-8");
+    f.close();
+  });
+
+  webServer.on("/api/rules", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    if (!webServer.hasArg("plain")) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"No body\"}");
+      return;
+    }
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, webServer.arg("plain"));
+    if (err) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"Invalid JSON\"}");
+      return;
+    }
+    File f = LittleFS.open(RULES_CONFIG_PATH, "w");
+    if (!f) {
+      webServer.send(500, "application/json; charset=utf-8", "{\"error\":\"Storage error\"}");
+      return;
+    }
+    serializeJson(doc, f);
+    f.close();
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Rules updated\"}");
+  });
+
+  // 16. Captive Portal Detection Handlers
+  auto handleCaptiveRedirect = []() {
+    webServer.sendHeader("Location", "http://192.168.4.1/", true);
+    webServer.send(302, "text/plain", "");
+  };
+  webServer.on("/generate_204", handleCaptiveRedirect);
+  webServer.on("/gen_204", handleCaptiveRedirect);
+  webServer.on("/hotspot-detect.html", handleCaptiveRedirect);
+  webServer.on("/ncsi.txt", handleCaptiveRedirect);
+  webServer.on("/connecttest.txt", handleCaptiveRedirect);
+  webServer.onNotFound([]() {
+    String host = webServer.hostHeader();
+    if (host.indexOf("192.168.4.1") == -1 && host.indexOf("miniha.local") == -1) {
+      webServer.sendHeader("Location", "http://192.168.4.1/", true);
+      webServer.send(302, "text/plain", "");
+      return;
+    }
+    webServer.send(404, "text/plain", "Not Found");
+  });
+
+  // 17. Modern Single Page Application (Dashboard + Login)
   webServer.on("/", HTTP_GET, []() {
     String html = R"rawliteral(<!DOCTYPE html>
 <html lang="en">
@@ -710,6 +764,7 @@ inline void setupWebEndpoints() {
       <div class="nav-actions">
         <span class="badge" id="roleBadge">ROLE</span>
         <button class="btn btn-secondary btn-sm" onclick="showTab('nodes')">Overview</button>
+        <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('rules')">Rules</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('users')">Users</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('settings')">Settings</button>
         <button class="btn btn-secondary btn-sm" onclick="openPassModal()">Account</button>
@@ -739,6 +794,17 @@ inline void setupWebEndpoints() {
         <div id="pendingTable">
           <div style="color:var(--text-muted);">No unconfigured devices detected on bus.</div>
         </div>
+      </div>
+    </div>
+
+    <!-- TAB: AUTOMATION RULES & NOTIFICATIONS (ADMIN ONLY) -->
+    <div id="tabRules" style="display:none;">
+      <div class="card">
+        <div class="card-title">
+          <span>Automation Rules & Push Notifications</span>
+          <button class="btn btn-sm" onclick="saveRulesConfig()">Save Rules</button>
+        </div>
+        <div id="rulesList"><div style="color:var(--text-muted);">Loading automation rules...</div></div>
       </div>
     </div>
 
@@ -868,8 +934,10 @@ inline void setupWebEndpoints() {
 
     function showTab(tab) {
       document.getElementById('tabNodes').style.display = (tab === 'nodes') ? 'block' : 'none';
+      document.getElementById('tabRules').style.display = (tab === 'rules') ? 'block' : 'none';
       document.getElementById('tabUsers').style.display = (tab === 'users') ? 'block' : 'none';
       document.getElementById('tabSettings').style.display = (tab === 'settings') ? 'block' : 'none';
+      if (tab === 'rules') loadRules();
       if (tab === 'users') loadUsers();
       if (tab === 'settings') loadSettings();
     }
@@ -1157,6 +1225,83 @@ inline void setupWebEndpoints() {
         loadUsers();
       } else {
         showToast(data.error || 'Error deleting user', 'error');
+      }
+    }
+
+    // Automation Rules & Notifications
+    let currentRules = [];
+
+    async function loadRules() {
+      try {
+        const res = await fetch('/api/rules');
+        const data = await res.json();
+        currentRules = data.rules || [];
+        const container = document.getElementById('rulesList');
+        if (currentRules.length === 0) {
+          container.innerHTML = '<div style="color:var(--text-muted); padding:10px 0;">No automation rules configured. Default rule files can be defined in /config/rules.json.</div>';
+          return;
+        }
+
+        let html = '';
+        currentRules.forEach((rule, idx) => {
+          const condSummary = (rule.conditions || []).map(c => `${c.node} ${c.type} ${c.op} ${c.val}`).join(' AND ');
+          const actSummary = (rule.actions || []).map(a => `${a.target} Slot ${a.slot} -> ${a.val === 1 ? 'ON' : 'OFF'}`).join(', ');
+          const isEnabled = rule.enabled ? 'checked' : '';
+          const isNotify = rule.notify ? 'checked' : '';
+          const nTitle = rule.notify_title || rule.name || '';
+          const nMsg = rule.notify_msg || 'Automation rule triggered!';
+
+          html += `<div class="node-box" style="margin-bottom:14px;">
+            <div class="node-header">
+              <strong style="font-size:14px;">${rule.name || ('Rule #' + (idx + 1))}</strong>
+              <label class="checkbox-line" style="margin:0;">
+                <input type="checkbox" id="ruleEn_${idx}" ${isEnabled}>
+                <span>Enabled</span>
+              </label>
+            </div>
+            <div style="font-size:12px; color:var(--text-muted); margin-bottom:8px;">
+              <strong>Condition:</strong> ${condSummary || 'None'} <br>
+              <strong>Action:</strong> ${actSummary || 'None'}
+            </div>
+            <div style="background:#161922; border:1px solid #283044; border-radius:6px; padding:10px; margin-top:8px;">
+              <label class="checkbox-line" style="margin:0 0 8px 0;">
+                <input type="checkbox" id="ruleNotif_${idx}" ${isNotify}>
+                <span style="font-weight:600; color:#93c5fd;">🔔 Push Notification (Option A)</span>
+              </label>
+              <label>Alert Title</label>
+              <input type="text" id="ruleTitle_${idx}" value="${nTitle}" placeholder="e.g. Tank Low Alert">
+              <label>Alert Message</label>
+              <input type="text" id="ruleMsg_${idx}" value="${nMsg}" placeholder="e.g. Overhead tank is below 20%">
+            </div>
+          </div>`;
+        });
+        container.innerHTML = html;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function saveRulesConfig() {
+      currentRules.forEach((rule, idx) => {
+        const enEl = document.getElementById('ruleEn_' + idx);
+        const notifEl = document.getElementById('ruleNotif_' + idx);
+        const titleEl = document.getElementById('ruleTitle_' + idx);
+        const msgEl = document.getElementById('ruleMsg_' + idx);
+        if (enEl) rule.enabled = enEl.checked;
+        if (notifEl) rule.notify = notifEl.checked;
+        if (titleEl) rule.notify_title = titleEl.value.trim();
+        if (msgEl) rule.notify_msg = msgEl.value.trim();
+      });
+
+      const res = await fetch('/api/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: currentRules })
+      });
+      if (res.ok) {
+        showToast('Rules & Notification settings saved!', 'success');
+      } else {
+        showToast('Failed to save rules', 'error');
       }
     }
 

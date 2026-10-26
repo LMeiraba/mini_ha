@@ -5,6 +5,8 @@
 #include <ArduinoJson.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+#include <ESPmDNS.h>
+#include <DNSServer.h>
 
 #include "node_protocol.h"
 #include "storage_manager.h"
@@ -30,6 +32,7 @@
 
 HardwareSerial SerialBus(SERIAL_BUS_UART_NUM);
 WebServer webServer(80);
+DNSServer dnsServer;
 
 // Wireless Star-Mesh TCP Server
 #define MAX_WIRELESS_SLAVES 8
@@ -145,6 +148,20 @@ void publishMqttState() {
   mqttClient.publish(topic.c_str(), out.c_str(), true); // Retained
 }
 
+void publishMqttNotification(const String& title, const String& msg, const String& level) {
+  if (!mqttClient.connected()) return;
+  DynamicJsonDocument doc(512);
+  doc["title"] = title;
+  doc["msg"] = msg;
+  doc["level"] = level;
+  doc["time"] = millis();
+  String out;
+  serializeJson(doc, out);
+  String topic = "miniha/" + sysSecurity.mqttHomeId + "/notify";
+  mqttClient.publish(topic.c_str(), out.c_str());
+  Serial.printf("[NOTIFY] Published: '%s' - %s\n", title.c_str(), msg.c_str());
+}
+
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
   String topicStr = String(topic);
   String msg = "";
@@ -242,15 +259,23 @@ void maintainMqtt() {
     mqttClient.setBufferSize(4096);
 
     String clientId = "MiniHA_Master_" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    String statusTopic = "miniha/" + sysSecurity.mqttHomeId + "/status";
+    String willPayload = "{\"online\":false}";
+
     bool connected = false;
     if (sysSecurity.mqttUser.length() > 0) {
-      connected = mqttClient.connect(clientId.c_str(), sysSecurity.mqttUser.c_str(), sysSecurity.mqttPass.c_str());
+      connected = mqttClient.connect(clientId.c_str(), sysSecurity.mqttUser.c_str(), sysSecurity.mqttPass.c_str(),
+                                     statusTopic.c_str(), 1, true, willPayload.c_str());
     } else {
-      connected = mqttClient.connect(clientId.c_str());
+      connected = mqttClient.connect(clientId.c_str(),
+                                     statusTopic.c_str(), 1, true, willPayload.c_str());
     }
 
     if (connected) {
       Serial.println("[MQTT] Connected to Cloud Broker!");
+      // Publish retained birth message immediately
+      mqttClient.publish(statusTopic.c_str(), "{\"online\":true}", true);
+
       String setTopic = "miniha/" + sysSecurity.mqttHomeId + "/set";
       String authTopic = "miniha/" + sysSecurity.mqttHomeId + "/auth/login";
       mqttClient.subscribe(setTopic.c_str());
@@ -434,10 +459,17 @@ void setup() {
   WiFi.softAPConfig(apIP, apGW, apMask);
   bool apStarted = WiFi.softAP(sysSecurity.apSsid.c_str(), sysSecurity.apPass.c_str());
   if (apStarted) {
-    Serial.printf("[AP] Isolated Star-Mesh SoftAP '%s' active at http://%s\n", 
+    dnsServer.start(53, "*", apIP);
+    Serial.printf("[AP] Isolated Star-Mesh SoftAP '%s' active with Captive DNS at http://%s\n", 
                   sysSecurity.apSsid.c_str(), WiFi.softAPIP().toString().c_str());
   } else {
     Serial.printf("[AP] ERROR: Failed to start SoftAP '%s'!\n", sysSecurity.apSsid.c_str());
+  }
+
+  // mDNS Responder: broadcast http://miniha.local
+  if (MDNS.begin("miniha")) {
+    MDNS.addService("http", "tcp", 80);
+    Serial.println("[mDNS] Responder started at http://miniha.local");
   }
 
   // Setup Web Endpoints & Collect Session Headers
@@ -462,7 +494,8 @@ void setup() {
 }
 
 void loop() {
-  // 1. Maintain Web Server & Cloud MQTT Bridge
+  // 1. Maintain Captive DNS, Web Server & Cloud MQTT Bridge
+  dnsServer.processNextRequest();
   webServer.handleClient();
   maintainMqtt();
 

@@ -282,18 +282,15 @@ inline void setupWebEndpoints() {
       <label for="suplaEnabled">Enable Supla Cloud Mobile App Integration</label>
     </div>
     <div class="hint">
-      1. Register free at <a href="https://cloud.supla.org" target="_blank" style="color:#38bdf8;">cloud.supla.org</a><br>
-      2. Turn ON <strong>"Device registration ACTIVE"</strong> in your Supla dashboard.<br>
-      3. Enter your assigned server and email, click <strong>Generate Random Keys</strong>, and Save.
+      1. Log in to <a href="https://cloud.supla.org" target="_blank" style="color:#38bdf8;">cloud.supla.org</a><br>
+      2. Under the <strong>My SUPLA</strong> tab (plug icon), click <strong>"Device registration: CLICK TO ENABLE"</strong> in the top right.<br>
+      3. Enter your assigned Server and Email below, and click Save. The Master generates its own keys and pairs automatically!
     </div>
 
     <input type="text" id="suplaServer" placeholder="Supla Server (e.g. svr12.supla.org)">
     <input type="email" id="suplaEmail" placeholder="Supla Account Email">
-    <input type="text" id="suplaGuid" placeholder="Device GUID (32 hex characters)" readonly style="background:#161f30; font-family:monospace;">
-    <input type="text" id="suplaAuth" placeholder="Device AuthKey (32 hex characters)" readonly style="background:#161f30; font-family:monospace;">
     
-    <div style="display:flex; gap:10px; margin-top:4px;">
-      <button class="btn btn-secondary" type="button" onclick="generateKeys()">🎲 Generate Random Keys</button>
+    <div style="margin-top:8px;">
       <button class="btn" type="button" onclick="saveSystemConfig()">💾 Save Settings & Restart</button>
     </div>
   </div>
@@ -312,16 +309,6 @@ inline void setupWebEndpoints() {
     let configuredNodes = [];
     let liveStates = {};
 
-    function generateKeys() {
-      const toHex = arr => Array.from(arr, b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-      const guid = new Uint8Array(16);
-      const auth = new Uint8Array(16);
-      window.crypto.getRandomValues(guid);
-      window.crypto.getRandomValues(auth);
-      document.getElementById('suplaGuid').value = toHex(guid);
-      document.getElementById('suplaAuth').value = toHex(auth);
-    }
-
     async function loadSystemConfig() {
       try {
         const res = await fetch('/api/system');
@@ -330,8 +317,6 @@ inline void setupWebEndpoints() {
         document.getElementById('suplaEnabled').checked = !!data.supla_enabled;
         document.getElementById('suplaServer').value = data.supla_server || '';
         document.getElementById('suplaEmail').value = data.supla_email || '';
-        document.getElementById('suplaGuid').value = data.supla_guid || '';
-        document.getElementById('suplaAuth').value = data.supla_authkey || '';
       } catch (e) {
         console.error(e);
       }
@@ -344,9 +329,7 @@ inline void setupWebEndpoints() {
         sta_enabled: document.getElementById('wifiSsid').value.length > 0,
         supla_enabled: document.getElementById('suplaEnabled').checked,
         supla_server: document.getElementById('suplaServer').value,
-        supla_email: document.getElementById('suplaEmail').value,
-        supla_guid: document.getElementById('suplaGuid').value,
-        supla_authkey: document.getElementById('suplaAuth').value
+        supla_email: document.getElementById('suplaEmail').value
       };
       await fetch('/api/system', { method: 'POST', body: JSON.stringify(payload) });
       alert('Settings saved. Master Hub is restarting...');

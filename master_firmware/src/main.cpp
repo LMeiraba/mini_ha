@@ -292,17 +292,15 @@ void setup() {
   Serial.printf("[MESH] Wireless Star-Mesh TCP Server live on port %d\n", DEFAULT_MESH_PORT);
 
   // Initialize Supla Cloud Client (Optional Bridge configured via Web Dashboard)
-  char suplaGuidBytes[16] = {0};
-  char suplaAuthBytes[16] = {0};
-  bool validKeys = hexStringToBytes(sysSecurity.suplaGuid, suplaGuidBytes, 16) &&
-                   hexStringToBytes(sysSecurity.suplaAuthKey, suplaAuthBytes, 16);
-
   if (sysSecurity.suplaEnabled && connectedSTA && 
-      sysSecurity.suplaServer.length() > 0 && sysSecurity.suplaEmail.length() > 0 && validKeys) {
+      sysSecurity.suplaServer.length() > 0 && sysSecurity.suplaEmail.length() > 0) {
     Serial.printf("[SUPLA] Connecting to Supla Cloud (%s) for %s...\n", 
                   sysSecurity.suplaServer.c_str(), sysSecurity.suplaEmail.c_str());
     suplaWifi = new Supla::ESPWifi(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
-    SuplaDevice.begin(suplaGuidBytes, sysSecurity.suplaServer.c_str(), sysSecurity.suplaEmail.c_str(), suplaAuthBytes);
+    SuplaDevice.setServer(sysSecurity.suplaServer.c_str());
+    SuplaDevice.setEmail(sysSecurity.suplaEmail.c_str());
+    SuplaDevice.setName("Mini-HA Hub");
+    SuplaDevice.begin();
     suplaActive = true;
   } else {
     Serial.println("[SUPLA] Offline Mode: Supla Cloud dormant (Local Star-Mesh & Web Dashboard Active).");

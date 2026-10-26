@@ -1,19 +1,23 @@
-// Mini-HA PWA Dynamic Controller & EMQX Cloud Bridge Engine
+// Mini-HA PWA: Multi-User & Home Architecture Engine
 let mqttClient = null;
 let currentSchema = null;
 let currentState = null;
+let authReplyCallback = null;
 
 // Service Worker Registration
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js')
-      .then(reg => console.log('[PWA] Service Worker registered:', reg.scope))
+      .then(reg => console.log('[PWA] SW registered:', reg.scope))
       .catch(err => console.warn('[PWA] SW registration failed:', err));
   });
 }
 
-// Configuration Storage
-function getSavedConfig() {
+// =========================================================================
+// STORAGE: LEVEL 1 (HOME) & LEVEL 2 (USER IN HOME)
+// =========================================================================
+
+function getHomeConfig() {
   return {
     brokerUrl: localStorage.getItem('miniha_broker') || '',
     homeId: localStorage.getItem('miniha_home_id') || 'home_1',
@@ -23,7 +27,7 @@ function getSavedConfig() {
   };
 }
 
-function saveConfig(cfg) {
+function saveHomeConfig(cfg) {
   localStorage.setItem('miniha_broker', (cfg.brokerUrl || '').trim());
   localStorage.setItem('miniha_home_id', (cfg.homeId || 'home_1').trim());
   localStorage.setItem('miniha_user', (cfg.user || '').trim());
@@ -31,31 +35,78 @@ function saveConfig(cfg) {
   localStorage.setItem('miniha_local_ip', (cfg.localIp || '').trim());
 }
 
-// Check for Auto-Config Invite in URL (#cfg=... or ?cfg=...)
-function checkUrlInvite() {
-  let raw = '';
-  if (window.location.hash && window.location.hash.includes('cfg=')) {
-    raw = window.location.hash.split('cfg=')[1].split('&')[0];
-  } else if (window.location.search && window.location.search.includes('cfg=')) {
-    raw = window.location.search.split('cfg=')[1].split('&')[0];
+function getUserSession() {
+  return {
+    token: localStorage.getItem('miniha_session_token') || '',
+    user: localStorage.getItem('miniha_session_user') || '',
+    role: localStorage.getItem('miniha_session_role') || ''
+  };
+}
+
+function saveUserSession(session) {
+  localStorage.setItem('miniha_session_token', session.token || '');
+  localStorage.setItem('miniha_session_user', session.user || '');
+  localStorage.setItem('miniha_session_role', session.role || 'guest');
+}
+
+function clearUserSession() {
+  localStorage.removeItem('miniha_session_token');
+  localStorage.removeItem('miniha_session_user');
+  localStorage.removeItem('miniha_session_role');
+}
+
+function clearAllHomeData() {
+  localStorage.clear();
+}
+
+// =========================================================================
+// UI VIEW CONTROLLER (3 MUTUALLY EXCLUSIVE SCREENS)
+// =========================================================================
+
+function updateView() {
+  const home = getHomeConfig();
+  const session = getUserSession();
+
+  const emptyHome = document.getElementById('emptyHomeState');
+  const userLogin = document.getElementById('userLoginCard');
+  const dashboard = document.getElementById('nodesGrid');
+  const userBadge = document.getElementById('userBadge');
+  const userBadgeName = document.getElementById('userBadgeName');
+
+  // Screen 1: No Home Configured
+  if (!home.brokerUrl) {
+    if (emptyHome) emptyHome.style.display = 'block';
+    if (userLogin) userLogin.style.display = 'none';
+    if (dashboard) dashboard.style.display = 'none';
+    if (userBadge) userBadge.style.display = 'none';
+    setStatus('No Home', 'offline');
+    return;
   }
 
-  if (raw) {
-    try {
-      const jsonStr = atob(decodeURIComponent(raw));
-      const parsed = JSON.parse(jsonStr);
-      if (parsed.brokerUrl) {
-        saveConfig(parsed);
-        // Clean URL so the key doesn't linger in browser history
-        history.replaceState(null, '', window.location.pathname);
-        showToast('Connected via invite link!', 'success');
-        return true;
-      }
-    } catch (e) {
-      console.error('[Invite Parse Failed]', e);
+  // Screen 2: Home Connected, but No Active User Logged In
+  if (!session.token) {
+    if (emptyHome) emptyHome.style.display = 'none';
+    if (userLogin) userLogin.style.display = 'block';
+    if (dashboard) dashboard.style.display = 'none';
+    if (userBadge) userBadge.style.display = 'none';
+    const tag = document.getElementById('loginHomeTag');
+    if (tag) tag.textContent = `Home: ${home.homeId}`;
+    return;
+  }
+
+  // Screen 3: User Logged In & Home Connected -> Show Live Dashboard
+  if (emptyHome) emptyHome.style.display = 'none';
+  if (userLogin) userLogin.style.display = 'none';
+  if (dashboard) dashboard.style.display = 'flex';
+  if (userBadge) {
+    userBadge.style.display = 'flex';
+    if (userBadgeName) {
+      userBadgeName.textContent = `👤 ${session.user} (${session.role})`;
     }
   }
-  return false;
+
+  // Re-render if schema already loaded
+  if (currentSchema) handleSchemaUpdate(currentSchema);
 }
 
 // Status Banner Controller
@@ -75,13 +126,14 @@ function setStatus(text, type = 'info') {
   label.textContent = text;
 }
 
-// Connect to Cloud Broker via WebSockets Secure (WSS)
+// =========================================================================
+// MQTT CLIENT & TRANSPORT
+// =========================================================================
+
 function connectMqtt() {
-  const cfg = getSavedConfig();
-  if (!cfg.brokerUrl) {
-    setStatus('Ready to Connect', 'offline');
-    const emptyState = document.getElementById('emptyState');
-    if (emptyState) emptyState.style.display = 'block';
+  const home = getHomeConfig();
+  if (!home.brokerUrl) {
+    updateView();
     return;
   }
 
@@ -97,25 +149,26 @@ function connectMqtt() {
     clean: true,
     connectTimeout: 8000,
     reconnectPeriod: 4000,
-    username: cfg.user || undefined,
-    password: cfg.pass || undefined
+    username: home.user || undefined,
+    password: home.pass || undefined
   };
 
   try {
-    mqttClient = mqtt.connect(cfg.brokerUrl, options);
+    mqttClient = mqtt.connect(home.brokerUrl, options);
 
     mqttClient.on('connect', () => {
       console.log('[MQTT] Connected to broker');
       setStatus('Online', 'online');
 
-      const schemaTopic = `miniha/${cfg.homeId}/schema`;
-      const stateTopic = `miniha/${cfg.homeId}/state`;
+      const schemaTopic = `miniha/${home.homeId}/schema`;
+      const stateTopic = `miniha/${home.homeId}/state`;
+      const authReplyWildcard = `miniha/${home.homeId}/auth/reply/+`;
 
-      mqttClient.subscribe([schemaTopic, stateTopic], (err) => {
+      mqttClient.subscribe([schemaTopic, stateTopic, authReplyWildcard], (err) => {
         if (!err) {
-          console.log(`[MQTT] Subscribed to ${schemaTopic} & ${stateTopic}`);
+          console.log(`[MQTT] Subscribed to ${home.homeId} topics`);
         } else {
-          console.error('[MQTT] Subscription failed:', err);
+          console.error('[MQTT] Subscription error:', err);
         }
       });
     });
@@ -123,50 +176,200 @@ function connectMqtt() {
     mqttClient.on('message', (topic, payload) => {
       try {
         const data = JSON.parse(payload.toString());
-        const cfg = getSavedConfig();
+        const home = getHomeConfig();
 
-        if (topic === `miniha/${cfg.homeId}/schema`) {
+        if (topic === `miniha/${home.homeId}/schema`) {
           handleSchemaUpdate(data);
-        } else if (topic === `miniha/${cfg.homeId}/state`) {
+        } else if (topic === `miniha/${home.homeId}/state`) {
           handleStateUpdate(data);
+        } else if (topic.startsWith(`miniha/${home.homeId}/auth/reply/`)) {
+          if (authReplyCallback) {
+            authReplyCallback(data);
+          }
         }
       } catch (err) {
-        console.error('[MQTT] Error parsing payload:', err);
+        console.error('[MQTT Payload Error]', err);
       }
     });
 
-    mqttClient.on('reconnect', () => {
-      setStatus('Reconnecting...', 'connecting');
-    });
-
-    mqttClient.on('close', () => {
-      setStatus('Disconnected', 'offline');
-    });
-
+    mqttClient.on('reconnect', () => setStatus('Reconnecting...', 'connecting'));
+    mqttClient.on('close', () => setStatus('Disconnected', 'offline'));
     mqttClient.on('error', (err) => {
       console.error('[MQTT Error]', err);
-      setStatus('Connection Error', 'offline');
+      setStatus('Conn Error', 'offline');
     });
   } catch (err) {
     console.error('[MQTT Init Failed]', err);
-    setStatus('Connection Failed', 'offline');
+    setStatus('Conn Failed', 'offline');
   }
 }
 
-// Handle Dynamic Schema Update (Re-builds UI on the fly when nodes change)
-function handleSchemaUpdate(schema) {
-  currentSchema = schema;
-  const container = document.getElementById('nodesGrid');
-  const emptyState = document.getElementById('emptyState');
-  if (!container) return;
+// =========================================================================
+// LEVEL 2: USER LOGIN & SWITCH USER
+// =========================================================================
 
-  if (!schema.nodes || schema.nodes.length === 0) {
-    if (emptyState) emptyState.style.display = 'block';
-    container.innerHTML = '';
+function submitUserLogin() {
+  const username = document.getElementById('loginUser').value.trim();
+  const password = document.getElementById('loginPass').value;
+  const loginBtn = document.getElementById('loginBtn');
+
+  if (!username || !password) {
+    showToast('Enter username and password', 'error');
     return;
   }
 
-  if (emptyState) emptyState.style.display = 'none';
+  if (loginBtn) {
+    loginBtn.textContent = 'Verifying...';
+    loginBtn.disabled = true;
+  }
+
+  const home = getHomeConfig();
+
+  // Route 1: Over MQTT
+  if (mqttClient && mqttClient.connected) {
+    const clientReqId = 'pwa_' + Math.random().toString(16).substr(2, 6);
+    const loginTopic = `miniha/${home.homeId}/auth/login`;
+
+    let resolved = false;
+    authReplyCallback = (reply) => {
+      resolved = true;
+      authReplyCallback = null;
+      if (loginBtn) {
+        loginBtn.textContent = 'Log In';
+        loginBtn.disabled = false;
+      }
+
+      if (reply.status === 'ok' && reply.token) {
+        saveUserSession({
+          token: reply.token,
+          user: reply.user,
+          role: reply.role
+        });
+        showToast(`Welcome, ${reply.user}!`, 'success');
+        document.getElementById('loginUser').value = '';
+        document.getElementById('loginPass').value = '';
+        updateView();
+      } else {
+        showToast(reply.error || 'Invalid credentials', 'error');
+      }
+    };
+
+    // Timeout safety
+    setTimeout(() => {
+      if (!resolved) {
+        authReplyCallback = null;
+        if (loginBtn) {
+          loginBtn.textContent = 'Log In';
+          loginBtn.disabled = false;
+        }
+        showToast('Login timed out. Check Master Hub.', 'error');
+      }
+    }, 6000);
+
+    mqttClient.publish(loginTopic, JSON.stringify({
+      client: clientReqId,
+      user: username,
+      pass: password
+    }));
+  }
+  // Route 2: Over Local LAN HTTP
+  else if (home.localIp) {
+    fetch(`${home.localIp}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: username, pass: password })
+    })
+    .then(r => r.json())
+    .then(reply => {
+      if (loginBtn) {
+        loginBtn.textContent = 'Log In';
+        loginBtn.disabled = false;
+      }
+      if (reply.status === 'ok' && reply.token) {
+        saveUserSession({
+          token: reply.token,
+          user: reply.user,
+          role: reply.role
+        });
+        showToast(`Welcome, ${reply.user}!`, 'success');
+        updateView();
+      } else {
+        showToast(reply.error || 'Invalid credentials', 'error');
+      }
+    })
+    .catch(err => {
+      if (loginBtn) {
+        loginBtn.textContent = 'Log In';
+        loginBtn.disabled = false;
+      }
+      showToast('Connection error', 'error');
+    });
+  } else {
+    if (loginBtn) {
+      loginBtn.textContent = 'Log In';
+      loginBtn.disabled = false;
+    }
+    showToast('Not connected to Home yet. Please wait.', 'error');
+  }
+}
+
+// Switch User (Logs out user, keeps Home connection!)
+function switchUser() {
+  clearUserSession();
+  closeUserMenuModal();
+  showToast('Logged out. Please log in as another user.', 'info');
+  updateView();
+  const input = document.getElementById('loginUser');
+  if (input) input.focus();
+}
+
+// Unlink Home (Logs out user AND unlinks Home config)
+function unlinkHome() {
+  if (confirm('Unlink this phone from this Home? You will need an invite link to reconnect.')) {
+    clearAllHomeData();
+    closeUserMenuModal();
+    if (mqttClient) {
+      try { mqttClient.end(true); } catch(e) {}
+    }
+    showToast('Home unlinked.', 'info');
+    updateView();
+  }
+}
+
+// User Menu Modal
+function openUserMenuModal() {
+  const session = getUserSession();
+  const home = getHomeConfig();
+  document.getElementById('menuUserName').textContent = session.user || 'Unknown';
+  document.getElementById('menuUserRole').textContent = `Role: ${session.role || 'Guest'}`;
+  document.getElementById('menuHomeId').textContent = `Home: ${home.homeId}`;
+  const modal = document.getElementById('userMenuModal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function closeUserMenuModal() {
+  const modal = document.getElementById('userMenuModal');
+  if (modal) modal.style.display = 'none';
+}
+
+// =========================================================================
+// DYNAMIC SCHEMA & DASHBOARD RENDERING
+// =========================================================================
+
+function handleSchemaUpdate(schema) {
+  currentSchema = schema;
+  const session = getUserSession();
+  if (!session.token) return; // Do not render dashboard if not logged in
+
+  const container = document.getElementById('nodesGrid');
+  if (!container) return;
+
+  if (!schema.nodes || schema.nodes.length === 0) {
+    container.innerHTML = '<div style="text-align:center; padding:30px; color:var(--text-sub);">No devices bound to this Home yet.</div>';
+    return;
+  }
+
+  const isGuest = (session.role === 'guest');
 
   let html = '';
   schema.nodes.forEach(node => {
@@ -184,7 +387,7 @@ function handleSchemaUpdate(schema) {
         </div>
 
         <div class="slots-container" id="slots_${node.id}">
-          ${renderSlots(node)}
+          ${renderSlots(node, isGuest)}
         </div>
       </div>
     `;
@@ -197,9 +400,9 @@ function handleSchemaUpdate(schema) {
   }
 }
 
-function renderSlots(node) {
+function renderSlots(node, isGuest) {
   if (!node.slots || node.slots.length === 0) {
-    return `<div class="empty-slots">No devices configured</div>`;
+    return `<div style="color:var(--text-sub); font-size:12px;">No slots configured</div>`;
   }
 
   let out = '';
@@ -215,7 +418,7 @@ function renderSlots(node) {
             <span class="slot-label">${escapeHtml(name)}</span>
             <span class="slot-state-text" id="relay_text_${node.id}_${slotNum}">OFF</span>
           </div>
-          <button class="toggle-btn" id="btn_${node.id}_${slotNum}" onclick="toggleRelay('${node.id}', ${slotNum})">
+          <button class="toggle-btn" id="btn_${node.id}_${slotNum}" ${isGuest ? 'disabled title="Guests cannot toggle controls"' : ''} onclick="toggleRelay('${node.id}', ${slotNum})">
             <span class="toggle-slider"></span>
           </button>
         </div>
@@ -266,7 +469,6 @@ function handleStateUpdate(stateMsg) {
   Object.keys(stateMsg.nodes).forEach(nodeId => {
     const n = stateMsg.nodes[nodeId];
 
-    // 1. Update Online/Offline status
     const statusEl = document.getElementById(`status_${nodeId}`);
     if (statusEl) {
       if (n.online) {
@@ -276,13 +478,11 @@ function handleStateUpdate(stateMsg) {
       }
     }
 
-    // 2. Update DHT Sensor Readings
     const tempEl = document.getElementById(`temp_${nodeId}`);
     const humEl = document.getElementById(`hum_${nodeId}`);
     if (tempEl && n.temp !== undefined && n.temp > -50) tempEl.textContent = n.temp.toFixed(1);
     if (humEl && n.hum !== undefined && n.hum >= 0) humEl.textContent = n.hum.toFixed(0);
 
-    // 3. Update Ultrasonic Readings
     const distEl = document.getElementById(`dist_${nodeId}`);
     const tankFillEl = document.getElementById(`tank_fill_${nodeId}`);
     if (distEl && n.dist !== undefined) {
@@ -291,7 +491,6 @@ function handleStateUpdate(stateMsg) {
       if (tankFillEl) tankFillEl.style.width = `${pct}%`;
     }
 
-    // 4. Update Relays
     if (n.slots) {
       Object.keys(n.slots).forEach(slotNum => {
         const val = n.slots[slotNum];
@@ -312,33 +511,47 @@ function handleStateUpdate(stateMsg) {
   });
 }
 
-// User Action: Toggle Relay (Sends Command to Master via MQTT)
+// User Action: Toggle Relay (Sends Command with Token to Master)
 function toggleRelay(nodeId, slot) {
+  const session = getUserSession();
+  if (!session.token) {
+    showToast('Please log in first', 'error');
+    updateView();
+    return;
+  }
+  if (session.role === 'guest') {
+    showToast('Guests have read-only access', 'error');
+    return;
+  }
+
   const btn = document.getElementById(`btn_${nodeId}_${slot}`);
   const isCurrentlyActive = btn ? btn.classList.contains('active') : false;
   const targetState = isCurrentlyActive ? 0 : 1;
 
-  // Optimistic UI update (instant visual feedback for parents)
+  // Optimistic UI update
   if (btn) {
     btn.classList.toggle('active');
     const text = document.getElementById(`relay_text_${nodeId}_${slot}`);
     if (text) text.textContent = targetState === 1 ? 'ON' : 'OFF';
   }
 
-  const cfg = getSavedConfig();
+  const home = getHomeConfig();
   if (mqttClient && mqttClient.connected) {
-    const cmdTopic = `miniha/${cfg.homeId}/set`;
+    const cmdTopic = `miniha/${home.homeId}/set`;
     const payload = JSON.stringify({
+      token: session.token,
       target: nodeId,
       slot: parseInt(slot),
       state: targetState
     });
     mqttClient.publish(cmdTopic, payload);
-    console.log(`[CMD Published] ${cmdTopic} -> ${payload}`);
-  } else if (cfg.localIp) {
-    fetch(`${cfg.localIp}/api/control`, {
+  } else if (home.localIp) {
+    fetch(`${home.localIp}/api/control`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Auth-Token': session.token
+      },
       body: JSON.stringify({ target: nodeId, slot: parseInt(slot), val: targetState })
     }).catch(err => console.error('[Local Control Error]', err));
   } else {
@@ -346,21 +559,49 @@ function toggleRelay(nodeId, slot) {
   }
 }
 
-// Share Modal & Family Invite Generation
+// =========================================================================
+// INVITES & SHARING
+// =========================================================================
+
+function checkUrlInvite() {
+  let raw = '';
+  if (window.location.hash && window.location.hash.includes('cfg=')) {
+    raw = window.location.hash.split('cfg=')[1].split('&')[0];
+  } else if (window.location.search && window.location.search.includes('cfg=')) {
+    raw = window.location.search.split('cfg=')[1].split('&')[0];
+  }
+
+  if (raw) {
+    try {
+      const jsonStr = atob(decodeURIComponent(raw));
+      const parsed = JSON.parse(jsonStr);
+      if (parsed.brokerUrl) {
+        saveHomeConfig(parsed);
+        history.replaceState(null, '', window.location.pathname);
+        showToast('Connected to Home! Please log in.', 'success');
+        return true;
+      }
+    } catch (e) {
+      console.error('[Invite Parse Failed]', e);
+    }
+  }
+  return false;
+}
+
 function openShareModal() {
-  const cfg = getSavedConfig();
-  if (!cfg.brokerUrl) {
-    showToast('Configure broker connection first', 'error');
+  const home = getHomeConfig();
+  if (!home.brokerUrl) {
+    showToast('Configure home connection first', 'error');
     openSettingsModal();
     return;
   }
 
   const encoded = btoa(JSON.stringify({
-    brokerUrl: cfg.brokerUrl,
-    homeId: cfg.homeId,
-    user: cfg.user,
-    pass: cfg.pass,
-    localIp: cfg.localIp
+    brokerUrl: home.brokerUrl,
+    homeId: home.homeId,
+    user: home.user,
+    pass: home.pass,
+    localIp: home.localIp
   }));
 
   const inviteUrl = `${window.location.origin}${window.location.pathname}#cfg=${encodeURIComponent(encoded)}`;
@@ -384,43 +625,38 @@ function copyShareLink() {
   const input = document.getElementById('shareLinkInput');
   input.select();
   navigator.clipboard.writeText(input.value)
-    .then(() => showToast('Invite link copied! Send to family via WhatsApp.', 'success'))
+    .then(() => showToast('Home Invite link copied! Send via WhatsApp.', 'success'))
     .catch(() => showToast('Link selected. Press Copy.', 'info'));
 }
 
 function promptPasteLink() {
-  const input = prompt('Paste your Family Invite Link or Code:');
+  const input = prompt('Paste your Home Invite Link or Code:');
   if (input && input.trim()) {
     const val = input.trim();
-    let raw = '';
-    if (val.includes('cfg=')) {
-      raw = val.split('cfg=')[1].split('&')[0];
-    } else {
-      raw = val;
-    }
-
+    let raw = val.includes('cfg=') ? val.split('cfg=')[1].split('&')[0] : val;
     try {
       const decoded = JSON.parse(atob(raw));
       if (decoded.brokerUrl) {
-        saveConfig(decoded);
-        showToast('Home configured successfully!', 'success');
+        saveHomeConfig(decoded);
+        showToast('Home connected! Please log in.', 'success');
         connectMqtt();
+        updateView();
         return;
       }
     } catch (e) {
-      alert('Invalid invite link. Please check and try again.');
+      alert('Invalid home invite link.');
     }
   }
 }
 
-// Settings Modal Controls
+// Settings Modal Controls (Admin)
 function openSettingsModal() {
-  const cfg = getSavedConfig();
-  document.getElementById('modalBroker').value = cfg.brokerUrl;
-  document.getElementById('modalHomeId').value = cfg.homeId;
-  document.getElementById('modalUser').value = cfg.user;
-  document.getElementById('modalPass').value = cfg.pass;
-  document.getElementById('modalLocalIp').value = cfg.localIp;
+  const home = getHomeConfig();
+  document.getElementById('modalBroker').value = home.brokerUrl;
+  document.getElementById('modalHomeId').value = home.homeId;
+  document.getElementById('modalUser').value = home.user;
+  document.getElementById('modalPass').value = home.pass;
+  document.getElementById('modalLocalIp').value = home.localIp;
 
   const modal = document.getElementById('settingsModal');
   if (modal) modal.style.display = 'flex';
@@ -431,24 +667,19 @@ function closeSettingsModal() {
   if (modal) modal.style.display = 'none';
 }
 
-function saveAndConnect() {
-  const broker = document.getElementById('modalBroker').value.trim();
-  const homeId = document.getElementById('modalHomeId').value.trim() || 'home_1';
-  const user = document.getElementById('modalUser').value.trim();
-  const pass = document.getElementById('modalPass').value;
-  const localIp = document.getElementById('modalLocalIp').value.trim();
-
-  saveConfig({
-    brokerUrl: broker,
-    homeId: homeId,
-    user: user,
-    pass: pass,
-    localIp: localIp
+function saveHomeAndConnect() {
+  saveHomeConfig({
+    brokerUrl: document.getElementById('modalBroker').value.trim(),
+    homeId: document.getElementById('modalHomeId').value.trim() || 'home_1',
+    user: document.getElementById('modalUser').value.trim(),
+    pass: document.getElementById('modalPass').value,
+    localIp: document.getElementById('modalLocalIp').value.trim()
   });
 
   closeSettingsModal();
-  showToast('Settings saved. Connecting...', 'info');
+  showToast('Home settings saved. Connecting...', 'info');
   connectMqtt();
+  updateView();
 }
 
 // Toast Notifications
@@ -471,15 +702,10 @@ function escapeHtml(str) {
 
 // Boot Sequence
 window.addEventListener('DOMContentLoaded', () => {
-  // 1. Check if user opened an invite link
-  const hadInvite = checkUrlInvite();
-  // 2. Connect if config exists
-  const cfg = getSavedConfig();
-  if (cfg.brokerUrl) {
+  checkUrlInvite();
+  updateView();
+  const home = getHomeConfig();
+  if (home.brokerUrl) {
     connectMqtt();
-  } else {
-    setStatus('Ready to Connect', 'offline');
-    const emptyState = document.getElementById('emptyState');
-    if (emptyState) emptyState.style.display = 'block';
   }
 });

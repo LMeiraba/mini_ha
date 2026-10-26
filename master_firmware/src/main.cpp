@@ -146,6 +146,7 @@ void publishMqttState() {
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String topicStr = String(topic);
   String msg = "";
   for (unsigned int i = 0; i < length; i++) {
     msg += (char)payload[i];
@@ -154,12 +155,55 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   DynamicJsonDocument doc(512);
   DeserializationError err = deserializeJson(doc, msg);
-  if (!err) {
+  if (err) return;
+
+  // 1. Remote User Login Authentication over MQTT
+  if (topicStr.endsWith("/auth/login")) {
+    String client = doc.containsKey("client") ? doc["client"].as<String>() : "";
+    String user = doc.containsKey("user") ? doc["user"].as<String>() : "";
+    String pass = doc.containsKey("pass") ? doc["pass"].as<String>() : "";
+
+    UserRole uRole = ROLE_NONE;
+    String roleStr = "";
+    String token = createSessionForUser(user, pass, &uRole, &roleStr);
+
+    DynamicJsonDocument res(256);
+    if (token.length() > 0) {
+      res["status"] = "ok";
+      res["token"] = token;
+      res["user"] = user;
+      res["role"] = roleStr;
+      Serial.printf("[AUTH] Login SUCCESS: User '%s' (%s) via MQTT\n", user.c_str(), roleStr.c_str());
+    } else {
+      res["status"] = "error";
+      res["error"] = "Invalid username or password";
+      Serial.printf("[AUTH] Login FAILED: User '%s' via MQTT\n", user.c_str());
+    }
+
+    String out;
+    serializeJson(res, out);
+    String replyTopic = "miniha/" + sysSecurity.mqttHomeId + "/auth/reply/" + client;
+    mqttClient.publish(replyTopic.c_str(), out.c_str());
+    return;
+  }
+
+  // 2. Control Action with Cryptographic Token Verification
+  if (topicStr.endsWith("/set")) {
     if (doc.containsKey("target") && doc.containsKey("slot") && doc.containsKey("state")) {
+      String token = doc.containsKey("token") ? doc["token"].as<String>() : "";
       String target = doc["target"].as<String>();
       int slot = doc["slot"].as<int>();
       int state = doc["state"].as<int>();
-      executeAction(target, slot, state, "MQTT Remote");
+
+      String username = "";
+      UserRole role = validateToken(token, &username);
+      if (role < ROLE_MEMBER) {
+        Serial.printf("[SECURITY] Rejected command for '%s': User '%s' unauthorized (Role: %d)\n", 
+                      target.c_str(), username.c_str(), role);
+        return;
+      }
+
+      executeAction(target, slot, state, "MQTT by '" + username + "'");
 
       GenericNodeTelemetry* ns = getOrCreateNodeState(target);
       if (ns && slot >= 1 && slot <= MAX_GPIO_SLOTS) {
@@ -208,8 +252,10 @@ void maintainMqtt() {
     if (connected) {
       Serial.println("[MQTT] Connected to Cloud Broker!");
       String setTopic = "miniha/" + sysSecurity.mqttHomeId + "/set";
+      String authTopic = "miniha/" + sysSecurity.mqttHomeId + "/auth/login";
       mqttClient.subscribe(setTopic.c_str());
-      Serial.printf("[MQTT] Subscribed to %s\n", setTopic.c_str());
+      mqttClient.subscribe(authTopic.c_str());
+      Serial.printf("[MQTT] Subscribed to %s & %s\n", setTopic.c_str(), authTopic.c_str());
       publishMqttSchema();
       publishMqttState();
     } else {

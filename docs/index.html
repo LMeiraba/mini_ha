@@ -49,7 +49,7 @@
     header {
       background: rgba(21, 28, 46, 0.95);
       backdrop-filter: blur(10px);
-      padding: 14px 20px;
+      padding: 12px 18px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -66,13 +66,13 @@
     }
 
     .brand-icon {
-      width: 32px;
-      height: 32px;
+      width: 30px;
+      height: 30px;
       border-radius: 8px;
     }
 
     .brand-title {
-      font-size: 17px;
+      font-size: 16px;
       font-weight: 700;
       letter-spacing: -0.3px;
     }
@@ -83,7 +83,7 @@
       gap: 6px;
       background: #0f172a;
       border: 1px solid var(--card-border);
-      padding: 5px 12px;
+      padding: 5px 10px;
       border-radius: 20px;
       font-size: 12px;
       font-weight: 500;
@@ -104,8 +104,25 @@
       to { opacity: 1; }
     }
 
+    .user-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      padding: 4px 10px;
+      border-radius: 16px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #93c5fd;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .user-pill:active { background: #334155; }
+
     .header-actions {
       display: flex;
+      align-items: center;
       gap: 8px;
     }
 
@@ -113,14 +130,14 @@
       background: #1e293b;
       border: 1px solid var(--card-border);
       color: var(--text-main);
-      width: 36px;
-      height: 36px;
+      width: 34px;
+      height: 34px;
       border-radius: 8px;
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      font-size: 16px;
+      font-size: 15px;
       transition: background 0.15s;
     }
     .icon-btn:active { background: #334155; }
@@ -261,6 +278,10 @@
     .toggle-btn.active .toggle-slider {
       transform: translateX(26px);
     }
+    .toggle-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
 
     /* DHT Slot */
     .slot-dht {
@@ -344,33 +365,47 @@
       transition: width 0.4s ease;
     }
 
-    /* Parent-Friendly Empty State */
-    .empty-state {
+    /* Empty & Login State Cards */
+    .state-card {
       text-align: center;
-      padding: 40px 20px;
+      padding: 36px 20px;
       color: var(--text-sub);
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: 16px;
       margin-top: 20px;
+      max-width: 440px;
+      margin-left: auto;
+      margin-right: auto;
     }
 
-    .empty-icon {
-      font-size: 48px;
+    .state-icon {
+      font-size: 44px;
       margin-bottom: 12px;
     }
 
-    .empty-state h3 {
+    .state-card h3 {
       font-size: 18px;
       margin-bottom: 8px;
       color: var(--text-main);
     }
 
-    .empty-state p {
+    .state-card p {
       font-size: 13px;
       line-height: 1.5;
-      max-width: 320px;
       margin: 0 auto 16px;
+    }
+
+    .home-tag {
+      display: inline-block;
+      background: #1e293b;
+      color: #60a5fa;
+      border: 1px solid #334155;
+      padding: 3px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 14px;
     }
 
     /* Modal */
@@ -407,6 +442,7 @@
 
     .form-group {
       margin-bottom: 12px;
+      text-align: left;
     }
 
     .form-group label {
@@ -520,35 +556,84 @@
     </div>
 
     <div class="header-actions">
-      <button class="icon-btn" onclick="openShareModal()" title="Share with Family">📤</button>
-      <button class="icon-btn" onclick="openSettingsModal()" title="Admin Settings">⚙️</button>
+      <!-- Active User Badge (Level 2: User in Home) -->
+      <div id="userBadge" class="user-pill" style="display:none;" onclick="openUserMenuModal()" title="Switch or View User">
+        <span id="userBadgeName">👤 User</span>
+      </div>
+      <button class="icon-btn" onclick="openShareModal()" title="Share Home Invite">📤</button>
+      <button class="icon-btn" onclick="openSettingsModal()" title="Admin Connection">⚙️</button>
     </div>
   </header>
 
   <main>
-    <!-- Friendly Empty State for Unconfigured Phones -->
-    <div id="emptyState" class="empty-state" style="display:none;">
-      <div class="empty-icon">🏠</div>
-      <h3>Welcome to Mini-HA</h3>
-      <p>Scan your home's <strong>QR Code</strong> or tap an <strong>Invite Link</strong> sent by your home administrator to connect instantly.</p>
+    <!-- Screen 1: Unconfigured HOME (Level 1: Connect to Home) -->
+    <div id="emptyHomeState" class="state-card" style="display:none;">
+      <div class="state-icon">🏠</div>
+      <h3>Connect to a Home</h3>
+      <p>Scan your Home's <strong>QR Code</strong> or tap a <strong>WhatsApp Invite Link</strong> to link this phone to your smart home.</p>
       <div style="display:flex; flex-direction:column; gap:8px; align-items:center;">
-        <button class="btn" onclick="promptPasteLink()">Paste Invite Link</button>
-        <button class="btn-text" onclick="openSettingsModal()">Advanced: Configure Manually</button>
+        <button class="btn" onclick="promptPasteLink()">Paste Home Invite Link</button>
+        <button class="btn-text" onclick="openSettingsModal()">Advanced: Manual Broker Config</button>
       </div>
     </div>
 
-    <div class="nodes-grid" id="nodesGrid"></div>
+    <!-- Screen 2: User Login inside HOME (Level 2: User Authentication) -->
+    <div id="userLoginCard" class="state-card" style="display:none;">
+      <div class="state-icon">🔐</div>
+      <h3>Log In to Home</h3>
+      <div class="home-tag" id="loginHomeTag">Home: home_1</div>
+      <p style="font-size:12px; margin-bottom:12px;">Enter your personal account credentials to access home controls.</p>
+      
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="loginUser" placeholder="e.g. dad" autocapitalize="none" autocomplete="username">
+      </div>
+
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="loginPass" placeholder="••••••••" autocomplete="current-password">
+      </div>
+
+      <button class="btn" id="loginBtn" style="width:100%; margin-top:8px;" onclick="submitUserLogin()">Log In</button>
+      
+      <div style="margin-top:14px; text-align:center;">
+        <button class="btn-text" onclick="unlinkHome()">Switch or Unlink Home</button>
+      </div>
+    </div>
+
+    <!-- Screen 3: Live Dashboard (Active User in Home) -->
+    <div class="nodes-grid" id="nodesGrid" style="display:none;"></div>
   </main>
+
+  <!-- User Menu Modal (Switch User / Log Out) -->
+  <div class="modal-backdrop" id="userMenuModal">
+    <div class="modal-card">
+      <div class="modal-title">
+        <span>Account & Profile</span>
+        <button class="icon-btn" style="width:28px; height:28px;" onclick="closeUserMenuModal()">✕</button>
+      </div>
+      <div style="background:#0b101c; border:1px solid #25314d; border-radius:10px; padding:14px; margin-bottom:16px;">
+        <div style="font-size:16px; font-weight:700;" id="menuUserName">User</div>
+        <div style="font-size:12px; color:var(--text-sub); text-transform:uppercase; margin-top:2px;" id="menuUserRole">Role: Member</div>
+        <div style="font-size:11px; color:#60a5fa; margin-top:6px;" id="menuHomeId">Home: home_1</div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <button class="btn" onclick="switchUser()">🔄 Switch User in this Home</button>
+        <button class="btn btn-secondary" onclick="unlinkHome()">🏠 Unlink / Change Home</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Share / Invite Family Modal -->
   <div class="modal-backdrop" id="shareModal">
     <div class="modal-card">
       <div class="modal-title">
-        <span>Share with Family</span>
+        <span>Share Home with Family</span>
         <button class="icon-btn" style="width:28px; height:28px;" onclick="closeShareModal()">✕</button>
       </div>
       <p style="font-size:12px; color:var(--text-sub); line-height:1.4;">
-        Have your parents scan this QR code with their camera, or send them the link on WhatsApp. It connects their phone automatically with zero setup!
+        Send this link to family members. It connects their phone to this <strong>HOME</strong>. They will then log in with their personal username & password!
       </p>
 
       <div class="qr-container">
@@ -556,7 +641,7 @@
       </div>
 
       <div class="form-group">
-        <label>Invite Link</label>
+        <label>Home Invite Link</label>
         <input type="text" id="shareLinkInput" readonly style="font-size:12px; color:#93c5fd;">
       </div>
 
@@ -567,11 +652,11 @@
     </div>
   </div>
 
-  <!-- Connection Setup Modal (Admin only) -->
+  <!-- Connection Setup Modal (Level 1: HOME Config) -->
   <div class="modal-backdrop" id="settingsModal">
     <div class="modal-card">
       <div class="modal-title">
-        <span>Admin Connection Setup</span>
+        <span>Home Connection Setup</span>
         <button class="icon-btn" style="width:28px; height:28px;" onclick="closeSettingsModal()">✕</button>
       </div>
 
@@ -602,7 +687,7 @@
 
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
-        <button class="btn" onclick="saveAndConnect()">Save & Connect</button>
+        <button class="btn" onclick="saveHomeAndConnect()">Save Home Connection</button>
       </div>
     </div>
   </div>

@@ -84,10 +84,8 @@ inline String getRequestToken() {
   return "";
 }
 
-inline UserRole getAuthenticatedRole(String* outUsername = nullptr) {
-  String token = getRequestToken();
+inline UserRole validateToken(const String& token, String* outUsername = nullptr) {
   if (token.length() == 0) return ROLE_NONE;
-
   for (int i = 0; i < MAX_SESSIONS; i++) {
     if (activeSessions[i].token.length() > 0 && activeSessions[i].token == token) {
       if (millis() - activeSessions[i].lastActive < 86400000UL) { // 24 hours
@@ -100,6 +98,11 @@ inline UserRole getAuthenticatedRole(String* outUsername = nullptr) {
     }
   }
   return ROLE_NONE;
+}
+
+inline UserRole getAuthenticatedRole(String* outUsername = nullptr) {
+  String token = getRequestToken();
+  return validateToken(token, outUsername);
 }
 
 inline bool requireRole(UserRole minRole, String* outUsername = nullptr) {
@@ -119,6 +122,47 @@ inline String roleEnumToName(UserRole r) {
   if (r == ROLE_ADMIN) return "admin";
   if (r == ROLE_MEMBER) return "member";
   return "guest";
+}
+
+inline String createSessionForUser(const String& user, const String& pass, UserRole* outRole = nullptr, String* outRoleStr = nullptr) {
+  File f = LittleFS.open(USERS_CONFIG_PATH, "r");
+  if (!f) return "";
+  DynamicJsonDocument doc(2048);
+  deserializeJson(doc, f);
+  f.close();
+
+  bool matched = false;
+  String roleStr = "guest";
+  for (JsonObject u : doc["users"].as<JsonArray>()) {
+    if (u["user"].as<String>() == user && u["pass"].as<String>() == pass) {
+      matched = true;
+      roleStr = u["role"].as<String>();
+      break;
+    }
+  }
+
+  if (!matched) return "";
+
+  String token = generateRandomToken();
+  UserRole uRole = roleNameToEnum(roleStr);
+  if (outRole) *outRole = uRole;
+  if (outRoleStr) *outRoleStr = roleStr;
+
+  int slot = -1;
+  for (int i = 0; i < MAX_SESSIONS; i++) {
+    if (activeSessions[i].token.length() == 0 || millis() - activeSessions[i].lastActive > 86400000UL) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot == -1) slot = 0;
+
+  activeSessions[slot].token = token;
+  activeSessions[slot].username = user;
+  activeSessions[slot].role = uRole;
+  activeSessions[slot].lastActive = millis();
+
+  return token;
 }
 
 // =========================================================================
@@ -181,42 +225,16 @@ inline void setupWebEndpoints() {
     deserializeJson(doc, f);
     f.close();
 
-    bool matched = false;
-    String userRoleStr = "guest";
-    bool isDefault = false;
+    UserRole uRole = ROLE_NONE;
+    String userRoleStr = "";
+    String token = createSessionForUser(user, pass, &uRole, &userRoleStr);
 
-    for (JsonObject u : doc["users"].as<JsonArray>()) {
-      if (u["user"].as<String>() == user && u["pass"].as<String>() == pass) {
-        matched = true;
-        userRoleStr = u["role"].as<String>();
-        if (user == "admin" && pass == "admin123") isDefault = true;
-        break;
-      }
-    }
-
-    if (!matched) {
+    if (token.length() == 0) {
       webServer.send(401, "application/json; charset=utf-8", "{\"error\":\"Invalid username or password\"}");
       return;
     }
 
-    String token = generateRandomToken();
-    UserRole uRole = roleNameToEnum(userRoleStr);
-
-    // Save session in slot
-    int slot = -1;
-    for (int i = 0; i < MAX_SESSIONS; i++) {
-      if (activeSessions[i].token.length() == 0 || millis() - activeSessions[i].lastActive > 86400000UL) {
-        slot = i;
-        break;
-      }
-    }
-    if (slot == -1) slot = 0; // Overwrite oldest
-
-    activeSessions[slot].token = token;
-    activeSessions[slot].username = user;
-    activeSessions[slot].role = uRole;
-    activeSessions[slot].lastActive = millis();
-
+    bool isDefault = (user == "admin" && pass == "admin123");
     webServer.sendHeader("Set-Cookie", "mini_ha_session=" + token + "; Path=/; SameSite=Strict; Max-Age=86400");
     DynamicJsonDocument res(256);
     res["status"] = "ok";

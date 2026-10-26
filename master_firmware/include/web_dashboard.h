@@ -616,6 +616,25 @@ inline void setupWebEndpoints() {
     .slot-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 13px; }
     .sensor-badge { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #1c202d; color: #93c5fd; padding: 3px 8px; border-radius: 4px; border: 1px solid #283044; }
 
+    /* Tactile Toggle Switch */
+    .toggle-btn { position: relative; width: 50px; height: 28px; background: #2d3748; border-radius: 14px; border: none; cursor: pointer; transition: background 0.25s, box-shadow 0.25s; flex-shrink: 0; }
+    .toggle-slider { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; background: #fff; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
+    .toggle-btn.active { background: var(--primary); box-shadow: 0 0 10px rgba(37, 99, 235, 0.4); }
+    .toggle-btn.active .toggle-slider { transform: translateX(22px); }
+    .toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Sensor Pills */
+    .sensor-readings { display: flex; gap: 6px; }
+    .sensor-pill { background: #172136; border: 1px solid #23314f; border-radius: 6px; padding: 4px 8px; display: flex; align-items: baseline; gap: 4px; }
+    .pill-label { font-size: 9px; font-weight: 700; color: var(--text-muted); }
+    .pill-val { font-size: 13px; font-weight: 700; color: #60a5fa; }
+    .pill-unit { font-size: 10px; color: var(--text-muted); }
+
+    /* Tank Bar */
+    .tank-header { display: flex; justify-content: space-between; align-items: center; width: 100%; }
+    .tank-bar-container { width: 100%; height: 8px; background: #172136; border-radius: 4px; overflow: hidden; border: 1px solid #23314f; }
+    .tank-bar-fill { height: 100%; background: linear-gradient(90deg, #0284c7, #38bdf8); border-radius: 4px; transition: width 0.4s ease; }
+
     /* Alert Banner */
     .alert-banner { background: #451a03; border: 1px solid #78350f; color: #fde68a; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 
@@ -937,23 +956,33 @@ inline void setupWebEndpoints() {
             const slotName = slot.name || `Slot ${slot.slot}`;
             if (slot.type === 1) { // Relay
               const isRelayOn = (state.relays && state.relays[slot.slot] === 1);
-              const btnClass = isRelayOn ? 'btn' : 'btn btn-off';
               const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
               html += `<div class="slot-row">
-                <span>${slotName}</span>
-                <button class="${btnClass} btn-sm" ${canControl ? '' : 'disabled'} onclick="toggleRelay('${node.id}', ${slot.slot}, ${isRelayOn})">${isRelayOn ? 'ON' : 'OFF'}</button>
+                <span style="font-weight:500;">${slotName}</span>
+                <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleRelay('${node.id}', ${slot.slot}, ${isRelayOn})">
+                  <span class="toggle-slider"></span>
+                </button>
               </div>`;
             } else if (slot.type === 6 || slot.type === 7) { // DHT
               html += `<div class="slot-row">
-                <span>${slotName}</span>
-                <span class="sensor-badge">${state.temp.toFixed(1)} °C | ${state.hum.toFixed(1)} %</span>
+                <span style="font-weight:500;">${slotName}</span>
+                <div class="sensor-readings">
+                  <div class="sensor-pill"><span class="pill-label">TEMP</span><span class="pill-val">${state.temp.toFixed(1)}</span><span class="pill-unit">°C</span></div>
+                  <div class="sensor-pill"><span class="pill-label">HUM</span><span class="pill-val">${state.hum.toFixed(0)}</span><span class="pill-unit">%</span></div>
+                </div>
               </div>`;
             } else if (slot.type === 4 || slot.type === 5) { // Ultrasonic
-              const dist = state.dist >= 0 ? `${state.dist} cm` : '--';
-              html += `<div class="slot-row">
-                <span>${slotName}</span>
-                <span class="sensor-badge">${dist}</span>
-              </div>`;
+              if (slot.type === 4) {
+                const distText = state.dist >= 0 ? `${state.dist} cm` : '--';
+                const pct = state.dist >= 0 ? Math.max(0, Math.min(100, Math.round(((200 - state.dist) / 200) * 100))) : 0;
+                html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
+                  <div class="tank-header">
+                    <span style="font-weight:500;">${slotName}</span>
+                    <span style="font-size:12px; font-weight:600; color:#38bdf8;">${distText}</span>
+                  </div>
+                  <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
+                </div>`;
+              }
             }
           });
         } else {
@@ -966,12 +995,17 @@ inline void setupWebEndpoints() {
 
     async function toggleRelay(nodeId, slot, curState) {
       const val = curState ? 0 : 1;
+      if (!liveStates[nodeId]) liveStates[nodeId] = { relays: [] };
+      if (!liveStates[nodeId].relays) liveStates[nodeId].relays = [];
+      liveStates[nodeId].relays[slot] = val;
+      renderNodes();
+
       await fetch('/api/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ target: nodeId, slot: slot, val: val })
       });
-      refreshData();
+      setTimeout(refreshData, 300);
     }
 
     function renderPending(pending) {

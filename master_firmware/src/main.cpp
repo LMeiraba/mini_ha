@@ -75,20 +75,27 @@ void loadSystemSecurity() {
     DynamicJsonDocument doc(512);
     deserializeJson(doc, f);
     f.close();
+    if (doc.containsKey("ap_ssid")) sysSecurity.apSsid = doc["ap_ssid"].as<String>();
+    if (doc.containsKey("ap_pass")) sysSecurity.apPass = doc["ap_pass"].as<String>();
     if (doc.containsKey("sta_ssid")) sysSecurity.staSsid = doc["sta_ssid"].as<String>();
     if (doc.containsKey("sta_pass")) sysSecurity.staPass = doc["sta_pass"].as<String>();
     if (doc.containsKey("sta_enabled")) sysSecurity.staEnabled = doc["sta_enabled"].as<bool>();
     if (doc.containsKey("admin_user")) sysSecurity.adminUser = doc["admin_user"].as<String>();
     if (doc.containsKey("admin_pass")) sysSecurity.adminPass = doc["admin_pass"].as<String>();
+    if (doc.containsKey("member_user")) sysSecurity.memberUser = doc["member_user"].as<String>();
+    if (doc.containsKey("member_pass")) sysSecurity.memberPass = doc["member_pass"].as<String>();
     if (doc.containsKey("guest_user")) sysSecurity.guestUser = doc["guest_user"].as<String>();
     if (doc.containsKey("guest_pass")) sysSecurity.guestPass = doc["guest_pass"].as<String>();
   }
+  if (sysSecurity.apSsid.length() == 0) sysSecurity.apSsid = "Mini-HA-Master";
+  if (sysSecurity.apPass.length() < 8) sysSecurity.apPass = "12345678";
 }
 
 // =========================================================================
-// SUPLA INTERFACE & HISTORY HACK
+// SUPLA INTERFACE & OPTIONAL CLOUD BRIDGE
 // =========================================================================
-Supla::ESPWifi suplaWifi(WIFI_SSID, WIFI_PASSWORD);
+Supla::ESPWifi *suplaWifi = nullptr;
+bool suplaActive = false;
 
 Supla::Control::Relay *pumpRelay = nullptr;
 Supla::Sensor::GeneralPurposeMeasurement *pumpHistoryGpm = nullptr;
@@ -211,33 +218,44 @@ void setup() {
   initLittleFSStorage();
   loadSystemSecurity();
 
-  // Network Provisioning & Auto-Fallback Strategy:
-  // If home Wi-Fi credentials exist, try connecting as STA for 10 seconds.
-  // If it fails or is not configured, fall back to its own standalone SoftAP!
+  // Network Provisioning & Standalone SoftAP Setup:
+  // If home Wi-Fi credentials exist, try connecting as STA for 8 seconds.
   bool connectedSTA = false;
   if (sysSecurity.staEnabled && sysSecurity.staSsid.length() > 0) {
     Serial.printf("[WIFI] Connecting to Home Wi-Fi: %s...\n", sysSecurity.staSsid.c_str());
-    WiFi.mode(WIFI_STA);
+    WiFi.mode(WIFI_AP_STA);
     WiFi.begin(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
 
     unsigned long startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
       delay(250);
       Serial.print(".");
     }
 
     if (WiFi.status() == WL_CONNECTED) {
       connectedSTA = true;
-      Serial.printf("\n[WIFI] Connected to Home Network! IP: %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("\n[WIFI] Connected to Home Network! Local STA IP: %s\n", WiFi.localIP().toString().c_str());
     } else {
-      Serial.println("\n[WIFI] Failed to connect to home network! Falling back to SoftAP...");
+      Serial.println("\n[WIFI] Could not connect to Home Wi-Fi. Operating in pure standalone SoftAP mode.");
+      WiFi.disconnect(true, false);
+      WiFi.mode(WIFI_AP);
     }
+  } else {
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_AP);
   }
 
-  if (!connectedSTA) {
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(sysSecurity.apSsid.c_str(), sysSecurity.apPass.c_str());
-    Serial.printf("[AP] Standalone Setup Web Dashboard live at: http://%s\n", WiFi.softAPIP().toString().c_str());
+  // Always broadcast SoftAP for isolated mesh slaves and direct local web dashboard access
+  IPAddress apIP(192, 168, 4, 1);
+  IPAddress apGW(192, 168, 4, 1);
+  IPAddress apMask(255, 255, 255, 0);
+  WiFi.softAPConfig(apIP, apGW, apMask);
+  bool apStarted = WiFi.softAP(sysSecurity.apSsid.c_str(), sysSecurity.apPass.c_str());
+  if (apStarted) {
+    Serial.printf("[AP] Isolated Star-Mesh SoftAP '%s' active at http://%s\n", 
+                  sysSecurity.apSsid.c_str(), WiFi.softAPIP().toString().c_str());
+  } else {
+    Serial.printf("[AP] ERROR: Failed to start SoftAP '%s'!\n", sysSecurity.apSsid.c_str());
   }
 
   // Setup Web Endpoints with Digest Authentication
@@ -248,12 +266,22 @@ void setup() {
   meshServer.begin();
   Serial.printf("[MESH] Wireless Star-Mesh TCP Server live on port %d\n", DEFAULT_MESH_PORT);
 
-  // Initialize Supla Cloud Client
-  pumpRelay = new Supla::Control::Relay(LOCAL_PUMP_PIN, true);
-  pumpHistoryGpm = new Supla::Sensor::GeneralPurposeMeasurement();
-  roofLevelGpm = new Supla::Sensor::GeneralPurposeMeasurement();
-  roofWeather = new Supla::Sensor::VirtualThermHygroMeter();
-  SuplaDevice.begin();
+  // Initialize Supla Cloud Client (Optional Bridge: only if STA is connected and real credentials exist)
+  bool hasSuplaConfig = (connectedSTA &&
+                         strcmp(SUPLA_SERVER, "svrX.supla.org") != 0 && 
+                         strcmp(SUPLA_EMAIL, "your_email@example.com") != 0);
+  if (hasSuplaConfig) {
+    Serial.println("[SUPLA] Real Supla Cloud credentials detected. Initializing bridge...");
+    suplaWifi = new Supla::ESPWifi(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
+    pumpRelay = new Supla::Control::Relay(LOCAL_PUMP_PIN, true);
+    pumpHistoryGpm = new Supla::Sensor::GeneralPurposeMeasurement();
+    roofLevelGpm = new Supla::Sensor::GeneralPurposeMeasurement();
+    roofWeather = new Supla::Sensor::VirtualThermHygroMeter();
+    SuplaDevice.begin();
+    suplaActive = true;
+  } else {
+    Serial.println("[SUPLA] Offline Mode: Supla Cloud dormant (Local Star-Mesh & Web Dashboard Active).");
+  }
 
   Serial.println("[MASTER] Supervisor initialization complete.");
 }
@@ -261,7 +289,9 @@ void setup() {
 void loop() {
   // 1. Maintain Web Server & Supla Cloud
   webServer.handleClient();
-  SuplaDevice.iterate();
+  if (suplaActive) {
+    SuplaDevice.iterate();
+  }
 
   // 2. Read incoming packets from isolated RS-422 bus
   while (SerialBus.available()) {

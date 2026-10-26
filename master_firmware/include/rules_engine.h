@@ -2,27 +2,42 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include "node_protocol.h"
 #include "storage_manager.h"
 
 // =========================================================================
-// DECLARATIVE RULE AUTOMATION ENGINE
+// GENERIC DYNAMIC RULES & TELEMETRY ENGINE
 // =========================================================================
 // Runs 100% offline on ESP32 silicon.
-// Evaluates JSON condition-action rules without any hardcoded logic!
+// Evaluates JSON condition-action rules between any registered nodes.
 // =========================================================================
 
-struct MasterTelemetryCache {
-  int rooftopLevel = -1;
-  float rooftopTemp = 0.0;
-  float rooftopHum = 0.0;
-  int groundLevel = 100;
-  bool pumpState = false;
-  unsigned long pumpStartTime = 0;
-  unsigned long lastRooftopHeartbeat = 0;
+struct GenericNodeTelemetry {
+  String nodeId = "";
+  int distance = -1;
+  float temp = 0.0;
+  float hum = 0.0;
+  bool relayStates[MAX_GPIO_SLOTS] = {false};
+  unsigned long lastSeen = 0;
 };
 
-extern MasterTelemetryCache sysState;
-void executeAction(const String& target, const String& cmd, int val, const String& reason);
+#define MAX_TRACKED_NODES 16
+extern GenericNodeTelemetry nodeStates[MAX_TRACKED_NODES];
+extern uint8_t numTrackedNodes;
+
+inline GenericNodeTelemetry* getOrCreateNodeState(const String& nodeId) {
+  for (uint8_t i = 0; i < numTrackedNodes; i++) {
+    if (nodeStates[i].nodeId == nodeId) return &nodeStates[i];
+  }
+  if (numTrackedNodes < MAX_TRACKED_NODES) {
+    nodeStates[numTrackedNodes].nodeId = nodeId;
+    nodeStates[numTrackedNodes].lastSeen = millis();
+    return &nodeStates[numTrackedNodes++];
+  }
+  return nullptr;
+}
+
+void executeAction(const String& targetNode, int slot, int state, const String& reason);
 
 inline void evaluateDynamicRules() {
   if (!LittleFS.exists(RULES_CONFIG_PATH)) return;
@@ -47,14 +62,19 @@ inline void evaluateDynamicRules() {
       String op = cond["op"].as<String>();
       float targetVal = cond["val"].as<float>();
 
+      GenericNodeTelemetry* ns = getOrCreateNodeState(node);
+      if (!ns) {
+        allConditionsMet = false;
+        break;
+      }
+
       float currentVal = 0;
-      if (node == "LOCAL") {
-        if (key == "GROUND_LVL") currentVal = sysState.groundLevel;
-        else if (key == "PUMP_STATE") currentVal = sysState.pumpState ? 1 : 0;
-      } else if (node == "N01") {
-        if (key == "LVL") currentVal = sysState.rooftopLevel;
-        else if (key == "TMP") currentVal = sysState.rooftopTemp;
-        else if (key == "HUM") currentVal = sysState.rooftopHum;
+      if (key == "LVL" || key == "DIST") currentVal = ns->distance;
+      else if (key == "TMP") currentVal = ns->temp;
+      else if (key == "HUM") currentVal = ns->hum;
+      else if (key.startsWith("SLOT_")) {
+        int s = key.substring(5).toInt();
+        if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->relayStates[s] ? 1 : 0;
       }
 
       // Check condition
@@ -75,19 +95,11 @@ inline void evaluateDynamicRules() {
       JsonArray actions = rule["actions"].as<JsonArray>();
       for (JsonObject act : actions) {
         String target = act["target"].as<String>();
-        String cmd = act["cmd"].as<String>();
-        int val = act["val"].as<int>();
+        int slot = act.containsKey("slot") ? act["slot"].as<int>() : 0;
+        int val = act.containsKey("val") ? act["val"].as<int>() : 1;
         String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
-        executeAction(target, cmd, val, reason);
+        executeAction(target, slot, val, reason);
       }
     }
-  }
-
-  // Silicon Failsafes (Hard limits)
-  if (sysState.pumpState && (millis() - sysState.pumpStartTime > 30 * 60 * 1000UL)) {
-    executeAction("LOCAL", "SET_PUMP", 0, "FAILSAFE: Max 30 min run time exceeded");
-  }
-  if (sysState.pumpState && millis() > 30000 && (millis() - sysState.lastRooftopHeartbeat > 15000)) {
-    executeAction("LOCAL", "SET_PUMP", 0, "FAILSAFE: Lost connection to Rooftop Node");
   }
 }

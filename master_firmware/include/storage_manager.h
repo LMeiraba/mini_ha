@@ -36,52 +36,12 @@ inline bool initLittleFSStorage() {
     LittleFS.mkdir("/config");
   }
 
-  // Self-healing: If rules.json does not exist, initialize defaults
+  // Self-healing: If rules.json does not exist, initialize empty registry
   if (!LittleFS.exists(RULES_CONFIG_PATH)) {
     Serial.println("[STORAGE] Auto-creating default /config/rules.json...");
     File f = LittleFS.open(RULES_CONFIG_PATH, "w");
     if (f) {
-      f.print(R"({
-  "rules": [
-    {
-      "id": "RULE_AUTOFILL_START",
-      "name": "Rooftop Tank Auto-Fill Start",
-      "enabled": true,
-      "conditions": [
-        { "node": "N01", "key": "LVL", "op": ">=", "val": 140 },
-        { "node": "LOCAL", "key": "GROUND_LVL", "op": "<=", "val": 150 },
-        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 0 }
-      ],
-      "actions": [
-        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 1, "reason": "Auto-Fill Triggered" }
-      ]
-    },
-    {
-      "id": "RULE_AUTOFILL_STOP",
-      "name": "Rooftop Tank Full Shutoff",
-      "enabled": true,
-      "conditions": [
-        { "node": "N01", "key": "LVL", "op": "<=", "val": 25, "samples": 3 },
-        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 1 }
-      ],
-      "actions": [
-        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 0, "reason": "Tank Full Shutoff" }
-      ]
-    },
-    {
-      "id": "RULE_SAFETY_DRYRUN",
-      "name": "Ground Tank Dry Run Lockout",
-      "enabled": true,
-      "conditions": [
-        { "node": "LOCAL", "key": "GROUND_LVL", "op": ">", "val": 150 },
-        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 1 }
-      ],
-      "actions": [
-        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 0, "reason": "FAILSAFE: Ground Tank Empty!" }
-      ]
-    }
-  ]
-})");
+      f.print(R"({"rules":[]})");
       f.close();
     }
   }
@@ -109,8 +69,15 @@ inline bool initLittleFSStorage() {
   "sta_enabled": false,
   "admin_user": "admin",
   "admin_pass": "admin123",
+  "member_user": "member",
+  "member_pass": "member123",
   "guest_user": "user",
-  "guest_pass": "user123"
+  "guest_pass": "user123",
+  "supla_enabled": false,
+  "supla_server": "",
+  "supla_email": "",
+  "supla_guid": "",
+  "supla_authkey": ""
 })");
       f.close();
     }

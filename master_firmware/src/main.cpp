@@ -4,36 +4,25 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <SuplaDevice.h>
-#include <supla/control/relay.h>
-#include <supla/control/virtual_relay.h>
-#include <supla/sensor/general_purpose_measurement.h>
-#include <supla/sensor/virtual_therm_hygro_meter.h>
 #include <supla/network/esp_wifi.h>
 
 #include "node_protocol.h"
-#include "supla_config.h"
 #include "storage_manager.h"
 #include "rules_engine.h"
 #include "web_dashboard.h"
 
 // =========================================================================
-// MINI-HOMEASSISTANT MASTER SUPERVISOR (ESP32-C3 & ESP32-DevKit)
+// MINI-HOMEASSISTANT GENERIC MASTER SUPERVISOR (ESP32-C3 & ESP32-DevKit)
 // =========================================================================
 
-// Silicon Hardware Pin Mapping
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
   #define MASTER_CHIP_NAME     "ESP32-C3"
-  #define LOCAL_PUMP_PIN       8
-  #define LOCAL_MANUAL_BTN     9
   #define S1_UART_RX_PIN       4
   #define S1_UART_TX_PIN       5
   #define SERIAL_BUS_UART_NUM  1
 #else
   // Classic ESP32 Dev Board (Dual-Core Xtensa ESP32-WROOM-32)
-  // Safe GPIOs avoiding SPI Flash (6-11) and Boot Strapping pins (0, 2, 12, 15)
   #define MASTER_CHIP_NAME     "ESP32-DevKit"
-  #define LOCAL_PUMP_PIN       18   // Dedicated relay output
-  #define LOCAL_MANUAL_BTN     19   // Dedicated manual button (pullup)
   #define S1_UART_RX_PIN       16   // Default Hardware RX2 on ESP32
   #define S1_UART_TX_PIN       17   // Default Hardware TX2 on ESP32
   #define SERIAL_BUS_UART_NUM  2
@@ -58,10 +47,12 @@ void broadcastBusPacket(const String& pkt) {
   }
 }
 
-// Global State & Storage instances
+// Global State & Telemetry Storage
 PendingNode pendingNodes[MAX_PENDING_NODES];
 uint8_t numPendingNodes = 0;
-MasterTelemetryCache sysState;
+
+GenericNodeTelemetry nodeStates[MAX_TRACKED_NODES];
+uint8_t numTrackedNodes = 0;
 
 String busRxBuf = "";
 unsigned long lastRulePoll = 0;
@@ -72,7 +63,7 @@ SystemSecurityConfig sysSecurity;
 void loadSystemSecurity() {
   File f = LittleFS.open(SYSTEM_CONFIG_PATH, "r");
   if (f) {
-    DynamicJsonDocument doc(512);
+    DynamicJsonDocument doc(1024);
     deserializeJson(doc, f);
     f.close();
     if (doc.containsKey("ap_ssid")) sysSecurity.apSsid = doc["ap_ssid"].as<String>();
@@ -86,79 +77,89 @@ void loadSystemSecurity() {
     if (doc.containsKey("member_pass")) sysSecurity.memberPass = doc["member_pass"].as<String>();
     if (doc.containsKey("guest_user")) sysSecurity.guestUser = doc["guest_user"].as<String>();
     if (doc.containsKey("guest_pass")) sysSecurity.guestPass = doc["guest_pass"].as<String>();
+
+    if (doc.containsKey("supla_enabled")) sysSecurity.suplaEnabled = doc["supla_enabled"].as<bool>();
+    if (doc.containsKey("supla_server")) sysSecurity.suplaServer = doc["supla_server"].as<String>();
+    if (doc.containsKey("supla_email")) sysSecurity.suplaEmail = doc["supla_email"].as<String>();
+    if (doc.containsKey("supla_guid")) sysSecurity.suplaGuid = doc["supla_guid"].as<String>();
+    if (doc.containsKey("supla_authkey")) sysSecurity.suplaAuthKey = doc["supla_authkey"].as<String>();
   }
   if (sysSecurity.apSsid.length() == 0) sysSecurity.apSsid = "Mini-HA-Master";
   if (sysSecurity.apPass.length() < 8) sysSecurity.apPass = "12345678";
 }
 
 // =========================================================================
-// SUPLA INTERFACE & OPTIONAL CLOUD BRIDGE
+// SUPLA CLOUD BRIDGE (DECOUPLED & DYNAMIC)
 // =========================================================================
 Supla::ESPWifi *suplaWifi = nullptr;
 bool suplaActive = false;
 
-Supla::Control::Relay *pumpRelay = nullptr;
-Supla::Sensor::GeneralPurposeMeasurement *pumpHistoryGpm = nullptr;
-
-Supla::Sensor::GeneralPurposeMeasurement *roofLevelGpm = nullptr;
-Supla::Sensor::VirtualThermHygroMeter *roofWeather = nullptr;
-
-void executeAction(const String& target, const String& cmd, int val, const String& reason) {
-  if (target == "LOCAL" && cmd == "SET_PUMP") {
-    bool state = (val == 1);
-    if (state == sysState.pumpState) return;
-
-    sysState.pumpState = state;
-    digitalWrite(LOCAL_PUMP_PIN, state ? HIGH : LOW);
-    if (state) sysState.pumpStartTime = millis();
-
-    if (pumpRelay) {
-      if (state) pumpRelay->turnOn(); else pumpRelay->turnOff();
-    }
-    if (pumpHistoryGpm) pumpHistoryGpm->setValue(state ? 1.0 : 0.0);
-
-    Serial.printf("[ACTION] Pump turned %s | Reason: %s\n", state ? "ON" : "OFF", reason.c_str());
-  } else if (target.startsWith("N")) {
-    // Send command to remote slave node over bus
-    broadcastBusPacket(buildPacket(target, "M", "SET", "SLOT:" + String(val) + ":STATE:1"));
+inline bool hexStringToBytes(const String& hex, char* bytes, size_t len) {
+  if (hex.length() < len * 2) return false;
+  for (size_t i = 0; i < len; i++) {
+    char bStr[3] = { hex[i * 2], hex[i * 2 + 1], '\0' };
+    bytes[i] = (char)strtol(bStr, NULL, 16);
   }
+  return true;
 }
 
-void triggerProvisionNode(const String& mac, const String& newId) {
-  Serial.printf("[PROV] Dispatching BIND packet for MAC=%s -> ID=%s\n", mac.c_str(), newId.c_str());
+// Action Dispatcher for Dynamic Rules Engine & Web UI
+void executeAction(const String& targetNode, int slot, int state, const String& reason) {
+  Serial.printf("[ACTION] Target %s Slot %d -> %d | Reason: %s\n", targetNode.c_str(), slot, state, reason.c_str());
+  broadcastBusPacket(buildPacket(targetNode, "M", "SET", "SLOT:" + String(slot) + ":STATE:" + String(state)));
+}
+
+// Bind & Provision Discovered Slaves
+void triggerProvisionNode(const String& mac, const String& newId, const String& name) {
+  Serial.printf("[PROV] Dispatching BIND packet: MAC=%s -> ID=%s (%s)\n", mac.c_str(), newId.c_str(), name.c_str());
   broadcastBusPacket(buildPacket("NEW", "M", "BIND", "MAC:" + mac + ":SET_ID:" + newId));
 
-  // If newId is in nodes.json, stream its configured slots
   File file = LittleFS.open(NODES_CONFIG_PATH, "r");
-  if (!file) return;
-
   DynamicJsonDocument doc(4096);
-  deserializeJson(doc, file);
-  file.close();
+  if (file) {
+    deserializeJson(doc, file);
+    file.close();
+  }
 
-  for (JsonObject node : doc["nodes"].as<JsonArray>()) {
+  JsonArray nodes = doc["nodes"].as<JsonArray>();
+  bool found = false;
+  for (JsonObject node : nodes) {
     if (node["id"].as<String>() == newId) {
-      for (JsonObject slot : node["slots"].as<JsonArray>()) {
-        delay(40);
-        String p = "SLOT:" + String(slot["slot"].as<int>()) + 
-                   ":GPIO:" + String(slot["gpio"].as<int>()) + 
-                   ":TYPE:" + String(slot["type"].as<int>()) + 
-                   ":INV:" + String(slot["activeLow"].as<int>());
-        broadcastBusPacket(buildPacket(newId, "M", "CFG", p));
-      }
-      for (JsonObject link : node["links"].as<JsonArray>()) {
-        delay(40);
-        String p = "LINK:" + String(link["idx"].as<int>()) + 
-                   ":TRIG:" + String(link["trig"].as<int>()) + 
-                   ":TGT:" + String(link["tgt"].as<int>()) + 
-                   ":ACT:" + String(link["act"].as<int>());
-        broadcastBusPacket(buildPacket(newId, "M", "CFG", p));
+      found = true;
+      node["mac"] = mac;
+      node["name"] = name;
+      if (node.containsKey("slots")) {
+        for (JsonObject slot : node["slots"].as<JsonArray>()) {
+          delay(40);
+          String p = "SLOT:" + String(slot["slot"].as<int>()) + 
+                     ":GPIO:" + String(slot["gpio"].as<int>()) + 
+                     ":TYPE:" + String(slot["type"].as<int>()) + 
+                     ":INV:" + String(slot["activeLow"].as<int>());
+          broadcastBusPacket(buildPacket(newId, "M", "CFG", p));
+        }
       }
       break;
     }
   }
+
+  if (!found) {
+    JsonObject n = nodes.createNestedObject();
+    n["id"] = newId;
+    n["name"] = name;
+    n["mac"] = mac;
+    n.createNestedArray("slots");
+    n.createNestedArray("links");
+    n.createNestedArray("schedules");
+  }
+
+  File outF = LittleFS.open(NODES_CONFIG_PATH, "w");
+  if (outF) {
+    serializeJson(doc, outF);
+    outF.close();
+  }
 }
 
+// Bus Packet Handler (RS-422 and Wireless Mesh)
 void handleIncomingBusPacket(const ParsedPacket& pkt) {
   if (pkt.to != "M") return;
 
@@ -179,22 +180,50 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
   }
   // 2. Periodic Telemetry Reply
   else if (pkt.verb == "REP") {
-    if (pkt.from == "N01") {
-      int lvlIdx = pkt.payload.indexOf("LVL:") + 4;
+    GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
+    if (ns) {
+      ns->lastSeen = millis();
+      int lvlIdx = pkt.payload.indexOf("LVL:");
       int tmpIdx = pkt.payload.indexOf(":TMP:");
       int humIdx = pkt.payload.indexOf(":HUM:");
       int outIdx = pkt.payload.indexOf(":OUT:");
 
+      if (lvlIdx != -1 && tmpIdx != -1) {
+        ns->distance = pkt.payload.substring(lvlIdx + 4, tmpIdx).toInt();
+      }
       if (tmpIdx != -1 && humIdx != -1) {
-        sysState.rooftopLevel = pkt.payload.substring(lvlIdx, tmpIdx).toInt();
-        sysState.rooftopTemp = pkt.payload.substring(tmpIdx + 5, humIdx).toFloat();
-        sysState.rooftopHum = pkt.payload.substring(humIdx + 5, outIdx).toFloat();
-        sysState.lastRooftopHeartbeat = millis();
-
-        if (roofLevelGpm) roofLevelGpm->setValue(sysState.rooftopLevel);
-        if (roofWeather) {
-          roofWeather->setTemp(sysState.rooftopTemp);
-          roofWeather->setHumi(sysState.rooftopHum);
+        ns->temp = pkt.payload.substring(tmpIdx + 5, humIdx).toFloat();
+      }
+      if (humIdx != -1 && outIdx != -1) {
+        ns->hum = pkt.payload.substring(humIdx + 5, outIdx).toFloat();
+      }
+      if (outIdx != -1) {
+        String outs = pkt.payload.substring(outIdx + 5);
+        int slotIdx = 0;
+        int lastColon = -1;
+        while (slotIdx < MAX_GPIO_SLOTS) {
+          int nextColon = outs.indexOf(':', lastColon + 1);
+          String valStr = (nextColon == -1) ? outs.substring(lastColon + 1) : outs.substring(lastColon + 1, nextColon);
+          ns->relayStates[slotIdx] = (valStr.toInt() == 1);
+          slotIdx++;
+          if (nextColon == -1) break;
+          lastColon = nextColon;
+        }
+      }
+    }
+  }
+  // 3. Instant Slot State Event
+  else if (pkt.verb == "EVT") {
+    GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
+    if (ns) {
+      ns->lastSeen = millis();
+      int sIdx = pkt.payload.indexOf("SLOT:");
+      int stIdx = pkt.payload.indexOf(":STATE:");
+      if (sIdx != -1 && stIdx != -1) {
+        int slot = pkt.payload.substring(sIdx + 5, stIdx).toInt();
+        int state = pkt.payload.substring(stIdx + 7).toInt();
+        if (slot >= 0 && slot < MAX_GPIO_SLOTS) {
+          ns->relayStates[slot] = (state == 1);
         }
       }
     }
@@ -206,10 +235,6 @@ void setup() {
   delay(1000);
   Serial.printf("\n[MASTER] Booting Mini-HomeAssistant Supervisor on %s...\n", MASTER_CHIP_NAME);
   Serial.printf("[MASTER] RS-422 Bus: UART%d (RX: GPIO%d, TX: GPIO%d)\n", SERIAL_BUS_UART_NUM, S1_UART_RX_PIN, S1_UART_TX_PIN);
-
-  pinMode(LOCAL_PUMP_PIN, OUTPUT);
-  pinMode(LOCAL_MANUAL_BTN, INPUT_PULLUP);
-  digitalWrite(LOCAL_PUMP_PIN, LOW);
 
   // Initialize Isolated RS-422 Hardware Serial Bus
   SerialBus.begin(115200, SERIAL_8N1, S1_UART_RX_PIN, S1_UART_TX_PIN);
@@ -266,19 +291,18 @@ void setup() {
   meshServer.begin();
   Serial.printf("[MESH] Wireless Star-Mesh TCP Server live on port %d\n", DEFAULT_MESH_PORT);
 
-  // Initialize Supla Cloud Client (Optional Bridge: only if STA is connected and real credentials exist)
-  bool hasSuplaConfig = (connectedSTA &&
-                         strcmp(SUPLA_SERVER, "svrX.supla.org") != 0 && 
-                         strcmp(SUPLA_EMAIL, "your_email@example.com") != 0 &&
-                         (SUPLA_GUID[0] != 0x00 || SUPLA_GUID[1] != 0x00));
-  if (hasSuplaConfig) {
-    Serial.println("[SUPLA] Real Supla Cloud credentials detected. Initializing bridge...");
+  // Initialize Supla Cloud Client (Optional Bridge configured via Web Dashboard)
+  char suplaGuidBytes[16] = {0};
+  char suplaAuthBytes[16] = {0};
+  bool validKeys = hexStringToBytes(sysSecurity.suplaGuid, suplaGuidBytes, 16) &&
+                   hexStringToBytes(sysSecurity.suplaAuthKey, suplaAuthBytes, 16);
+
+  if (sysSecurity.suplaEnabled && connectedSTA && 
+      sysSecurity.suplaServer.length() > 0 && sysSecurity.suplaEmail.length() > 0 && validKeys) {
+    Serial.printf("[SUPLA] Connecting to Supla Cloud (%s) for %s...\n", 
+                  sysSecurity.suplaServer.c_str(), sysSecurity.suplaEmail.c_str());
     suplaWifi = new Supla::ESPWifi(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
-    pumpRelay = new Supla::Control::Relay(LOCAL_PUMP_PIN, true);
-    pumpHistoryGpm = new Supla::Sensor::GeneralPurposeMeasurement();
-    roofLevelGpm = new Supla::Sensor::GeneralPurposeMeasurement();
-    roofWeather = new Supla::Sensor::VirtualThermHygroMeter();
-    SuplaDevice.begin(SUPLA_GUID, SUPLA_SERVER, SUPLA_EMAIL, SUPLA_AUTHKEY);
+    SuplaDevice.begin(suplaGuidBytes, sysSecurity.suplaServer.c_str(), sysSecurity.suplaEmail.c_str(), suplaAuthBytes);
     suplaActive = true;
   } else {
     Serial.println("[SUPLA] Offline Mode: Supla Cloud dormant (Local Star-Mesh & Web Dashboard Active).");
@@ -358,9 +382,9 @@ void loop() {
     evaluateDynamicRules();
   }
 
-  // 6. Poll active slaves every 2 seconds
-  if (millis() - lastBusPoll > 2000) {
+  // 6. Broadcast Poll to active slaves every 3 seconds
+  if (millis() - lastBusPoll > 3000) {
     lastBusPoll = millis();
-    broadcastBusPacket(buildPacket("N01", "M", "REQ", "POLL"));
+    broadcastBusPacket(buildPacket("ALL", "M", "REQ", "POLL"));
   }
 }

@@ -63,7 +63,7 @@ SystemSecurityConfig sysSecurity;
 void loadSystemSecurity() {
   File f = LittleFS.open(SYSTEM_CONFIG_PATH, "r");
   if (f) {
-    DynamicJsonDocument doc(1024);
+    DynamicJsonDocument doc(512);
     deserializeJson(doc, f);
     f.close();
     if (doc.containsKey("ap_ssid")) sysSecurity.apSsid = doc["ap_ssid"].as<String>();
@@ -71,18 +71,9 @@ void loadSystemSecurity() {
     if (doc.containsKey("sta_ssid")) sysSecurity.staSsid = doc["sta_ssid"].as<String>();
     if (doc.containsKey("sta_pass")) sysSecurity.staPass = doc["sta_pass"].as<String>();
     if (doc.containsKey("sta_enabled")) sysSecurity.staEnabled = doc["sta_enabled"].as<bool>();
-    if (doc.containsKey("admin_user")) sysSecurity.adminUser = doc["admin_user"].as<String>();
-    if (doc.containsKey("admin_pass")) sysSecurity.adminPass = doc["admin_pass"].as<String>();
-    if (doc.containsKey("member_user")) sysSecurity.memberUser = doc["member_user"].as<String>();
-    if (doc.containsKey("member_pass")) sysSecurity.memberPass = doc["member_pass"].as<String>();
-    if (doc.containsKey("guest_user")) sysSecurity.guestUser = doc["guest_user"].as<String>();
-    if (doc.containsKey("guest_pass")) sysSecurity.guestPass = doc["guest_pass"].as<String>();
-
     if (doc.containsKey("supla_enabled")) sysSecurity.suplaEnabled = doc["supla_enabled"].as<bool>();
     if (doc.containsKey("supla_server")) sysSecurity.suplaServer = doc["supla_server"].as<String>();
     if (doc.containsKey("supla_email")) sysSecurity.suplaEmail = doc["supla_email"].as<String>();
-    if (doc.containsKey("supla_guid")) sysSecurity.suplaGuid = doc["supla_guid"].as<String>();
-    if (doc.containsKey("supla_authkey")) sysSecurity.suplaAuthKey = doc["supla_authkey"].as<String>();
   }
   if (sysSecurity.apSsid.length() == 0) sysSecurity.apSsid = "Mini-HA-Master";
   if (sysSecurity.apPass.length() < 8) sysSecurity.apPass = "12345678";
@@ -93,15 +84,6 @@ void loadSystemSecurity() {
 // =========================================================================
 Supla::ESPWifi *suplaWifi = nullptr;
 bool suplaActive = false;
-
-inline bool hexStringToBytes(const String& hex, char* bytes, size_t len) {
-  if (hex.length() < len * 2) return false;
-  for (size_t i = 0; i < len; i++) {
-    char bStr[3] = { hex[i * 2], hex[i * 2 + 1], '\0' };
-    bytes[i] = (char)strtol(bStr, NULL, 16);
-  }
-  return true;
-}
 
 // Action Dispatcher for Dynamic Rules Engine & Web UI
 void executeAction(const String& targetNode, int slot, int state, const String& reason) {
@@ -283,7 +265,9 @@ void setup() {
     Serial.printf("[AP] ERROR: Failed to start SoftAP '%s'!\n", sysSecurity.apSsid.c_str());
   }
 
-  // Setup Web Endpoints with Digest Authentication
+  // Setup Web Endpoints & Collect Session Headers
+  const char* headerkeys[] = {"Cookie", "X-Auth-Token"};
+  webServer.collectHeaders(headerkeys, 2);
   setupWebEndpoints();
   webServer.begin();
 

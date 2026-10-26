@@ -11,6 +11,7 @@
 #define NODES_CONFIG_PATH  "/config/nodes.json"
 #define RULES_CONFIG_PATH  "/config/rules.json"
 #define SYSTEM_CONFIG_PATH "/config/system.json"
+#define USERS_CONFIG_PATH  "/config/users.json"
 
 struct PendingNode {
   String mac;
@@ -56,7 +57,7 @@ inline bool initLittleFSStorage() {
     }
   }
 
-  // Self-healing: If system.json does not exist, initialize default credentials
+  // Self-healing: If system.json does not exist, initialize default network/cloud settings
   if (!LittleFS.exists(SYSTEM_CONFIG_PATH)) {
     Serial.println("[STORAGE] Auto-creating default /config/system.json...");
     File f = LittleFS.open(SYSTEM_CONFIG_PATH, "w");
@@ -67,17 +68,25 @@ inline bool initLittleFSStorage() {
   "sta_ssid": "",
   "sta_pass": "",
   "sta_enabled": false,
-  "admin_user": "admin",
-  "admin_pass": "admin123",
-  "member_user": "member",
-  "member_pass": "member123",
-  "guest_user": "user",
-  "guest_pass": "user123",
   "supla_enabled": false,
   "supla_server": "",
-  "supla_email": "",
-  "supla_guid": "",
-  "supla_authkey": ""
+  "supla_email": ""
+})");
+      f.close();
+    }
+  }
+
+  // Self-healing: If users.json does not exist, initialize default user accounts
+  if (!LittleFS.exists(USERS_CONFIG_PATH)) {
+    Serial.println("[STORAGE] Auto-creating default /config/users.json...");
+    File f = LittleFS.open(USERS_CONFIG_PATH, "w");
+    if (f) {
+      f.print(R"({
+  "users": [
+    { "user": "admin", "pass": "admin123", "role": "admin" },
+    { "user": "member", "pass": "member123", "role": "member" },
+    { "user": "guest", "pass": "guest123", "role": "guest" }
+  ]
 })");
       f.close();
     }

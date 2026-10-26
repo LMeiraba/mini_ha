@@ -1,0 +1,41 @@
+{
+  "rules": [
+    {
+      "id": "RULE_AUTOFILL_START",
+      "name": "Rooftop Tank Auto-Fill Start",
+      "enabled": true,
+      "conditions": [
+        { "node": "N01", "key": "LVL", "op": ">=", "val": 140 },
+        { "node": "LOCAL", "key": "GROUND_LVL", "op": "<=", "val": 150 },
+        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 0 }
+      ],
+      "actions": [
+        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 1, "reason": "Auto-Fill Triggered" }
+      ]
+    },
+    {
+      "id": "RULE_AUTOFILL_STOP",
+      "name": "Rooftop Tank Full Shutoff",
+      "enabled": true,
+      "conditions": [
+        { "node": "N01", "key": "LVL", "op": "<=", "val": 25, "samples": 3 },
+        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 1 }
+      ],
+      "actions": [
+        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 0, "reason": "Tank Full Shutoff" }
+      ]
+    },
+    {
+      "id": "RULE_SAFETY_DRYRUN",
+      "name": "Ground Tank Dry Run Lockout",
+      "enabled": true,
+      "conditions": [
+        { "node": "LOCAL", "key": "GROUND_LVL", "op": ">", "val": 150 },
+        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 1 }
+      ],
+      "actions": [
+        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 0, "reason": "FAILSAFE: Ground Tank Empty!" }
+      ]
+    }
+  ]
+}

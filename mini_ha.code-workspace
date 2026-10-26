@@ -1,0 +1,24 @@
+{
+  "folders": [
+    {
+      "name": "Master Firmware (ESP32-C3)",
+      "path": "master_firmware"
+    },
+    {
+      "name": "Slave Firmware (ESP8266 & ESP32-C3)",
+      "path": "slave_firmware"
+    },
+    {
+      "name": "Common Protocol",
+      "path": "common"
+    }
+  ],
+  "settings": {
+    "platformio-ide.activateOnlyOnPlatformIOProject": false
+  },
+  "extensions": {
+    "recommendations": [
+      "platformio.platformio-ide"
+    ]
+  }
+}

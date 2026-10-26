@@ -1,0 +1,29 @@
+# PlatformIO build directories & dependencies
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
+
+# Compiled binaries
+*.elf
+*.bin
+*.hex
+*.o
+*.a
+*.d
+
+# VS Code user-generated IntelliSense cache
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+.vscode/.browse.c_cpp.db*
+
+# OS artifacts
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Secrets & Local Overrides
+*.local
+secrets.ini

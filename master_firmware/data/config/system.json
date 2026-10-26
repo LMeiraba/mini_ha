@@ -1,0 +1,11 @@
+{
+  "ap_ssid": "Mini-HA-Master",
+  "ap_pass": "12345678",
+  "sta_ssid": "",
+  "sta_pass": "",
+  "sta_enabled": false,
+  "admin_user": "admin",
+  "admin_pass": "admin123",
+  "guest_user": "user",
+  "guest_pass": "user123"
+}

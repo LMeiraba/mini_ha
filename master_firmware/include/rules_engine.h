@@ -25,6 +25,7 @@ extern MasterTelemetryCache sysState;
 void executeAction(const String& target, const String& cmd, int val, const String& reason);
 
 inline void evaluateDynamicRules() {
+  if (!LittleFS.exists(RULES_CONFIG_PATH)) return;
   File file = LittleFS.open(RULES_CONFIG_PATH, "r");
   if (!file) return;
 

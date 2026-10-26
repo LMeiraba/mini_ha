@@ -8,8 +8,9 @@
 // MASTER STORAGE & CONFIGURATION BROKER (LittleFS JSON Manager)
 // =========================================================================
 
-#define NODES_CONFIG_PATH "/config/nodes.json"
-#define RULES_CONFIG_PATH "/config/rules.json"
+#define NODES_CONFIG_PATH  "/config/nodes.json"
+#define RULES_CONFIG_PATH  "/config/rules.json"
+#define SYSTEM_CONFIG_PATH "/config/system.json"
 
 struct PendingNode {
   String mac;
@@ -29,6 +30,92 @@ inline bool initLittleFSStorage() {
     return false;
   }
   Serial.println("[STORAGE] LittleFS Mounted Successfully.");
+
+  // Self-healing: Ensure /config directory exists
+  if (!LittleFS.exists("/config")) {
+    LittleFS.mkdir("/config");
+  }
+
+  // Self-healing: If rules.json does not exist, initialize defaults
+  if (!LittleFS.exists(RULES_CONFIG_PATH)) {
+    Serial.println("[STORAGE] Auto-creating default /config/rules.json...");
+    File f = LittleFS.open(RULES_CONFIG_PATH, "w");
+    if (f) {
+      f.print(R"({
+  "rules": [
+    {
+      "id": "RULE_AUTOFILL_START",
+      "name": "Rooftop Tank Auto-Fill Start",
+      "enabled": true,
+      "conditions": [
+        { "node": "N01", "key": "LVL", "op": ">=", "val": 140 },
+        { "node": "LOCAL", "key": "GROUND_LVL", "op": "<=", "val": 150 },
+        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 0 }
+      ],
+      "actions": [
+        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 1, "reason": "Auto-Fill Triggered" }
+      ]
+    },
+    {
+      "id": "RULE_AUTOFILL_STOP",
+      "name": "Rooftop Tank Full Shutoff",
+      "enabled": true,
+      "conditions": [
+        { "node": "N01", "key": "LVL", "op": "<=", "val": 25, "samples": 3 },
+        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 1 }
+      ],
+      "actions": [
+        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 0, "reason": "Tank Full Shutoff" }
+      ]
+    },
+    {
+      "id": "RULE_SAFETY_DRYRUN",
+      "name": "Ground Tank Dry Run Lockout",
+      "enabled": true,
+      "conditions": [
+        { "node": "LOCAL", "key": "GROUND_LVL", "op": ">", "val": 150 },
+        { "node": "LOCAL", "key": "PUMP_STATE", "op": "==", "val": 1 }
+      ],
+      "actions": [
+        { "target": "LOCAL", "cmd": "SET_PUMP", "val": 0, "reason": "FAILSAFE: Ground Tank Empty!" }
+      ]
+    }
+  ]
+})");
+      f.close();
+    }
+  }
+
+  // Self-healing: If nodes.json does not exist, initialize empty registry
+  if (!LittleFS.exists(NODES_CONFIG_PATH)) {
+    Serial.println("[STORAGE] Auto-creating default /config/nodes.json...");
+    File f = LittleFS.open(NODES_CONFIG_PATH, "w");
+    if (f) {
+      f.print(R"({"nodes":[]})");
+      f.close();
+    }
+  }
+
+  // Self-healing: If system.json does not exist, initialize default credentials
+  if (!LittleFS.exists(SYSTEM_CONFIG_PATH)) {
+    Serial.println("[STORAGE] Auto-creating default /config/system.json...");
+    File f = LittleFS.open(SYSTEM_CONFIG_PATH, "w");
+    if (f) {
+      f.print(R"({
+  "ap_ssid": "Mini-HA-Master",
+  "ap_pass": "12345678",
+  "sta_ssid": "",
+  "sta_pass": "",
+  "sta_enabled": false,
+  "admin_user": "admin",
+  "admin_pass": "admin123",
+  "guest_user": "user",
+  "guest_pass": "user123"
+})");
+      f.close();
+    }
+  }
+
   return true;
 }
 

@@ -12,7 +12,9 @@
 extern WebServer webServer;
 void triggerProvisionNode(const String& mac, const String& newId);
 
-#define SYSTEM_CONFIG_PATH "/config/system.json"
+#ifndef SYSTEM_CONFIG_PATH
+  #define SYSTEM_CONFIG_PATH "/config/system.json"
+#endif
 
 struct SystemSecurityConfig {
   String apSsid = "Mini-HA-Master";

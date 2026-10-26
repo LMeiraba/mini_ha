@@ -269,7 +269,8 @@ void setup() {
   // Initialize Supla Cloud Client (Optional Bridge: only if STA is connected and real credentials exist)
   bool hasSuplaConfig = (connectedSTA &&
                          strcmp(SUPLA_SERVER, "svrX.supla.org") != 0 && 
-                         strcmp(SUPLA_EMAIL, "your_email@example.com") != 0);
+                         strcmp(SUPLA_EMAIL, "your_email@example.com") != 0 &&
+                         (SUPLA_GUID[0] != 0x00 || SUPLA_GUID[1] != 0x00));
   if (hasSuplaConfig) {
     Serial.println("[SUPLA] Real Supla Cloud credentials detected. Initializing bridge...");
     suplaWifi = new Supla::ESPWifi(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
@@ -277,7 +278,7 @@ void setup() {
     pumpHistoryGpm = new Supla::Sensor::GeneralPurposeMeasurement();
     roofLevelGpm = new Supla::Sensor::GeneralPurposeMeasurement();
     roofWeather = new Supla::Sensor::VirtualThermHygroMeter();
-    SuplaDevice.begin();
+    SuplaDevice.begin(SUPLA_GUID, SUPLA_SERVER, SUPLA_EMAIL, SUPLA_AUTHKEY);
     suplaActive = true;
   } else {
     Serial.println("[SUPLA] Offline Mode: Supla Cloud dormant (Local Star-Mesh & Web Dashboard Active).");

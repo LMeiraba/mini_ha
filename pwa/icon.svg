@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="110" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="94" fill="none" stroke="#334155" stroke-width="4"/>
+  <!-- Modern Smart Home Roof & Walls -->
+  <path d="M256 110 L100 240 L140 240 L140 390 C140 405 152 416 168 416 L344 416 C360 416 372 405 372 390 L372 240 L412 240 Z" fill="none" stroke="url(#accent)" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Connected Star-Mesh Nodes inside Home -->
+  <circle cx="256" cy="270" r="28" fill="#38bdf8"/>
+  <circle cx="196" cy="350" r="18" fill="#60a5fa"/>
+  <circle cx="316" cy="350" r="18" fill="#60a5fa"/>
+  <line x1="256" y1="270" x2="196" y2="350" stroke="#60a5fa" stroke-width="8" stroke-linecap="round"/>
+  <line x1="256" y1="270" x2="316" y2="350" stroke="#60a5fa" stroke-width="8" stroke-linecap="round"/>
+  <!-- Radio Waves emitting from Hub -->
+  <path d="M210 210 A 65 65 0 0 1 302 210" fill="none" stroke="#38bdf8" stroke-width="12" stroke-linecap="round"/>
+  <path d="M185 180 A 100 100 0 0 1 327 180" fill="none" stroke="#0ea5e9" stroke-width="10" stroke-linecap="round" opacity="0.7"/>
+</svg>

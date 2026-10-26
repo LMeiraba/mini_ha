@@ -3,8 +3,8 @@
 #include <WebServer.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include <SuplaDevice.h>
-#include <supla/network/esp_wifi.h>
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
 
 #include "node_protocol.h"
 #include "storage_manager.h"
@@ -71,24 +71,150 @@ void loadSystemSecurity() {
     if (doc.containsKey("sta_ssid")) sysSecurity.staSsid = doc["sta_ssid"].as<String>();
     if (doc.containsKey("sta_pass")) sysSecurity.staPass = doc["sta_pass"].as<String>();
     if (doc.containsKey("sta_enabled")) sysSecurity.staEnabled = doc["sta_enabled"].as<bool>();
-    if (doc.containsKey("supla_enabled")) sysSecurity.suplaEnabled = doc["supla_enabled"].as<bool>();
-    if (doc.containsKey("supla_server")) sysSecurity.suplaServer = doc["supla_server"].as<String>();
-    if (doc.containsKey("supla_email")) sysSecurity.suplaEmail = doc["supla_email"].as<String>();
+    if (doc.containsKey("mqtt_enabled")) sysSecurity.mqttEnabled = doc["mqtt_enabled"].as<bool>();
+    if (doc.containsKey("mqtt_broker")) sysSecurity.mqttBroker = doc["mqtt_broker"].as<String>();
+    if (doc.containsKey("mqtt_port")) sysSecurity.mqttPort = doc["mqtt_port"].as<uint16_t>();
+    if (doc.containsKey("mqtt_user")) sysSecurity.mqttUser = doc["mqtt_user"].as<String>();
+    if (doc.containsKey("mqtt_pass")) sysSecurity.mqttPass = doc["mqtt_pass"].as<String>();
+    if (doc.containsKey("mqtt_home_id")) sysSecurity.mqttHomeId = doc["mqtt_home_id"].as<String>();
   }
   if (sysSecurity.apSsid.length() == 0) sysSecurity.apSsid = "Mini-HA-Master";
   if (sysSecurity.apPass.length() < 8) sysSecurity.apPass = "12345678";
+  if (sysSecurity.mqttHomeId.length() == 0) sysSecurity.mqttHomeId = "home_1";
+  if (sysSecurity.mqttPort == 0) sysSecurity.mqttPort = 8883;
 }
 
 // =========================================================================
-// SUPLA CLOUD BRIDGE (DECOUPLED & DYNAMIC)
+// CLOUD MQTT BRIDGE (TLS / EMQX SERVERLESS / SECURE PWA BRIDGE)
 // =========================================================================
-Supla::ESPWifi *suplaWifi = nullptr;
-bool suplaActive = false;
+WiFiClientSecure secureClient;
+PubSubClient mqttClient(secureClient);
+unsigned long lastMqttConnectAttempt = 0;
+unsigned long lastMqttStatePublish = 0;
+bool mqttSchemaNeedsPublish = false;
 
 // Action Dispatcher for Dynamic Rules Engine & Web UI
 void executeAction(const String& targetNode, int slot, int state, const String& reason) {
   Serial.printf("[ACTION] Target %s Slot %d -> %d | Reason: %s\n", targetNode.c_str(), slot, state, reason.c_str());
   broadcastBusPacket(buildPacket(targetNode, "M", "SET", "SLOT:" + String(slot) + ":STATE:" + String(state)));
+}
+
+void publishMqttSchema() {
+  if (!mqttClient.connected()) return;
+  File file = LittleFS.open(NODES_CONFIG_PATH, "r");
+  if (!file) return;
+  DynamicJsonDocument doc(4096);
+  deserializeJson(doc, file);
+  file.close();
+
+  DynamicJsonDocument schemaDoc(4096);
+  schemaDoc["home"] = sysSecurity.mqttHomeId;
+  schemaDoc["master"] = MASTER_CHIP_NAME;
+  schemaDoc["nodes"] = doc["nodes"];
+
+  String out;
+  serializeJson(schemaDoc, out);
+  String topic = "miniha/" + sysSecurity.mqttHomeId + "/schema";
+  mqttClient.publish(topic.c_str(), out.c_str(), true); // Retained
+  Serial.printf("[MQTT] Published schema to %s (%d bytes)\n", topic.c_str(), out.length());
+}
+
+void publishMqttState() {
+  if (!mqttClient.connected()) return;
+  DynamicJsonDocument stateDoc(4096);
+  stateDoc["home"] = sysSecurity.mqttHomeId;
+  JsonObject nodesObj = stateDoc.createNestedObject("nodes");
+
+  for (uint8_t i = 0; i < numTrackedNodes; i++) {
+    JsonObject n = nodesObj.createNestedObject(nodeStates[i].nodeId);
+    bool online = (millis() - nodeStates[i].lastSeen < 10000);
+    n["online"] = online;
+    n["temp"] = nodeStates[i].temp;
+    n["hum"] = nodeStates[i].hum;
+    n["dist"] = nodeStates[i].distance;
+
+    JsonObject slotsObj = n.createNestedObject("slots");
+    for (int s = 0; s < MAX_GPIO_SLOTS; s++) {
+      slotsObj[String(s + 1)] = nodeStates[i].relayStates[s] ? 1 : 0;
+    }
+  }
+
+  String out;
+  serializeJson(stateDoc, out);
+  String topic = "miniha/" + sysSecurity.mqttHomeId + "/state";
+  mqttClient.publish(topic.c_str(), out.c_str(), true); // Retained
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String msg = "";
+  for (unsigned int i = 0; i < length; i++) {
+    msg += (char)payload[i];
+  }
+  Serial.printf("[MQTT RX] %s -> %s\n", topic, msg.c_str());
+
+  DynamicJsonDocument doc(512);
+  DeserializationError err = deserializeJson(doc, msg);
+  if (!err) {
+    if (doc.containsKey("target") && doc.containsKey("slot") && doc.containsKey("state")) {
+      String target = doc["target"].as<String>();
+      int slot = doc["slot"].as<int>();
+      int state = doc["state"].as<int>();
+      executeAction(target, slot, state, "MQTT Remote");
+
+      GenericNodeTelemetry* ns = getOrCreateNodeState(target);
+      if (ns && slot >= 1 && slot <= MAX_GPIO_SLOTS) {
+        ns->relayStates[slot - 1] = (state == 1);
+      }
+      publishMqttState();
+    }
+  }
+}
+
+void maintainMqtt() {
+  if (!sysSecurity.mqttEnabled || sysSecurity.mqttBroker.length() == 0) return;
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  if (mqttClient.connected()) {
+    mqttClient.loop();
+    if (mqttSchemaNeedsPublish) {
+      mqttSchemaNeedsPublish = false;
+      publishMqttSchema();
+    }
+    if (millis() - lastMqttStatePublish > 3000) {
+      lastMqttStatePublish = millis();
+      publishMqttState();
+    }
+    return;
+  }
+
+  if (millis() - lastMqttConnectAttempt > 5000) {
+    lastMqttConnectAttempt = millis();
+    Serial.printf("[MQTT] Connecting to %s:%d...\n", sysSecurity.mqttBroker.c_str(), sysSecurity.mqttPort);
+
+    secureClient.setInsecure();
+    mqttClient.setServer(sysSecurity.mqttBroker.c_str(), sysSecurity.mqttPort);
+    mqttClient.setCallback(mqttCallback);
+    mqttClient.setBufferSize(4096);
+
+    String clientId = "MiniHA_Master_" + String((uint32_t)ESP.getEfuseMac(), HEX);
+    bool connected = false;
+    if (sysSecurity.mqttUser.length() > 0) {
+      connected = mqttClient.connect(clientId.c_str(), sysSecurity.mqttUser.c_str(), sysSecurity.mqttPass.c_str());
+    } else {
+      connected = mqttClient.connect(clientId.c_str());
+    }
+
+    if (connected) {
+      Serial.println("[MQTT] Connected to Cloud Broker!");
+      String setTopic = "miniha/" + sysSecurity.mqttHomeId + "/set";
+      mqttClient.subscribe(setTopic.c_str());
+      Serial.printf("[MQTT] Subscribed to %s\n", setTopic.c_str());
+      publishMqttSchema();
+      publishMqttState();
+    } else {
+      Serial.printf("[MQTT] Connect failed, rc=%d. Will retry in 5s\n", mqttClient.state());
+    }
+  }
 }
 
 // Bind & Provision Discovered Slaves
@@ -139,6 +265,7 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
     serializeJson(doc, outF);
     outF.close();
   }
+  mqttSchemaNeedsPublish = true;
 }
 
 // Bus Packet Handler (RS-422 and Wireless Mesh)
@@ -275,30 +402,21 @@ void setup() {
   meshServer.begin();
   Serial.printf("[MESH] Wireless Star-Mesh TCP Server live on port %d\n", DEFAULT_MESH_PORT);
 
-  // Initialize Supla Cloud Client (Optional Bridge configured via Web Dashboard)
-  if (sysSecurity.suplaEnabled && connectedSTA && 
-      sysSecurity.suplaServer.length() > 0 && sysSecurity.suplaEmail.length() > 0) {
-    Serial.printf("[SUPLA] Connecting to Supla Cloud (%s) for %s...\n", 
-                  sysSecurity.suplaServer.c_str(), sysSecurity.suplaEmail.c_str());
-    suplaWifi = new Supla::ESPWifi(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
-    SuplaDevice.setServer(sysSecurity.suplaServer.c_str());
-    SuplaDevice.setEmail(sysSecurity.suplaEmail.c_str());
-    SuplaDevice.setName("Mini-HA Hub");
-    SuplaDevice.begin();
-    suplaActive = true;
+  // Initialize Cloud MQTT Client if configured
+  if (sysSecurity.mqttEnabled && connectedSTA && sysSecurity.mqttBroker.length() > 0) {
+    Serial.printf("[MQTT] Cloud Bridge enabled for broker: %s:%d (Home ID: %s)\n", 
+                  sysSecurity.mqttBroker.c_str(), sysSecurity.mqttPort, sysSecurity.mqttHomeId.c_str());
   } else {
-    Serial.println("[SUPLA] Offline Mode: Supla Cloud dormant (Local Star-Mesh & Web Dashboard Active).");
+    Serial.println("[MQTT] Cloud Bridge dormant (Local Star-Mesh & Web Dashboard Active).");
   }
 
   Serial.println("[MASTER] Supervisor initialization complete.");
 }
 
 void loop() {
-  // 1. Maintain Web Server & Supla Cloud
+  // 1. Maintain Web Server & Cloud MQTT Bridge
   webServer.handleClient();
-  if (suplaActive) {
-    SuplaDevice.iterate();
-  }
+  maintainMqtt();
 
   // 2. Read incoming packets from isolated RS-422 bus
   while (SerialBus.available()) {

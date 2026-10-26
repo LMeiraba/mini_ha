@@ -28,10 +28,13 @@ struct SystemSecurityConfig {
   String staPass = "";
   bool staEnabled = false;
 
-  // Supla Cloud Bridge
-  bool suplaEnabled = false;
-  String suplaServer = "";
-  String suplaEmail = "";
+  // Cloud MQTT Bridge (EMQX / Custom Broker)
+  bool mqttEnabled = false;
+  String mqttBroker = "";
+  uint16_t mqttPort = 8883;
+  String mqttUser = "";
+  String mqttPass = "";
+  String mqttHomeId = "home_1";
 };
 
 extern SystemSecurityConfig sysSecurity;
@@ -481,9 +484,11 @@ inline void setupWebEndpoints() {
     doc["ap_ssid"] = sysSecurity.apSsid;
     doc["sta_ssid"] = sysSecurity.staSsid;
     doc["sta_enabled"] = sysSecurity.staEnabled;
-    doc["supla_enabled"] = sysSecurity.suplaEnabled;
-    doc["supla_server"] = sysSecurity.suplaServer;
-    doc["supla_email"] = sysSecurity.suplaEmail;
+    doc["mqtt_enabled"] = sysSecurity.mqttEnabled;
+    doc["mqtt_broker"] = sysSecurity.mqttBroker;
+    doc["mqtt_port"] = sysSecurity.mqttPort;
+    doc["mqtt_user"] = sysSecurity.mqttUser;
+    doc["mqtt_home_id"] = sysSecurity.mqttHomeId;
     String json;
     serializeJson(doc, json);
     webServer.send(200, "application/json; charset=utf-8", json);
@@ -505,21 +510,29 @@ inline void setupWebEndpoints() {
     }
     if (doc.containsKey("sta_enabled")) sysSecurity.staEnabled = doc["sta_enabled"].as<bool>();
 
-    if (doc.containsKey("supla_enabled")) sysSecurity.suplaEnabled = doc["supla_enabled"].as<bool>();
-    if (doc.containsKey("supla_server")) sysSecurity.suplaServer = doc["supla_server"].as<String>();
-    if (doc.containsKey("supla_email")) sysSecurity.suplaEmail = doc["supla_email"].as<String>();
+    if (doc.containsKey("mqtt_enabled")) sysSecurity.mqttEnabled = doc["mqtt_enabled"].as<bool>();
+    if (doc.containsKey("mqtt_broker")) sysSecurity.mqttBroker = doc["mqtt_broker"].as<String>();
+    if (doc.containsKey("mqtt_port")) sysSecurity.mqttPort = doc["mqtt_port"].as<uint16_t>();
+    if (doc.containsKey("mqtt_user")) sysSecurity.mqttUser = doc["mqtt_user"].as<String>();
+    if (doc.containsKey("mqtt_pass") && doc["mqtt_pass"].as<String>().length() > 0) {
+      sysSecurity.mqttPass = doc["mqtt_pass"].as<String>();
+    }
+    if (doc.containsKey("mqtt_home_id")) sysSecurity.mqttHomeId = doc["mqtt_home_id"].as<String>();
 
     File f = LittleFS.open(SYSTEM_CONFIG_PATH, "w");
     if (f) {
-      DynamicJsonDocument outDoc(512);
+      DynamicJsonDocument outDoc(1024);
       outDoc["ap_ssid"] = sysSecurity.apSsid;
       outDoc["ap_pass"] = sysSecurity.apPass;
       outDoc["sta_ssid"] = sysSecurity.staSsid;
       outDoc["sta_pass"] = sysSecurity.staPass;
       outDoc["sta_enabled"] = sysSecurity.staEnabled;
-      outDoc["supla_enabled"] = sysSecurity.suplaEnabled;
-      outDoc["supla_server"] = sysSecurity.suplaServer;
-      outDoc["supla_email"] = sysSecurity.suplaEmail;
+      outDoc["mqtt_enabled"] = sysSecurity.mqttEnabled;
+      outDoc["mqtt_broker"] = sysSecurity.mqttBroker;
+      outDoc["mqtt_port"] = sysSecurity.mqttPort;
+      outDoc["mqtt_user"] = sysSecurity.mqttUser;
+      outDoc["mqtt_pass"] = sysSecurity.mqttPass;
+      outDoc["mqtt_home_id"] = sysSecurity.mqttHomeId;
       serializeJson(outDoc, f);
       f.close();
     }
@@ -708,20 +721,30 @@ inline void setupWebEndpoints() {
       </div>
 
       <div class="card">
-        <div class="card-title">Supla Cloud Bridge</div>
+        <div class="card-title">Cloud MQTT Bridge (EMQX / Custom Broker)</div>
         <div class="checkbox-line">
-          <input type="checkbox" id="cfgSuplaEn">
-          <label for="cfgSuplaEn" style="cursor:pointer; color:var(--text);">Enable Supla Cloud Mobile Integration</label>
+          <input type="checkbox" id="cfgMqttEn">
+          <label for="cfgMqttEn" style="cursor:pointer; color:var(--text);">Enable Cloud MQTT Integration (for PWA / Remote Access)</label>
         </div>
         <div style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:12px;">
-          1. Log into <a href="https://cloud.supla.org" target="_blank" style="color:#60a5fa;">cloud.supla.org</a>.<br>
-          2. Under the <strong>My SUPLA</strong> tab (plug icon), click <strong>"Device registration: CLICK TO ENABLE"</strong> in the top right.<br>
-          3. Enter your assigned Server and Email below and click Save. The Master pairs automatically with on-chip generated keys!
+          Connects to your free EMQX Serverless broker (Port 8883 TLS). Allows your PWA to securely control and monitor your smart home remotely without port forwarding or servers.
         </div>
-        <label>Supla Server</label>
-        <input type="text" id="cfgSuplaServer" placeholder="e.g. svr12.supla.org">
-        <label>Supla Account Email</label>
-        <input type="email" id="cfgSuplaEmail" placeholder="your_email@domain.com">
+        <label>Broker Host (TLS)</label>
+        <input type="text" id="cfgMqttBroker" placeholder="e.g. xxxxxx.emqx.cloud">
+        <div style="display:flex; gap:10px;">
+          <div style="flex:1;">
+            <label>Port</label>
+            <input type="number" id="cfgMqttPort" placeholder="8883" value="8883">
+          </div>
+          <div style="flex:2;">
+            <label>Home ID</label>
+            <input type="text" id="cfgMqttHomeId" placeholder="e.g. home_1">
+          </div>
+        </div>
+        <label>Broker Username</label>
+        <input type="text" id="cfgMqttUser" placeholder="Client Username">
+        <label>Broker Password</label>
+        <input type="password" id="cfgMqttPass" placeholder="Leave empty to keep existing password">
       </div>
 
       <button class="btn" onclick="saveSystemSettings()">Save Settings & Restart</button>
@@ -1086,9 +1109,12 @@ inline void setupWebEndpoints() {
         const data = await res.json();
         document.getElementById('cfgStaSSID').value = data.sta_ssid || '';
         document.getElementById('cfgStaPass').value = '';
-        document.getElementById('cfgSuplaEn').checked = !!data.supla_enabled;
-        document.getElementById('cfgSuplaServer').value = data.supla_server || '';
-        document.getElementById('cfgSuplaEmail').value = data.supla_email || '';
+        document.getElementById('cfgMqttEn').checked = !!data.mqtt_enabled;
+        document.getElementById('cfgMqttBroker').value = data.mqtt_broker || '';
+        document.getElementById('cfgMqttPort').value = data.mqtt_port || 8883;
+        document.getElementById('cfgMqttHomeId').value = data.mqtt_home_id || 'home_1';
+        document.getElementById('cfgMqttUser').value = data.mqtt_user || '';
+        document.getElementById('cfgMqttPass').value = '';
       } catch (e) {
         console.error(e);
       }
@@ -1099,9 +1125,12 @@ inline void setupWebEndpoints() {
         sta_ssid: document.getElementById('cfgStaSSID').value.trim(),
         sta_pass: document.getElementById('cfgStaPass').value,
         sta_enabled: document.getElementById('cfgStaSSID').value.trim().length > 0,
-        supla_enabled: document.getElementById('cfgSuplaEn').checked,
-        supla_server: document.getElementById('cfgSuplaServer').value.trim(),
-        supla_email: document.getElementById('cfgSuplaEmail').value.trim()
+        mqtt_enabled: document.getElementById('cfgMqttEn').checked,
+        mqtt_broker: document.getElementById('cfgMqttBroker').value.trim(),
+        mqtt_port: parseInt(document.getElementById('cfgMqttPort').value) || 8883,
+        mqtt_home_id: document.getElementById('cfgMqttHomeId').value.trim() || 'home_1',
+        mqtt_user: document.getElementById('cfgMqttUser').value.trim(),
+        mqtt_pass: document.getElementById('cfgMqttPass').value
       };
       await fetch('/api/system', {
         method: 'POST',

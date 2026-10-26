@@ -68,9 +68,12 @@ inline bool initLittleFSStorage() {
   "sta_ssid": "",
   "sta_pass": "",
   "sta_enabled": false,
-  "supla_enabled": false,
-  "supla_server": "",
-  "supla_email": ""
+  "mqtt_enabled": false,
+  "mqtt_broker": "",
+  "mqtt_port": 8883,
+  "mqtt_user": "",
+  "mqtt_pass": "",
+  "mqtt_home_id": "home_1"
 })");
       f.close();
     }

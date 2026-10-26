@@ -17,15 +17,29 @@
 #include "web_dashboard.h"
 
 // =========================================================================
-// MINI-HOMEASSISTANT MASTER SUPERVISOR (ESP32-C3)
+// MINI-HOMEASSISTANT MASTER SUPERVISOR (ESP32-C3 & ESP32-DevKit)
 // =========================================================================
 
-#define LOCAL_PUMP_PIN       8
-#define LOCAL_MANUAL_BTN     9
-#define S1_UART_RX_PIN       4
-#define S1_UART_TX_PIN       5
+// Silicon Hardware Pin Mapping
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
+  #define MASTER_CHIP_NAME     "ESP32-C3"
+  #define LOCAL_PUMP_PIN       8
+  #define LOCAL_MANUAL_BTN     9
+  #define S1_UART_RX_PIN       4
+  #define S1_UART_TX_PIN       5
+  #define SERIAL_BUS_UART_NUM  1
+#else
+  // Classic ESP32 Dev Board (Dual-Core Xtensa ESP32-WROOM-32)
+  // Safe GPIOs avoiding SPI Flash (6-11) and Boot Strapping pins (0, 2, 12, 15)
+  #define MASTER_CHIP_NAME     "ESP32-DevKit"
+  #define LOCAL_PUMP_PIN       18   // Dedicated relay output
+  #define LOCAL_MANUAL_BTN     19   // Dedicated manual button (pullup)
+  #define S1_UART_RX_PIN       16   // Default Hardware RX2 on ESP32
+  #define S1_UART_TX_PIN       17   // Default Hardware TX2 on ESP32
+  #define SERIAL_BUS_UART_NUM  2
+#endif
 
-HardwareSerial SerialBus(1);
+HardwareSerial SerialBus(SERIAL_BUS_UART_NUM);
 WebServer webServer(80);
 
 // Wireless Star-Mesh TCP Server
@@ -183,7 +197,8 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("\n[MASTER] Booting Mini-HomeAssistant Supervisor...");
+  Serial.printf("\n[MASTER] Booting Mini-HomeAssistant Supervisor on %s...\n", MASTER_CHIP_NAME);
+  Serial.printf("[MASTER] RS-422 Bus: UART%d (RX: GPIO%d, TX: GPIO%d)\n", SERIAL_BUS_UART_NUM, S1_UART_RX_PIN, S1_UART_TX_PIN);
 
   pinMode(LOCAL_PUMP_PIN, OUTPUT);
   pinMode(LOCAL_MANUAL_BTN, INPUT_PULLUP);

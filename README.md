@@ -141,11 +141,10 @@ In VS Code, go to **File $\rightarrow$ Open Workspace from File...** and select:
 mini_ha/mini_ha.code-workspace
 ```
 
-### 3. Flashing Master (ESP32-C3)
-1. In the bottom blue status bar, select `Default (master_firmware)`.
-2. Open the PlatformIO sidebar:
-   * Click **Upload** to flash the firmware.
-   * Click **Upload Filesystem Image** (under Platform) to upload `/config/` JSON files to LittleFS.
+### 3. Flashing Master
+* **For ESP32-C3**: Select `Default (master_firmware)` or `env:esp32c3` in the bottom status bar and click **Upload**.
+* **For ESP32 Dev Board (Classic Dual-Core)**: Select `env:esp32dev` in the bottom status bar and click **Upload**.
+* *(First time only)*: Under PlatformIO Project Tasks $\rightarrow$ Platform $\rightarrow$ Click **Upload Filesystem Image** to write the `/config/` JSON files to LittleFS.
 
 ### 4. Flashing Slaves
 1. In the bottom status bar, switch to `env:esp8266_d1mini (slave_firmware)` or `env:esp32_c3 (slave_firmware)`.
@@ -165,13 +164,13 @@ mini_ha/mini_ha.code-workspace
 
 ## Hardware Pinout Reference
 
-### Master Node (ESP32-C3 DevKit)
-| Function | Physical Pin | Description |
-| :--- | :--- | :--- |
-| RS-422 RX | GPIO 4 | Receives data from 74HC08 star hub |
-| RS-422 TX | GPIO 5 | Transmits data to RS-422 driver |
-| Local Pump Relay | GPIO 8 | Active-High relay trigger |
-| Local Manual Button | GPIO 9 | Momentary button (Internal pullup) |
+### Master Node Pinouts (Dual Silicon Architecture)
+| Function | ESP32-C3 DevKit | ESP32 Dev Board (Classic) | Description |
+| :--- | :--- | :--- | :--- |
+| **RS-422 RX** | GPIO 4 | GPIO 16 (RX2) | Receives data from 74HC08 star hub |
+| **RS-422 TX** | GPIO 5 | GPIO 17 (TX2) | Transmits data to RS-422 driver |
+| **Local Pump Relay** | GPIO 8 | GPIO 18 | Dedicated active-high relay output |
+| **Local Manual Button** | GPIO 9 | GPIO 19 | Momentary button (internal pullup) |
 
 ### Wired Slave: Rooftop Tank (ESP8266 D1 Mini)
 | Function | ESP8266 Pin | Physical GPIO |

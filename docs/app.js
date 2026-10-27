@@ -3,7 +3,7 @@ let mqttClient = null;
 let currentSchema = null;
 let currentState = null;
 let authReplyCallback = null;
-let isHubOnline = true;
+let isHubOnline = false;
 let activeTransport = 'none'; // 'cloud' | 'local' | 'none'
 let localPollTimer = null;
 
@@ -199,7 +199,11 @@ function connectMqtt() {
     mqttClient.on('connect', () => {
       console.log('[MQTT] Connected to cloud broker');
       activeTransport = 'cloud';
-      setStatus('Cloud Online', 'online');
+      if (isHubOnline) {
+        setStatus('Cloud Online', 'online');
+      } else {
+        setStatus('Broker Connected (Hub Offline)', 'offline');
+      }
 
       // Stop redundant local LAN polling when cloud is healthy
       if (localPollTimer) {
@@ -919,7 +923,7 @@ function saveHomeAndConnect() {
 // =========================================================================
 
 function handleHubStatusUpdate(data) {
-  isHubOnline = (data && data.online !== false);
+  isHubOnline = (data && data.online === true);
   updateHubOfflineBanner();
   if (isHubOnline) {
     if (activeTransport === 'cloud') setStatus('Cloud Online', 'online');

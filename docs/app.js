@@ -75,7 +75,7 @@ function updateView() {
   const userBadgeName = document.getElementById('userBadgeName');
 
   // Screen 1: No Home Configured
-  if (!home.brokerUrl) {
+  if (!home.brokerUrl && !home.localIp) {
     if (emptyHome) emptyHome.style.display = 'block';
     if (userLogin) userLogin.style.display = 'none';
     if (dashboard) dashboard.style.display = 'none';
@@ -91,18 +91,18 @@ function updateView() {
     if (dashboard) dashboard.style.display = 'none';
     if (userBadge) userBadge.style.display = 'none';
     const tag = document.getElementById('loginHomeTag');
-    if (tag) tag.textContent = `Home: ${home.homeId}`;
+    if (tag) tag.textContent = `Home: ${home.homeId || 'Local'}`;
     return;
   }
 
   // Screen 3: User Logged In & Home Connected -> Show Live Dashboard
   if (emptyHome) emptyHome.style.display = 'none';
   if (userLogin) userLogin.style.display = 'none';
-  if (dashboard) dashboard.style.display = 'flex';
+  if (dashboard) dashboard.style.display = 'grid';
   if (userBadge) {
     userBadge.style.display = 'flex';
     if (userBadgeName) {
-      userBadgeName.textContent = `👤 ${session.user} (${session.role})`;
+      userBadgeName.textContent = `${session.user} (${session.role})`;
     }
   }
 
@@ -409,7 +409,7 @@ function handleSchemaUpdate(schema) {
 
 function renderSlots(node, isGuest) {
   if (!node.slots || node.slots.length === 0) {
-    return `<div style="color:var(--text-sub); font-size:12px;">No slots configured</div>`;
+    return `<div style="color:var(--text-dim); font-size:12px; padding:6px 0;">No slots configured</div>`;
   }
 
   let out = '';
@@ -428,7 +428,9 @@ function renderSlots(node, isGuest) {
             <span class="slot-state-text" id="relay_text_${node.id}_${slotNum}">OFF</span>
           </div>
           <button class="toggle-btn" id="btn_${node.id}_${slotNum}" ${cannotToggle ? `disabled title="${disabledTitle}"` : ''} onclick="toggleRelay('${node.id}', ${slotNum})">
-            <span class="toggle-slider"></span>
+            <span class="toggle-slider">
+              <svg style="width:11px; height:11px; color:#1e293b;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.02"/></svg>
+            </span>
           </button>
         </div>
       `;
@@ -438,11 +440,13 @@ function renderSlots(node, isGuest) {
           <div class="slot-label">${escapeHtml(name)}</div>
           <div class="sensor-readings">
             <div class="sensor-pill">
+              <svg class="icon pill-icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>
               <span class="pill-label">TEMP</span>
               <span class="pill-val" id="temp_${node.id}">--</span>
-              <span class="pill-unit">°C</span>
+              <span class="pill-unit">&deg;C</span>
             </div>
             <div class="sensor-pill">
+              <svg class="icon pill-icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
               <span class="pill-label">HUM</span>
               <span class="pill-val" id="hum_${node.id}">--</span>
               <span class="pill-unit">%</span>
@@ -454,12 +458,15 @@ function renderSlots(node, isGuest) {
       if (type === 4) {
         out += `
           <div class="slot-item slot-tank">
-            <div class="slot-header-inline">
-              <span class="slot-label">${escapeHtml(name)}</span>
-              <span class="tank-metric" id="dist_${node.id}">-- cm</span>
+            <div class="tank-header-row">
+              <span class="slot-label" style="display:flex; align-items:center; gap:6px;">
+                <svg class="icon" style="width:14px; height:14px; color:#38bdf8;" viewBox="0 0 24 24"><path d="M2 12h20"/><path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/><path d="M4 8V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>
+                ${escapeHtml(name)}
+              </span>
+              <span class="pill-val" style="color:#38bdf8;" id="dist_${node.id}">-- cm</span>
             </div>
-            <div class="tank-bar-container">
-              <div class="tank-bar-fill" id="tank_fill_${node.id}" style="width: 0%"></div>
+            <div class="tank-bar-track">
+              <div class="tank-bar-fluid" id="tank_fill_${node.id}" style="width: 0%"></div>
             </div>
           </div>
         `;
@@ -599,6 +606,95 @@ function checkUrlInvite() {
     }
   }
   return false;
+}
+
+function switchOnboardTab(tab) {
+  const inv = document.getElementById('onboardInviteSection');
+  const brk = document.getElementById('onboardBrokerSection');
+  const loc = document.getElementById('onboardLocalSection');
+  if (inv) inv.style.display = (tab === 'invite') ? 'block' : 'none';
+  if (brk) brk.style.display = (tab === 'broker') ? 'block' : 'none';
+  if (loc) loc.style.display = (tab === 'local') ? 'block' : 'none';
+  
+  const bInv = document.getElementById('tabBtnInvite');
+  const bBrk = document.getElementById('tabBtnBroker');
+  const bLoc = document.getElementById('tabBtnLocal');
+  if (bInv) bInv.className = 'tab-pill ' + (tab === 'invite' ? 'active' : '');
+  if (bBrk) bBrk.className = 'tab-pill ' + (tab === 'broker' ? 'active' : '');
+  if (bLoc) bLoc.className = 'tab-pill ' + (tab === 'local' ? 'active' : '');
+}
+
+function applyPastedLink() {
+  const input = document.getElementById('pasteLinkInput').value.trim();
+  if (!input) return showToast('Paste an invite link first', 'error');
+  try {
+    let raw = '';
+    if (input.includes('cfg=')) {
+      raw = input.split('cfg=')[1].split('&')[0];
+    }
+    if (!raw) throw new Error('No configuration found');
+    const parsed = JSON.parse(atob(decodeURIComponent(raw)));
+    if (parsed.brokerUrl) {
+      saveHomeConfig(parsed);
+      showToast('Connected to Home Gateway!', 'success');
+      connectMqtt();
+      updateView();
+    } else {
+      throw new Error('Invalid config');
+    }
+  } catch (e) {
+    showToast('Invalid invite link format', 'error');
+  }
+}
+
+async function pasteFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    document.getElementById('pasteLinkInput').value = text;
+    applyPastedLink();
+  } catch (e) {
+    showToast('Could not read clipboard. Please paste manually.', 'error');
+  }
+}
+
+function saveQuickBrokerConfig() {
+  const broker = document.getElementById('quickBrokerUrl').value.trim();
+  const homeId = document.getElementById('quickHomeId').value.trim() || 'home_1';
+  const user = document.getElementById('quickBrokerUser').value.trim();
+  const pass = document.getElementById('quickBrokerPass').value;
+  if (!broker) return showToast('Broker WebSocket URL required', 'error');
+
+  saveHomeConfig({
+    brokerUrl: broker,
+    homeId: homeId,
+    user: user,
+    pass: pass,
+    localIp: ''
+  });
+  showToast('Broker configured. Connecting...', 'info');
+  connectMqtt();
+  updateView();
+}
+
+function saveQuickLocalConfig() {
+  const localIp = document.getElementById('quickLocalIp').value.trim() || 'http://miniha.local';
+  saveHomeConfig({
+    brokerUrl: '',
+    homeId: 'local_hub',
+    user: '',
+    pass: '',
+    localIp: localIp
+  });
+  showToast('Local Hub selected', 'info');
+  updateView();
+}
+
+function togglePassVisibility(inputId, btn) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const isPass = input.type === 'password';
+  input.type = isPass ? 'text' : 'password';
+  btn.style.color = isPass ? '#60a5fa' : 'var(--text-muted)';
 }
 
 function openShareModal() {
@@ -758,7 +854,7 @@ function handleNotification(data) {
   }
 
   // 4. In-App Toast
-  showToast(`🔔 ${title}: ${msg}`, 'warning');
+  showToast(`${title}: ${msg}`, 'warning');
 }
 
 function playNotificationChime() {
@@ -785,7 +881,7 @@ async function toggleNotificationPermission() {
   }
 
   if (Notification.permission === 'granted') {
-    showToast('🔔 Notifications active & enabled', 'success');
+    showToast('Notifications active & enabled', 'success');
     playNotificationChime();
     updateNotifButtonState();
     return;
@@ -798,7 +894,7 @@ async function toggleNotificationPermission() {
 
   const permission = await Notification.requestPermission();
   if (permission === 'granted') {
-    showToast('🔔 Push alerts enabled successfully!', 'success');
+    showToast('Push alerts enabled successfully', 'success');
     playNotificationChime();
   } else {
     showToast('Notification permission was not granted', 'error');

@@ -642,114 +642,477 @@ inline void setupWebEndpoints() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mini-HA Supervisor</title>
+  <title>Mini-HA Supervisor Console</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+
   <style>
     :root {
-      --bg: #0f1117;
-      --card: #161922;
-      --border: #232734;
-      --text: #f3f4f6;
-      --text-muted: #9ca3af;
+      --bg: #0a0d14;
+      --card-bg: #111625;
+      --card-bg-elevated: #161e31;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-border-focus: rgba(59, 130, 246, 0.5);
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
       --primary: #2563eb;
       --primary-hover: #1d4ed8;
+      --primary-glow: rgba(37, 99, 235, 0.35);
       --success: #10b981;
+      --success-glow: rgba(16, 185, 129, 0.25);
       --warning: #f59e0b;
       --danger: #ef4444;
-      --input-bg: #11131a;
-      --input-border: #2e3446;
+      --input-bg: #0c101c;
+      --radius-sm: 8px;
+      --radius-md: 12px;
+      --radius-lg: 18px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; padding: 18px; font-size: 14px; }
-    
+    body {
+      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      background-image: 
+        radial-gradient(ellipse 70% 40% at 50% -10%, rgba(37, 99, 235, 0.12), transparent),
+        radial-gradient(circle at 90% 90%, rgba(16, 185, 129, 0.03), transparent 35%);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 0;
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .icon {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      stroke-width: 2;
+      stroke: currentColor;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      vertical-align: middle;
+      flex-shrink: 0;
+    }
+
     /* Top Bar */
-    .topbar { display: flex; justify-content: space-between; align-items: center; padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
-    .brand { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; display: flex; align-items: center; gap: 8px; }
-    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; }
-    .nav-actions { display: flex; align-items: center; gap: 8px; }
-    
+    .topbar {
+      background: rgba(11, 15, 23, 0.85);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      padding: 14px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--card-border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-badge {
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius-md);
+      background: linear-gradient(135deg, #1e293b, #0f172a);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #60a5fa;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+    .brand-title-wrap {
+      display: flex;
+      flex-direction: column;
+    }
+    .brand-title {
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text);
+      line-height: 1.2;
+    }
+    .brand-subtitle {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-dim);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 10px var(--success-glow);
+      display: inline-block;
+    }
+
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     /* Buttons & Badges */
-    .badge { font-size: 11px; font-weight: 600; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; background: #1e2433; color: #60a5fa; border: 1px solid #2b354d; }
-    .btn { background: var(--primary); color: #fff; border: 1px solid transparent; padding: 7px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: 0.15s; }
-    .btn:hover { background: var(--primary-hover); }
-    .btn-secondary { background: #1f2430; color: var(--text); border: 1px solid var(--border); }
-    .btn-secondary:hover { background: #282f40; }
-    .btn-danger { background: #7f1d1d; color: #fca5a5; border: 1px solid #991b1b; }
-    .btn-danger:hover { background: #991b1b; color: #fff; }
-    .btn-off { background: #232734; color: var(--text-muted); }
-    .btn-off:hover { background: #2e3446; color: var(--text); }
-    .btn-sm { padding: 4px 10px; font-size: 12px; }
+    .badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 20px;
+      background: rgba(37, 99, 235, 0.15);
+      color: #93c5fd;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+    .btn {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 8px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+      transition: all 0.2s;
+    }
+    .btn:hover {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-secondary {
+      background: rgba(22, 30, 49, 0.7);
+      color: var(--text);
+      border: 1px solid var(--card-border);
+      box-shadow: none;
+    }
+    .btn-secondary:hover {
+      background: #1e293b;
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+    .btn-danger {
+      background: rgba(127, 29, 29, 0.6);
+      color: #fca5a5;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      box-shadow: none;
+    }
+    .btn-danger:hover {
+      background: #991b1b;
+      color: #fff;
+    }
+    .btn-sm { padding: 5px 12px; font-size: 12px; }
 
-    /* Cards & Layout */
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 18px; margin-bottom: 18px; }
-    .card-title { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
-    .node-box { background: #11131a; border: 1px solid var(--border); border-radius: 6px; padding: 14px; }
-    .node-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; border-bottom: 1px solid #1a1e29; margin-bottom: 10px; }
-    .slot-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; font-size: 13px; }
-    .sensor-badge { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: #1c202d; color: #93c5fd; padding: 3px 8px; border-radius: 4px; border: 1px solid #283044; }
+    /* App Shell Container */
+    .app-container {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+      width: 100%;
+    }
 
-    /* Tactile Toggle Switch */
-    .toggle-btn { position: relative; width: 50px; height: 28px; background: #2d3748; border-radius: 14px; border: none; cursor: pointer; transition: background 0.25s, box-shadow 0.25s; flex-shrink: 0; }
-    .toggle-slider { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; background: #fff; border-radius: 50%; box-shadow: 0 2px 4px rgba(0,0,0,0.3); transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
-    .toggle-btn.active { background: var(--primary); box-shadow: 0 0 10px rgba(37, 99, 235, 0.4); }
-    .toggle-btn.active .toggle-slider { transform: translateX(22px); }
-    .toggle-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Cards & Bento Grid */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      padding: 22px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35);
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-dim);
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+    .node-box {
+      background: #0d121f;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      transition: border-color 0.2s;
+    }
+    .node-box:hover {
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+    .node-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      margin-bottom: 12px;
+    }
+    .slot-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 13px;
+    }
+
+    /* Tactile Toggle Switch (Apple-style) */
+    .toggle-btn {
+      position: relative;
+      width: 52px;
+      height: 28px;
+      background: #1e293b;
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      cursor: pointer;
+      transition: background 0.25s, box-shadow 0.25s;
+      flex-shrink: 0;
+    }
+    .toggle-slider {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 22px;
+      height: 22px;
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.4);
+      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .toggle-btn.active {
+      background: var(--primary);
+      box-shadow: 0 0 12px var(--primary-glow);
+    }
+    .toggle-btn.active .toggle-slider {
+      transform: translateX(24px);
+    }
+    .toggle-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
 
     /* Sensor Pills */
-    .sensor-readings { display: flex; gap: 6px; }
-    .sensor-pill { background: #172136; border: 1px solid #23314f; border-radius: 6px; padding: 4px 8px; display: flex; align-items: baseline; gap: 4px; }
-    .pill-label { font-size: 9px; font-weight: 700; color: var(--text-muted); }
-    .pill-val { font-size: 13px; font-weight: 700; color: #60a5fa; }
-    .pill-unit { font-size: 10px; color: var(--text-muted); }
+    .sensor-readings { display: flex; gap: 8px; }
+    .sensor-pill {
+      background: rgba(30, 41, 59, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: var(--radius-sm);
+      padding: 4px 9px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .pill-label {
+      font-size: 9px;
+      font-weight: 700;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+    .pill-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      font-weight: 600;
+      color: #93c5fa;
+    }
+    .pill-unit { font-size: 10px; color: var(--text-dim); }
 
     /* Tank Bar */
-    .tank-header { display: flex; justify-content: space-between; align-items: center; width: 100%; }
-    .tank-bar-container { width: 100%; height: 8px; background: #172136; border-radius: 4px; overflow: hidden; border: 1px solid #23314f; }
-    .tank-bar-fill { height: 100%; background: linear-gradient(90deg, #0284c7, #38bdf8); border-radius: 4px; transition: width 0.4s ease; }
+    .tank-header { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 6px; }
+    .tank-bar-container {
+      width: 100%;
+      height: 9px;
+      background: #172033;
+      border-radius: 5px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .tank-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #0284c7, #38bdf8);
+      border-radius: 5px;
+      transition: width 0.5s ease;
+    }
 
     /* Alert Banner */
-    .alert-banner { background: #451a03; border: 1px solid #78350f; color: #fde68a; padding: 12px 16px; border-radius: 6px; margin-bottom: 18px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+    .alert-banner {
+      background: linear-gradient(135deg, rgba(120, 53, 15, 0.4), rgba(69, 26, 3, 0.5));
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: #fde68a;
+      padding: 14px 18px;
+      border-radius: var(--radius-md);
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+    }
 
     /* Tables & Inputs */
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--border); }
-    th { color: var(--text-muted); font-weight: 500; font-size: 12px; text-transform: uppercase; }
-    input, select { background: var(--input-bg); border: 1px solid var(--input-border); color: var(--text); padding: 8px 12px; border-radius: 6px; width: 100%; font-size: 13px; margin: 4px 0 12px 0; outline: none; }
-    input:focus, select:focus { border-color: var(--primary); }
-    label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
-    .checkbox-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px 0; }
+    th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--card-border); }
+    th { color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    
+    input, select {
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: var(--radius-md);
+      width: 100%;
+      font-size: 13px;
+      font-family: inherit;
+      margin: 4px 0 14px 0;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    input:focus, select:focus {
+      border-color: var(--card-border-focus);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    }
+    label { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+    .checkbox-line { display: flex; align-items: center; gap: 10px; margin: 8px 0 14px 0; }
     .checkbox-line input { width: auto; margin: 0; }
 
     /* Modal */
-    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 100; }
-    .modal { background: var(--card); border: 1px solid var(--border); border-radius: 8px; width: 90%; max-width: 420px; padding: 22px; }
-    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: #131a2b;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: var(--radius-lg);
+      width: 90%;
+      max-width: 440px;
+      padding: 24px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+    }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
 
-    /* Login Screen Container */
-    .login-container { min-height: 80vh; display: flex; align-items: center; justify-content: center; }
-    .login-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; width: 100%; max-width: 360px; padding: 26px; }
+    /* High-End Hardware Supervisor Login Screen */
+    .login-container {
+      min-height: 85vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .login-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 24px;
+      width: 100%;
+      max-width: 420px;
+      padding: 34px 28px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+      position: relative;
+    }
+    .login-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 15%;
+      right: 15%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.5), transparent);
+    }
 
     /* Toast */
-    #toast { position: fixed; bottom: 20px; right: 20px; background: #1f2430; border: 1px solid var(--border); color: var(--text); padding: 10px 18px; border-radius: 6px; font-size: 13px; transform: translateY(100px); opacity: 0; transition: 0.2s; z-index: 200; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+    #toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #1e293b;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--text);
+      padding: 12px 20px;
+      border-radius: 30px;
+      font-size: 13px;
+      font-weight: 600;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: 0.3s;
+      z-index: 200;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
     #toast.show { transform: translateY(0); opacity: 1; }
-    #toast.success { border-color: var(--success); }
-    #toast.error { border-color: var(--danger); }
+    #toast.success { background: #064e3b; border-color: #059669; }
+    #toast.error { background: #7f1d1d; border-color: #dc2626; }
   </style>
 </head>
 <body>
 
-  <!-- 1. LOGIN SCREEN (RENDERED WHEN NOT AUTHENTICATED) -->
+  <!-- 1. LOGIN SCREEN (HARDWARE SUPERVISOR APPLIANCE) -->
   <div id="loginView" class="login-container" style="display:none;">
     <div class="login-card">
-      <div style="font-size:16px; font-weight:700; margin-bottom:4px;">Mini-HA Supervisor</div>
-      <div style="color:var(--text-muted); font-size:13px; margin-bottom:18px;">Sign in to access your local hub</div>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+        <div class="brand-badge">
+          <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
+          </svg>
+        </div>
+        <div>
+          <div style="font-size:17px; font-weight:800; letter-spacing:-0.3px;">Mini-HA Supervisor</div>
+          <div style="font-size:11px; font-weight:600; text-transform:uppercase; color:var(--text-dim); letter-spacing:0.5px;">Master Hardware Console</div>
+        </div>
+      </div>
+
+      <div style="font-size:13px; color:var(--text-muted); line-height:1.5; margin-bottom:20px;">
+        Sign in to manage isolated RS-422 bus nodes, star-mesh wireless slaves, and cloud bridge routing.
+      </div>
+
       <form onsubmit="handleLogin(event)">
         <label>Username</label>
-        <input type="text" id="loginUser" required autocomplete="username" autofocus>
+        <div style="position:relative; display:flex; align-items:center;">
+          <input type="text" id="loginUser" required autocomplete="username" autofocus placeholder="admin">
+        </div>
+
         <label>Password</label>
-        <input type="password" id="loginPass" required autocomplete="current-password">
-        <button type="submit" class="btn" style="width:100%; margin-top:6px;">Sign In</button>
+        <div style="position:relative; display:flex; align-items:center;">
+          <input type="password" id="loginPass" required autocomplete="current-password" placeholder="Password">
+          <button type="button" onclick="togglePassVisibilityLocal()" style="position:absolute; right:12px; top:12px; background:none; border:none; color:var(--text-muted); cursor:pointer;">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
+        </div>
+
+        <button type="submit" class="btn" style="width:100%; margin-top:8px;">Sign In to Console</button>
       </form>
+
+      <div style="margin-top:20px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.06); display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-dim);">
+        <span>Local Host: miniha.local</span>
+        <span style="font-family:'JetBrains Mono', monospace;">Firmware v2.4</span>
+      </div>
     </div>
   </div>
 
@@ -758,8 +1121,16 @@ inline void setupWebEndpoints() {
     <!-- Topbar Navigation -->
     <div class="topbar">
       <div class="brand">
-        <span class="status-dot"></span>
-        <span>Mini-HA Hub</span>
+        <div class="brand-badge">
+          <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24">
+            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            <polyline points="9 22 9 12 15 12 15 22"/>
+          </svg>
+        </div>
+        <div class="brand-title-wrap">
+          <span class="brand-title">Mini-HA Hub</span>
+          <span class="brand-subtitle">Supervisor Active</span>
+        </div>
       </div>
       <div class="nav-actions">
         <span class="badge" id="roleBadge">ROLE</span>
@@ -772,13 +1143,14 @@ inline void setupWebEndpoints() {
       </div>
     </div>
 
-    <!-- Default Password Warning Banner -->
-    <div id="defaultPassBanner" class="alert-banner" style="display:none;">
-      <div>
-        <strong>Default Password Active:</strong> Your hub is using default credentials (<code>admin / admin123</code>). Change your password now to secure your system.
+    <div class="app-container">
+      <!-- Default Password Warning Banner -->
+      <div id="defaultPassBanner" class="alert-banner" style="display:none;">
+        <div>
+          <strong>Security Notice:</strong> Your hub is currently using the factory default credentials (<code>admin / admin123</code>). Change your password now.
+        </div>
+        <button class="btn btn-sm" onclick="openPassModal()">Change Password</button>
       </div>
-      <button class="btn btn-sm" onclick="openPassModal()">Change Password</button>
-    </div>
 
     <!-- TAB 1: OVERVIEW & ENTITIES -->
     <div id="tabNodes">
@@ -859,6 +1231,7 @@ inline void setupWebEndpoints() {
       <button class="btn" onclick="saveSystemSettings()">Save Settings & Restart</button>
     </div>
   </div>
+</div>
 
   <!-- MODAL: CHANGE PASSWORD -->
   <div id="passModal" class="modal-overlay">
@@ -1022,7 +1395,7 @@ inline void setupWebEndpoints() {
     function renderEntities() {
       const c = document.getElementById('entitiesGrid');
       if (configuredNodes.length === 0) {
-        c.innerHTML = '<div style="color:var(--text-muted); padding:10px 0;">No nodes configured yet. Connect a slave node to the RS-422 bus or Wi-Fi to bind it.</div>';
+        c.innerHTML = '<div style="color:var(--text-dim); padding:12px 0;">No nodes configured yet. Connect a slave node to the RS-422 bus or Wi-Fi to bind it.</div>';
         return;
       }
 
@@ -1033,8 +1406,11 @@ inline void setupWebEndpoints() {
 
         html += `<div class="node-box">
           <div class="node-header">
-            <strong>${node.name || node.id} (${node.id})</strong>
-            <span style="font-size:12px; color:var(--text-muted);">${seen}</span>
+            <div>
+              <strong style="font-size:14px;">${node.name || node.id}</strong>
+              <span style="font-family:\'JetBrains Mono\', monospace; font-size:11px; color:#60a5fa; margin-left:6px;">(${node.id})</span>
+            </div>
+            <span style="font-size:11px; color:var(--text-dim);">${seen}</span>
           </div>`;
 
         if (node.slots && node.slots.length > 0) {
@@ -1044,17 +1420,29 @@ inline void setupWebEndpoints() {
               const isRelayOn = (state.relays && state.relays[slot.slot] === 1);
               const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
               html += `<div class="slot-row">
-                <span style="font-weight:500;">${slotName}</span>
+                <span style="font-weight:600;">${slotName}</span>
                 <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleRelay('${node.id}', ${slot.slot}, ${isRelayOn})">
-                  <span class="toggle-slider"></span>
+                  <span class="toggle-slider">
+                    <svg style="width:10px; height:10px; color:#1e293b;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.02"/></svg>
+                  </span>
                 </button>
               </div>`;
             } else if (slot.type === 6 || slot.type === 7) { // DHT
               html += `<div class="slot-row">
-                <span style="font-weight:500;">${slotName}</span>
+                <span style="font-weight:600;">${slotName}</span>
                 <div class="sensor-readings">
-                  <div class="sensor-pill"><span class="pill-label">TEMP</span><span class="pill-val">${state.temp.toFixed(1)}</span><span class="pill-unit">°C</span></div>
-                  <div class="sensor-pill"><span class="pill-label">HUM</span><span class="pill-val">${state.hum.toFixed(0)}</span><span class="pill-unit">%</span></div>
+                  <div class="sensor-pill">
+                    <svg class="icon" style="width:12px; height:12px; color:#60a5fa;" viewBox="0 0 24 24"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>
+                    <span class="pill-label">TEMP</span>
+                    <span class="pill-val">${state.temp.toFixed(1)}</span>
+                    <span class="pill-unit">&deg;C</span>
+                  </div>
+                  <div class="sensor-pill">
+                    <svg class="icon" style="width:12px; height:12px; color:#60a5fa;" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
+                    <span class="pill-label">HUM</span>
+                    <span class="pill-val">${state.hum.toFixed(0)}</span>
+                    <span class="pill-unit">%</span>
+                  </div>
                 </div>
               </div>`;
             } else if (slot.type === 4 || slot.type === 5) { // Ultrasonic
@@ -1063,8 +1451,11 @@ inline void setupWebEndpoints() {
                 const pct = state.dist >= 0 ? Math.max(0, Math.min(100, Math.round(((200 - state.dist) / 200) * 100))) : 0;
                 html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
                   <div class="tank-header">
-                    <span style="font-weight:500;">${slotName}</span>
-                    <span style="font-size:12px; font-weight:600; color:#38bdf8;">${distText}</span>
+                    <span style="font-weight:600; display:flex; align-items:center; gap:6px;">
+                      <svg class="icon" style="width:13px; height:13px; color:#38bdf8;" viewBox="0 0 24 24"><path d="M2 12h20"/><path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/><path d="M4 8V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>
+                      ${slotName}
+                    </span>
+                    <span style="font-family:\'JetBrains Mono\', monospace; font-size:12px; font-weight:600; color:#38bdf8;">${distText} (${pct}%)</span>
                   </div>
                   <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
                 </div>`;
@@ -1072,7 +1463,7 @@ inline void setupWebEndpoints() {
             }
           });
         } else {
-          html += '<div style="color:var(--text-muted); font-size:12px;">No slots configured.</div>';
+          html += '<div style="color:var(--text-dim); font-size:12px;">No slots configured.</div>';
         }
         html += `</div>`;
       });
@@ -1084,7 +1475,7 @@ inline void setupWebEndpoints() {
       if (!liveStates[nodeId]) liveStates[nodeId] = { relays: [] };
       if (!liveStates[nodeId].relays) liveStates[nodeId].relays = [];
       liveStates[nodeId].relays[slot] = val;
-      renderNodes();
+      renderEntities();
 
       await fetch('/api/control', {
         method: 'POST',
@@ -1266,7 +1657,7 @@ inline void setupWebEndpoints() {
             <div style="background:#161922; border:1px solid #283044; border-radius:6px; padding:10px; margin-top:8px;">
               <label class="checkbox-line" style="margin:0 0 8px 0;">
                 <input type="checkbox" id="ruleNotif_${idx}" ${isNotify}>
-                <span style="font-weight:600; color:#93c5fd;">🔔 Push Notification (Option A)</span>
+                <span style="font-weight:700; color:#93c5fd;">Push Notification Alert (Option A)</span>
               </label>
               <label>Alert Title</label>
               <input type="text" id="ruleTitle_${idx}" value="${nTitle}" placeholder="e.g. Tank Low Alert">

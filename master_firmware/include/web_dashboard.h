@@ -659,9 +659,16 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Rules updated\"}");
   });
 
-  // 16. Captive Portal Detection Handlers
+  // 16. Captive Portal Detection Handlers (Dynamic Subnet / mDNS Aware)
   auto handleCaptiveRedirect = []() {
-    webServer.sendHeader("Location", "http://192.168.4.1/", true);
+    String host = webServer.hostHeader();
+    if (host.indexOf("miniha.local") != -1) {
+      webServer.sendHeader("Location", "http://miniha.local/", true);
+    } else if (WiFi.status() == WL_CONNECTED && host.indexOf(WiFi.localIP().toString()) != -1) {
+      webServer.sendHeader("Location", "http://" + WiFi.localIP().toString() + "/", true);
+    } else {
+      webServer.sendHeader("Location", "http://192.168.4.1/", true);
+    }
     webServer.send(302, "text/plain", "");
   };
   webServer.on("/generate_204", handleCaptiveRedirect);
@@ -671,8 +678,15 @@ inline void setupWebEndpoints() {
   webServer.on("/connecttest.txt", handleCaptiveRedirect);
   webServer.onNotFound([]() {
     String host = webServer.hostHeader();
-    if (host.indexOf("192.168.4.1") == -1 && host.indexOf("miniha.local") == -1) {
-      webServer.sendHeader("Location", "http://192.168.4.1/", true);
+    bool isKnownHost = (host.indexOf("192.168.4.1") != -1) ||
+                       (host.indexOf("miniha.local") != -1) ||
+                       (WiFi.status() == WL_CONNECTED && host.indexOf(WiFi.localIP().toString()) != -1);
+    if (!isKnownHost) {
+      if (WiFi.status() == WL_CONNECTED && (WiFi.getMode() & WIFI_STA)) {
+        webServer.sendHeader("Location", "http://miniha.local/", true);
+      } else {
+        webServer.sendHeader("Location", "http://192.168.4.1/", true);
+      }
       webServer.send(302, "text/plain", "");
       return;
     }

@@ -34,20 +34,10 @@ HardwareSerial SerialBus(SERIAL_BUS_UART_NUM);
 WebServer webServer(80);
 DNSServer dnsServer;
 
-// Wireless Star-Mesh TCP Server
-#define MAX_WIRELESS_SLAVES 8
-WiFiServer meshServer(DEFAULT_MESH_PORT);
-WiFiClient meshClients[MAX_WIRELESS_SLAVES];
-String meshRxBuf[MAX_WIRELESS_SLAVES];
-
-// Unified Packet Dispatcher: Broadcasts to RS-422 bus AND connected wireless slaves
+// Unified Packet Dispatcher: Broadcasts strictly over the isolated RS-422 hardware serial bus.
+// (Wireless slaves connect downstream to a wired slave's SoftAP repeater, never directly to the Master AP)
 void broadcastBusPacket(const String& pkt) {
   SerialBus.println(pkt);
-  for (int i = 0; i < MAX_WIRELESS_SLAVES; i++) {
-    if (meshClients[i] && meshClients[i].connected()) {
-      meshClients[i].println(pkt);
-    }
-  }
 }
 
 // Global State & Telemetry Storage
@@ -479,10 +469,6 @@ void setup() {
   setupWebEndpoints();
   webServer.begin();
 
-  // Initialize Wireless Star-Mesh TCP Server
-  meshServer.begin();
-  Serial.printf("[MESH] Wireless Star-Mesh TCP Server live on port %d\n", DEFAULT_MESH_PORT);
-
   // Initialize Cloud MQTT Client if configured
   if (sysSecurity.mqttEnabled && connectedSTA && sysSecurity.mqttBroker.length() > 0) {
     Serial.printf("[MQTT] Cloud Bridge enabled for broker: %s:%d (Home ID: %s)\n", 
@@ -518,53 +504,13 @@ void loop() {
     }
   }
 
-  // 3. Accept incoming wireless mesh clients
-  if (meshServer.hasClient()) {
-    WiFiClient newClient = meshServer.available();
-    bool accepted = false;
-    for (int i = 0; i < MAX_WIRELESS_SLAVES; i++) {
-      if (!meshClients[i] || !meshClients[i].connected()) {
-        meshClients[i] = newClient;
-        meshRxBuf[i] = "";
-        Serial.printf("[MESH] Wireless slave connected on slot %d (IP: %s)\n", i, newClient.remoteIP().toString().c_str());
-        accepted = true;
-        break;
-      }
-    }
-    if (!accepted) {
-      newClient.stop();
-    }
-  }
-
-  // 4. Read incoming packets from wireless mesh TCP clients
-  for (int i = 0; i < MAX_WIRELESS_SLAVES; i++) {
-    if (meshClients[i] && meshClients[i].connected()) {
-      while (meshClients[i].available()) {
-        char c = (char)meshClients[i].read();
-        if (c == '\n') {
-          meshRxBuf[i].trim();
-          if (meshRxBuf[i].length() > 0) {
-            ParsedPacket pkt = parseProtocolLine(meshRxBuf[i]);
-            if (pkt.isValid) {
-              handleIncomingBusPacket(pkt);
-            }
-          }
-          meshRxBuf[i] = "";
-        } else if (c != '\r') {
-          meshRxBuf[i] += c;
-          if (meshRxBuf[i].length() > PROTOCOL_MAX_LINE) meshRxBuf[i] = "";
-        }
-      }
-    }
-  }
-
-  // 5. Evaluate Dynamic Rules Engine every 500ms
+  // 3. Evaluate Dynamic Rules Engine every 500ms
   if (millis() - lastRulePoll > 500) {
     lastRulePoll = millis();
     evaluateDynamicRules();
   }
 
-  // 6. Broadcast Poll to active slaves every 3 seconds
+  // 4. Broadcast Poll to active slaves on RS-422 bus every 3 seconds
   if (millis() - lastBusPoll > 3000) {
     lastBusPoll = millis();
     broadcastBusPacket(buildPacket("ALL", "M", "REQ", "POLL"));

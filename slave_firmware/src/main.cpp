@@ -83,6 +83,7 @@ void loadConfigFromStorage() {
     Serial.println("[STORAGE] Invalid magic or schema mismatch! Initializing factory defaults...");
     memset(&config, 0, sizeof(NodeStorageConfig));
     config.magic = SCHEMA_MAGIC;
+    memset(config.nodeId, 0, sizeof(config.nodeId));
     strncpy(config.nodeId, "UNBOUND", sizeof(config.nodeId) - 1);
     config.transportMode = MODE_WIRELESS; // Default to wireless onboarding
     config.wifiSsid[0] = '\0';
@@ -296,7 +297,9 @@ void processIncomingPacket(const ParsedPacket& pkt) {
   // Verb 1: REQ (e.g. REQ:POLL)
   if (pkt.verb == "REQ" && pkt.payload == "POLL") {
     String stateStr = "";
-    for (int i = 0; i < 4; i++) {
+    int maxSlots = config.numConfiguredSlots > 0 ? config.numConfiguredSlots : MAX_GPIO_SLOTS;
+    if (maxSlots > MAX_GPIO_SLOTS) maxSlots = MAX_GPIO_SLOTS;
+    for (int i = 0; i < maxSlots; i++) {
       stateStr += (i > 0 ? ":" : "") + String(outputStates[i] ? 1 : 0);
     }
     String rep = "LVL:" + String(cachedDistance) + 

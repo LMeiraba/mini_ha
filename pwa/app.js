@@ -23,19 +23,19 @@ if ('serviceWorker' in navigator) {
 function getHomeConfig() {
   return {
     brokerUrl: localStorage.getItem('miniha_broker') || '',
-    homeId: localStorage.getItem('miniha_home_id') || 'home_1',
+    homeId: localStorage.getItem('miniha_home_id') || '',
     user: localStorage.getItem('miniha_user') || '',
     pass: localStorage.getItem('miniha_pass') || '',
-    localIp: localStorage.getItem('miniha_local_ip') || 'http://miniha.local'
+    localIp: localStorage.getItem('miniha_local_ip') || ''
   };
 }
 
 function saveHomeConfig(cfg) {
   localStorage.setItem('miniha_broker', (cfg.brokerUrl || '').trim());
-  localStorage.setItem('miniha_home_id', (cfg.homeId || 'home_1').trim());
+  localStorage.setItem('miniha_home_id', (cfg.homeId || '').trim());
   localStorage.setItem('miniha_user', (cfg.user || '').trim());
   localStorage.setItem('miniha_pass', cfg.pass || '');
-  localStorage.setItem('miniha_local_ip', (cfg.localIp || 'http://miniha.local').trim());
+  localStorage.setItem('miniha_local_ip', (cfg.localIp || '').trim());
 }
 
 function getUserSession() {
@@ -156,11 +156,17 @@ function connectGateway() {
     localPollTimer = null;
   }
 
+  // If no Home Gateway is configured at all, stay on Screen 1 and do not probe anything
+  if (!home.brokerUrl && !home.localIp) {
+    updateView();
+    return;
+  }
+
   // 1. If Cloud Broker is configured, attempt MQTT connection first
   if (home.brokerUrl) {
     connectMqtt();
   } else if (home.localIp) {
-    // Standalone local LAN mode
+    // Only start local polling if user explicitly provided a local IP address
     startLocalFallback();
   } else {
     updateView();
@@ -272,11 +278,17 @@ function triggerFailoverToLocal() {
 
 // Local LAN Fallback Polling Engine
 function startLocalFallback() {
+  const home = getHomeConfig();
+  if (!home.localIp) {
+    activeTransport = 'none';
+    setStatus('Offline', 'offline');
+    return;
+  }
   if (localPollTimer) return; // Already active
 
-  console.log('[LAN Fallback] Starting local HTTP polling against:', getHomeConfig().localIp);
+  console.log('[LAN Fallback] Starting local HTTP polling against:', home.localIp);
   pollLocalState();
-  localPollTimer = setInterval(pollLocalState, 3500);
+  localPollTimer = setInterval(pollLocalState, 4000);
 }
 
 async function pollLocalState() {
@@ -798,11 +810,20 @@ async function pasteFromClipboard() {
 }
 
 function saveQuickGatewayConfig() {
-  const homeId = document.getElementById('quickHomeId').value.trim() || 'home_1';
+  const homeId = document.getElementById('quickHomeId').value.trim();
   const broker = document.getElementById('quickBrokerUrl').value.trim();
   const user = document.getElementById('quickBrokerUser').value.trim();
   const pass = document.getElementById('quickBrokerPass').value;
-  const localIp = document.getElementById('quickLocalIp').value.trim() || 'http://miniha.local';
+  const localIp = document.getElementById('quickLocalIp').value.trim();
+
+  if (!broker && !localIp) {
+    showToast('Please enter a Cloud Broker URL or Local Address', 'error');
+    return;
+  }
+  if (broker && !homeId) {
+    showToast('Please enter a Home ID for your cloud setup', 'error');
+    return;
+  }
 
   saveHomeConfig({
     brokerUrl: broker,
@@ -870,12 +891,21 @@ function closeSettingsModal() {
 }
 
 function saveHomeAndConnect() {
+  const broker = document.getElementById('modalBroker').value.trim();
+  const homeId = document.getElementById('modalHomeId').value.trim();
+  const localIp = document.getElementById('modalLocalIp').value.trim();
+
+  if (!broker && !localIp) {
+    showToast('Please enter a Cloud Broker URL or Local Address', 'error');
+    return;
+  }
+
   saveHomeConfig({
-    brokerUrl: document.getElementById('modalBroker').value.trim(),
-    homeId: document.getElementById('modalHomeId').value.trim() || 'home_1',
+    brokerUrl: broker,
+    homeId: homeId,
     user: document.getElementById('modalUser').value.trim(),
     pass: document.getElementById('modalPass').value,
-    localIp: document.getElementById('modalLocalIp').value.trim() || 'http://miniha.local'
+    localIp: localIp
   });
 
   closeSettingsModal();

@@ -844,7 +844,7 @@
       <div id="onboardManualSection" style="display:none;">
         <div class="form-group">
           <label class="form-label">Home ID</label>
-          <input type="text" id="quickHomeId" class="input-field" placeholder="e.g. home_1" value="home_1">
+          <input type="text" id="quickHomeId" class="input-field" placeholder="e.g. my_home">
         </div>
         <div class="form-group">
           <label class="form-label">Cloud Broker WebSocket URL (WSS)</label>
@@ -862,10 +862,10 @@
         </div>
         <div class="form-group">
           <label class="form-label">
-            <span>Local LAN Fallback Address</span>
+            <span>Local LAN Fallback Address <span class="form-hint">(optional)</span></span>
             <span class="form-hint">mDNS or IP</span>
           </label>
-          <input type="text" id="quickLocalIp" class="input-field" placeholder="http://miniha.local" value="http://miniha.local">
+          <input type="text" id="quickLocalIp" class="input-field" placeholder="http://miniha.local">
           <span class="form-hint" style="margin-top:2px;">Used automatically when internet or cloud broker is unreachable.</span>
         </div>
         <button class="btn btn-full" style="margin-top:10px;" onclick="saveQuickGatewayConfig()">Save & Connect Gateway</button>

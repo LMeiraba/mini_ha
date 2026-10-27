@@ -42,18 +42,29 @@ extern void publishMqttNotification(const String& title, const String& msg, cons
 
 #define MAX_CONFIGURED_RULES 16
 static bool ruleActiveState[MAX_CONFIGURED_RULES] = {false};
+static DynamicJsonDocument cachedRulesDoc(4096);
+static bool cachedRulesLoaded = false;
+
+inline void reloadRulesCache() {
+  cachedRulesDoc.clear();
+  if (LittleFS.exists(RULES_CONFIG_PATH)) {
+    File file = LittleFS.open(RULES_CONFIG_PATH, "r");
+    if (file) {
+      deserializeJson(cachedRulesDoc, file);
+      file.close();
+    }
+  }
+  cachedRulesLoaded = true;
+  Serial.println("[RULES] In-memory rules cache reloaded from LittleFS.");
+}
 
 inline void evaluateDynamicRules() {
-  if (!LittleFS.exists(RULES_CONFIG_PATH)) return;
-  File file = LittleFS.open(RULES_CONFIG_PATH, "r");
-  if (!file) return;
+  if (!cachedRulesLoaded) {
+    reloadRulesCache();
+  }
+  if (!cachedRulesDoc.containsKey("rules")) return;
 
-  DynamicJsonDocument doc(4096);
-  DeserializationError err = deserializeJson(doc, file);
-  file.close();
-  if (err) return;
-
-  JsonArray rules = doc["rules"].as<JsonArray>();
+  JsonArray rules = cachedRulesDoc["rules"].as<JsonArray>();
   int rIdx = 0;
   for (JsonObject rule : rules) {
     if (rIdx >= MAX_CONFIGURED_RULES) break;

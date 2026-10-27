@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mini-ha-pwa-v1';
+const CACHE_NAME = 'mini-ha-pwa-v2';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -28,15 +28,22 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Allow MQTT WebSocket connections to pass through freely
-  if (event.request.url.startsWith('ws://') || event.request.url.startsWith('wss://')) {
+  // 1. Only intercept and cache idempotent GET requests
+  if (event.request.method !== 'GET') {
     return;
   }
 
+  // 2. Pass WebSockets and local/cloud API requests through directly to network
+  const url = event.request.url;
+  if (url.startsWith('ws://') || url.startsWith('wss://') || url.includes('/api/')) {
+    return;
+  }
+
+  // 3. Stale-while-revalidate / cache-first for static application shell
   event.respondWith(
     fetch(event.request)
       .then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
+        if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
           const responseToCache = networkResponse.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(event.request, responseToCache);

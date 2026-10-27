@@ -40,8 +40,10 @@ struct SystemSecurityConfig {
 extern SystemSecurityConfig sysSecurity;
 extern void publishMqttState();
 
+#include <mbedtls/sha256.h>
+
 // =========================================================================
-// SESSION & USER AUTHENTICATION MANAGER (NO BROWSER PROMPT, COOKIE/HEADER AUTH)
+// SESSION & USER AUTHENTICATION MANAGER (PERMANENT SESSIONS, SHA-256 HASHING)
 // =========================================================================
 
 enum UserRole { ROLE_NONE = 0, ROLE_GUEST = 1, ROLE_MEMBER = 2, ROLE_ADMIN = 3 };
@@ -53,8 +55,32 @@ struct ActiveSession {
   unsigned long lastActive;
 };
 
-#define MAX_SESSIONS 6
+#define MAX_SESSIONS 12
 ActiveSession activeSessions[MAX_SESSIONS];
+
+inline String sha256Hex(const String& input) {
+  byte output[32];
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts_ret(&ctx, 0); // 0 = SHA-256
+  mbedtls_sha256_update_ret(&ctx, (const unsigned char*)input.c_str(), input.length());
+  mbedtls_sha256_finish_ret(&ctx, output);
+  mbedtls_sha256_free(&ctx);
+
+  char hexStr[65];
+  for (int i = 0; i < 32; i++) {
+    sprintf(hexStr + (i * 2), "%02x", output[i]);
+  }
+  hexStr[64] = '\0';
+  return String(hexStr);
+}
+
+inline bool verifyPassword(const String& stored, const String& provided) {
+  if (stored.length() == 0) return false;
+  if (stored == provided) return true; // Legacy plaintext compatibility
+  if (stored == sha256Hex(provided)) return true; // SHA-256 hash match
+  return false;
+}
 
 inline String generateRandomToken() {
   String t = "";
@@ -84,17 +110,14 @@ inline String getRequestToken() {
   return "";
 }
 
+// Invariant: Tokens DO NOT expire based on time (permanent sessions for family/parents)
 inline UserRole validateToken(const String& token, String* outUsername = nullptr) {
   if (token.length() == 0) return ROLE_NONE;
   for (int i = 0; i < MAX_SESSIONS; i++) {
     if (activeSessions[i].token.length() > 0 && activeSessions[i].token == token) {
-      if (millis() - activeSessions[i].lastActive < 86400000UL) { // 24 hours
-        activeSessions[i].lastActive = millis();
-        if (outUsername) *outUsername = activeSessions[i].username;
-        return activeSessions[i].role;
-      } else {
-        activeSessions[i].token = ""; // Expired
-      }
+      activeSessions[i].lastActive = millis();
+      if (outUsername) *outUsername = activeSessions[i].username;
+      return activeSessions[i].role;
     }
   }
   return ROLE_NONE;
@@ -134,7 +157,7 @@ inline String createSessionForUser(const String& user, const String& pass, UserR
   bool matched = false;
   String roleStr = "guest";
   for (JsonObject u : doc["users"].as<JsonArray>()) {
-    if (u["user"].as<String>() == user && u["pass"].as<String>() == pass) {
+    if (u["user"].as<String>() == user && verifyPassword(u["pass"].as<String>(), pass)) {
       matched = true;
       roleStr = u["role"].as<String>();
       break;
@@ -149,13 +172,33 @@ inline String createSessionForUser(const String& user, const String& pass, UserR
   if (outRoleStr) *outRoleStr = roleStr;
 
   int slot = -1;
+  // 1. Check if user already has an active session slot (refresh)
   for (int i = 0; i < MAX_SESSIONS; i++) {
-    if (activeSessions[i].token.length() == 0 || millis() - activeSessions[i].lastActive > 86400000UL) {
+    if (activeSessions[i].token.length() > 0 && activeSessions[i].username == user) {
       slot = i;
       break;
     }
   }
-  if (slot == -1) slot = 0;
+  // 2. Otherwise pick an empty slot
+  if (slot == -1) {
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+      if (activeSessions[i].token.length() == 0) {
+        slot = i;
+        break;
+      }
+    }
+  }
+  // 3. If all full, evict least recently active (LRU)
+  if (slot == -1) {
+    unsigned long oldest = 0xFFFFFFFFUL;
+    slot = 0;
+    for (int i = 0; i < MAX_SESSIONS; i++) {
+      if (activeSessions[i].lastActive < oldest) {
+        oldest = activeSessions[i].lastActive;
+        slot = i;
+      }
+    }
+  }
 
   activeSessions[slot].token = token;
   activeSessions[slot].username = user;
@@ -187,7 +230,7 @@ inline void setupWebEndpoints() {
       f.close();
       for (JsonObject u : doc["users"].as<JsonArray>()) {
         if (u["user"].as<String>() == username) {
-          if (username == "admin" && u["pass"].as<String>() == "admin123") {
+          if (username == "admin" && verifyPassword(u["pass"].as<String>(), "admin123")) {
             isDefault = true;
           }
           break;
@@ -316,7 +359,7 @@ inline void setupWebEndpoints() {
 
     JsonObject nu = users.createNestedObject();
     nu["user"] = newUser;
-    nu["pass"] = newPass;
+    nu["pass"] = sha256Hex(newPass);
     nu["role"] = (newRole == "admin" || newRole == "member") ? newRole : "guest";
 
     File outF = LittleFS.open(USERS_CONFIG_PATH, "w");
@@ -362,7 +405,7 @@ inline void setupWebEndpoints() {
     for (JsonObject u : doc["users"].as<JsonArray>()) {
       if (u["user"].as<String>() == targetUser) {
         found = true;
-        if (newPass.length() > 0) u["pass"] = newPass;
+        if (newPass.length() > 0) u["pass"] = sha256Hex(newPass);
         if (newRole.length() > 0 && currentRole == ROLE_ADMIN) u["role"] = newRole;
         break;
       }
@@ -612,6 +655,7 @@ inline void setupWebEndpoints() {
     }
     serializeJson(doc, f);
     f.close();
+    reloadRulesCache();
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Rules updated\"}");
   });
 

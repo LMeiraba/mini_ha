@@ -1,9 +1,11 @@
-// Mini-HA PWA: Multi-User & Home Architecture Engine
+// Mini-HA PWA: Architecture & Fallback Engine
 let mqttClient = null;
 let currentSchema = null;
 let currentState = null;
 let authReplyCallback = null;
 let isHubOnline = true;
+let activeTransport = 'none'; // 'cloud' | 'local' | 'none'
+let localPollTimer = null;
 
 // Service Worker Registration
 if ('serviceWorker' in navigator) {
@@ -15,7 +17,7 @@ if ('serviceWorker' in navigator) {
 }
 
 // =========================================================================
-// STORAGE: LEVEL 1 (HOME) & LEVEL 2 (USER IN HOME)
+// STORAGE: LEVEL 1 (HOME CONFIG) & LEVEL 2 (USER SESSION)
 // =========================================================================
 
 function getHomeConfig() {
@@ -24,7 +26,7 @@ function getHomeConfig() {
     homeId: localStorage.getItem('miniha_home_id') || 'home_1',
     user: localStorage.getItem('miniha_user') || '',
     pass: localStorage.getItem('miniha_pass') || '',
-    localIp: localStorage.getItem('miniha_local_ip') || ''
+    localIp: localStorage.getItem('miniha_local_ip') || 'http://miniha.local'
   };
 }
 
@@ -33,7 +35,7 @@ function saveHomeConfig(cfg) {
   localStorage.setItem('miniha_home_id', (cfg.homeId || 'home_1').trim());
   localStorage.setItem('miniha_user', (cfg.user || '').trim());
   localStorage.setItem('miniha_pass', cfg.pass || '');
-  localStorage.setItem('miniha_local_ip', (cfg.localIp || '').trim());
+  localStorage.setItem('miniha_local_ip', (cfg.localIp || 'http://miniha.local').trim());
 }
 
 function getUserSession() {
@@ -61,7 +63,7 @@ function clearAllHomeData() {
 }
 
 // =========================================================================
-// UI VIEW CONTROLLER (3 MUTUALLY EXCLUSIVE SCREENS)
+// UI VIEW CONTROLLER (3 SCREENS: ONBOARD -> LOGIN -> DASHBOARD)
 // =========================================================================
 
 function updateView() {
@@ -80,22 +82,22 @@ function updateView() {
     if (userLogin) userLogin.style.display = 'none';
     if (dashboard) dashboard.style.display = 'none';
     if (userBadge) userBadge.style.display = 'none';
-    setStatus('No Home', 'offline');
+    setStatus('No Gateway', 'offline');
     return;
   }
 
-  // Screen 2: Home Connected, but No Active User Logged In
+  // Screen 2: Gateway Configured, but No User Session
   if (!session.token) {
     if (emptyHome) emptyHome.style.display = 'none';
     if (userLogin) userLogin.style.display = 'block';
     if (dashboard) dashboard.style.display = 'none';
     if (userBadge) userBadge.style.display = 'none';
     const tag = document.getElementById('loginHomeTag');
-    if (tag) tag.textContent = `Home: ${home.homeId || 'Local'}`;
+    if (tag) tag.textContent = `Home: ${home.homeId || 'Default'}`;
     return;
   }
 
-  // Screen 3: User Logged In & Home Connected -> Show Live Dashboard
+  // Screen 3: User Logged In -> Show Live Dashboard
   if (emptyHome) emptyHome.style.display = 'none';
   if (userLogin) userLogin.style.display = 'none';
   if (dashboard) dashboard.style.display = 'grid';
@@ -106,11 +108,10 @@ function updateView() {
     }
   }
 
-  // Re-render if schema already loaded
   if (currentSchema) handleSchemaUpdate(currentSchema);
 }
 
-// Status Banner Controller
+// Status Indicator Controller
 function setStatus(text, type = 'info') {
   const dot = document.getElementById('statusDot');
   const label = document.getElementById('statusText');
@@ -127,16 +128,48 @@ function setStatus(text, type = 'info') {
   label.textContent = text;
 }
 
+function updateHubOfflineBanner() {
+  const banner = document.getElementById('hubOfflineBanner');
+  if (banner) {
+    banner.style.display = isHubOnline ? 'none' : 'flex';
+  }
+  const session = getUserSession();
+  const isGuest = (session.role === 'guest');
+  const cannotToggle = (!isHubOnline || isGuest);
+  const disabledTitle = !isHubOnline ? 'Master Hub is offline' : (isGuest ? 'Guests cannot toggle controls' : '');
+
+  document.querySelectorAll('.toggle-btn').forEach(btn => {
+    btn.disabled = cannotToggle;
+    btn.title = disabledTitle;
+  });
+}
+
 // =========================================================================
-// MQTT CLIENT & TRANSPORT
+// UNIFIED TRANSPORT ENGINE: CLOUD MQTT WITH AUTOMATIC LAN FALLBACK
 // =========================================================================
+
+function connectGateway() {
+  const home = getHomeConfig();
+
+  if (localPollTimer) {
+    clearInterval(localPollTimer);
+    localPollTimer = null;
+  }
+
+  // 1. If Cloud Broker is configured, attempt MQTT connection first
+  if (home.brokerUrl) {
+    connectMqtt();
+  } else if (home.localIp) {
+    // Standalone local LAN mode
+    startLocalFallback();
+  } else {
+    updateView();
+  }
+}
 
 function connectMqtt() {
   const home = getHomeConfig();
-  if (!home.brokerUrl) {
-    updateView();
-    return;
-  }
+  if (!home.brokerUrl) return;
 
   if (mqttClient) {
     try { mqttClient.end(true); } catch (e) {}
@@ -148,8 +181,8 @@ function connectMqtt() {
   const options = {
     clientId: clientId,
     clean: true,
-    connectTimeout: 8000,
-    reconnectPeriod: 4000,
+    connectTimeout: 7000,
+    reconnectPeriod: 5000,
     username: home.user || undefined,
     password: home.pass || undefined
   };
@@ -158,8 +191,15 @@ function connectMqtt() {
     mqttClient = mqtt.connect(home.brokerUrl, options);
 
     mqttClient.on('connect', () => {
-      console.log('[MQTT] Connected to broker');
-      setStatus('Online', 'online');
+      console.log('[MQTT] Connected to cloud broker');
+      activeTransport = 'cloud';
+      setStatus('Cloud Online', 'online');
+
+      // Stop redundant local LAN polling when cloud is healthy
+      if (localPollTimer) {
+        clearInterval(localPollTimer);
+        localPollTimer = null;
+      }
 
       const schemaTopic = `miniha/${home.homeId}/schema`;
       const stateTopic = `miniha/${home.homeId}/state`;
@@ -169,9 +209,9 @@ function connectMqtt() {
 
       mqttClient.subscribe([schemaTopic, stateTopic, statusTopic, notifyTopic, authReplyWildcard], (err) => {
         if (!err) {
-          console.log(`[MQTT] Subscribed to ${home.homeId} topics`);
+          console.log(`[MQTT] Subscribed to ${home.homeId}`);
         } else {
-          console.error('[MQTT] Subscription error:', err);
+          console.error('[MQTT] Subscribe error:', err);
         }
       });
     });
@@ -195,24 +235,102 @@ function connectMqtt() {
           }
         }
       } catch (err) {
-        console.error('[MQTT Payload Error]', err);
+        console.error('[MQTT Parse Error]', err);
       }
     });
 
-    mqttClient.on('reconnect', () => setStatus('Reconnecting...', 'connecting'));
-    mqttClient.on('close', () => setStatus('Disconnected', 'offline'));
+    mqttClient.on('reconnect', () => {
+      if (activeTransport !== 'local') {
+        setStatus('Reconnecting...', 'connecting');
+      }
+    });
+
+    mqttClient.on('close', () => {
+      console.warn('[MQTT] Disconnected from cloud broker. Activating local fallback...');
+      triggerFailoverToLocal();
+    });
+
     mqttClient.on('error', (err) => {
-      console.error('[MQTT Error]', err);
-      setStatus('Conn Error', 'offline');
+      console.warn('[MQTT Error]', err);
+      triggerFailoverToLocal();
     });
   } catch (err) {
     console.error('[MQTT Init Failed]', err);
-    setStatus('Conn Failed', 'offline');
+    triggerFailoverToLocal();
+  }
+}
+
+function triggerFailoverToLocal() {
+  const home = getHomeConfig();
+  if (home.localIp) {
+    startLocalFallback();
+  } else {
+    activeTransport = 'none';
+    setStatus('Offline', 'offline');
+  }
+}
+
+// Local LAN Fallback Polling Engine
+function startLocalFallback() {
+  if (localPollTimer) return; // Already active
+
+  console.log('[LAN Fallback] Starting local HTTP polling against:', getHomeConfig().localIp);
+  pollLocalState();
+  localPollTimer = setInterval(pollLocalState, 3500);
+}
+
+async function pollLocalState() {
+  const home = getHomeConfig();
+  if (!home.localIp) return;
+
+  const session = getUserSession();
+  const headers = { 'Accept': 'application/json' };
+  if (session.token) {
+    headers['X-Auth-Token'] = session.token;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2800);
+
+    // Fetch schema and state concurrently
+    const [nodesRes, stateRes] = await Promise.all([
+      fetch(`${home.localIp}/api/nodes`, { headers, signal: controller.signal }),
+      fetch(`${home.localIp}/api/state`, { headers, signal: controller.signal })
+    ]);
+    clearTimeout(timeoutId);
+
+    if (nodesRes.ok && stateRes.ok) {
+      const nodesData = await nodesRes.json();
+      const stateData = await stateRes.json();
+
+      activeTransport = 'local';
+      setStatus('LAN Fallback', 'online');
+      isHubOnline = true;
+      updateHubOfflineBanner();
+
+      if (nodesData && nodesData.nodes) {
+        handleSchemaUpdate(nodesData);
+      }
+      if (stateData) {
+        handleStateUpdate(stateData);
+      }
+    } else {
+      throw new Error(`HTTP ${nodesRes.status}`);
+    }
+  } catch (err) {
+    // If MQTT is also down and local HTTP fails, mark as offline
+    if (!mqttClient || !mqttClient.connected) {
+      activeTransport = 'none';
+      setStatus('Offline', 'offline');
+      isHubOnline = false;
+      updateHubOfflineBanner();
+    }
   }
 }
 
 // =========================================================================
-// LEVEL 2: USER LOGIN & SWITCH USER
+// LEVEL 2: USER LOGIN & AUTHENTICATION
 // =========================================================================
 
 function submitUserLogin() {
@@ -232,7 +350,7 @@ function submitUserLogin() {
 
   const home = getHomeConfig();
 
-  // Route 1: Over MQTT
+  // Route A: Over Cloud MQTT (if connected)
   if (mqttClient && mqttClient.connected) {
     const clientReqId = 'pwa_' + Math.random().toString(16).substr(2, 6);
     const loginTopic = `miniha/${home.homeId}/auth/login`;
@@ -261,17 +379,21 @@ function submitUserLogin() {
       }
     };
 
-    // Timeout safety
     setTimeout(() => {
       if (!resolved) {
         authReplyCallback = null;
-        if (loginBtn) {
-          loginBtn.textContent = 'Log In';
-          loginBtn.disabled = false;
+        // Fall back to local HTTP attempt if available
+        if (home.localIp) {
+          submitLocalHttpLogin(username, password, loginBtn);
+        } else {
+          if (loginBtn) {
+            loginBtn.textContent = 'Log In';
+            loginBtn.disabled = false;
+          }
+          showToast('Login timed out. Check Master Hub.', 'error');
         }
-        showToast('Login timed out. Check Master Hub.', 'error');
       }
-    }, 6000);
+    }, 4500);
 
     mqttClient.publish(loginTopic, JSON.stringify({
       client: clientReqId,
@@ -279,48 +401,56 @@ function submitUserLogin() {
       pass: password
     }));
   }
-  // Route 2: Over Local LAN HTTP
+  // Route B: Over Local LAN HTTP
   else if (home.localIp) {
-    fetch(`${home.localIp}/api/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: username, pass: password })
-    })
-    .then(r => r.json())
-    .then(reply => {
-      if (loginBtn) {
-        loginBtn.textContent = 'Log In';
-        loginBtn.disabled = false;
-      }
-      if (reply.status === 'ok' && reply.token) {
-        saveUserSession({
-          token: reply.token,
-          user: reply.user,
-          role: reply.role
-        });
-        showToast(`Welcome, ${reply.user}!`, 'success');
-        updateView();
-      } else {
-        showToast(reply.error || 'Invalid credentials', 'error');
-      }
-    })
-    .catch(err => {
-      if (loginBtn) {
-        loginBtn.textContent = 'Log In';
-        loginBtn.disabled = false;
-      }
-      showToast('Connection error', 'error');
-    });
+    submitLocalHttpLogin(username, password, loginBtn);
   } else {
     if (loginBtn) {
       loginBtn.textContent = 'Log In';
       loginBtn.disabled = false;
     }
-    showToast('Not connected to Home yet. Please wait.', 'error');
+    showToast('Gateway not reachable. Check network.', 'error');
   }
 }
 
-// Switch User (Logs out user, keeps Home connection!)
+function submitLocalHttpLogin(username, password, loginBtn) {
+  const home = getHomeConfig();
+  fetch(`${home.localIp}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user: username, pass: password })
+  })
+  .then(r => r.json())
+  .then(reply => {
+    if (loginBtn) {
+      loginBtn.textContent = 'Log In';
+      loginBtn.disabled = false;
+    }
+    if (reply.status === 'ok' && reply.token) {
+      saveUserSession({
+        token: reply.token,
+        user: reply.user,
+        role: reply.role
+      });
+      showToast(`Welcome, ${reply.user}!`, 'success');
+      document.getElementById('loginUser').value = '';
+      document.getElementById('loginPass').value = '';
+      updateView();
+      // Kick off immediate state sync over local LAN
+      pollLocalState();
+    } else {
+      showToast(reply.error || 'Invalid credentials', 'error');
+    }
+  })
+  .catch(err => {
+    if (loginBtn) {
+      loginBtn.textContent = 'Log In';
+      loginBtn.disabled = false;
+    }
+    showToast('Could not reach Master Hub over LAN', 'error');
+  });
+}
+
 function switchUser() {
   clearUserSession();
   closeUserMenuModal();
@@ -330,20 +460,22 @@ function switchUser() {
   if (input) input.focus();
 }
 
-// Unlink Home (Logs out user AND unlinks Home config)
 function unlinkHome() {
-  if (confirm('Unlink this phone from this Home? You will need an invite link to reconnect.')) {
+  if (confirm('Unlink this device from this Home? You will need an invite link or manual setup to reconnect.')) {
     clearAllHomeData();
     closeUserMenuModal();
     if (mqttClient) {
       try { mqttClient.end(true); } catch(e) {}
+    }
+    if (localPollTimer) {
+      clearInterval(localPollTimer);
+      localPollTimer = null;
     }
     showToast('Home unlinked.', 'info');
     updateView();
   }
 }
 
-// User Menu Modal
 function openUserMenuModal() {
   const session = getUserSession();
   const home = getHomeConfig();
@@ -360,19 +492,19 @@ function closeUserMenuModal() {
 }
 
 // =========================================================================
-// DYNAMIC SCHEMA & DASHBOARD RENDERING
+// DASHBOARD RENDERING & CONTROL DISPATCH
 // =========================================================================
 
 function handleSchemaUpdate(schema) {
   currentSchema = schema;
   const session = getUserSession();
-  if (!session.token) return; // Do not render dashboard if not logged in
+  if (!session.token) return;
 
   const container = document.getElementById('nodesGrid');
   if (!container) return;
 
   if (!schema.nodes || schema.nodes.length === 0) {
-    container.innerHTML = '<div style="text-align:center; padding:30px; color:var(--text-sub);">No devices bound to this Home yet.</div>';
+    container.innerHTML = '<div style="text-align:center; padding:32px; color:var(--text-dim); grid-column:1/-1;">No hardware nodes bound to this Home yet.</div>';
     return;
   }
 
@@ -384,12 +516,12 @@ function handleSchemaUpdate(schema) {
       <div class="node-card" id="card_${node.id}">
         <div class="node-header">
           <div class="node-title-group">
-            <div class="node-name">${escapeHtml(node.name || node.id)}</div>
-            <div class="node-id-badge">${escapeHtml(node.id)}</div>
+            <span class="node-name">${escapeHtml(node.name || node.id)}</span>
+            <span class="node-id-chip">${escapeHtml(node.id)}</span>
           </div>
           <div class="node-status" id="status_${node.id}">
-            <span class="status-indicator-dot dot-offline"></span>
-            <span class="status-indicator-text">Syncing</span>
+            <span class="status-dot dot-offline"></span>
+            <span>Syncing</span>
           </div>
         </div>
 
@@ -409,7 +541,7 @@ function handleSchemaUpdate(schema) {
 
 function renderSlots(node, isGuest) {
   if (!node.slots || node.slots.length === 0) {
-    return `<div style="color:var(--text-dim); font-size:12px; padding:6px 0;">No slots configured</div>`;
+    return `<div style="color:var(--text-dim); font-size:12px; padding:6px 0;">No active slots configured</div>`;
   }
 
   let out = '';
@@ -418,52 +550,48 @@ function renderSlots(node, isGuest) {
     const type = s.type;
     const name = s.name || `Slot ${slotNum}`;
 
-    if (type === 1) { // Relay
+    if (type === 1) { // Relay Actuator
       const cannotToggle = (!isHubOnline || isGuest);
       const disabledTitle = !isHubOnline ? 'Master Hub is offline' : (isGuest ? 'Guests cannot toggle controls' : '');
       out += `
-        <div class="slot-item slot-relay">
+        <div class="slot-relay">
           <div class="slot-info">
             <span class="slot-label">${escapeHtml(name)}</span>
             <span class="slot-state-text" id="relay_text_${node.id}_${slotNum}">OFF</span>
           </div>
           <button class="toggle-btn" id="btn_${node.id}_${slotNum}" ${cannotToggle ? `disabled title="${disabledTitle}"` : ''} onclick="toggleRelay('${node.id}', ${slotNum})">
-            <span class="toggle-slider">
-              <svg style="width:11px; height:11px; color:#1e293b;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.02"/></svg>
-            </span>
+            <span class="toggle-slider"></span>
           </button>
         </div>
       `;
-    } else if (type === 6 || type === 7) { // DHT
+    } else if (type === 6 || type === 7) { // DHT Sensor
       out += `
-        <div class="slot-item slot-dht">
-          <div class="slot-label">${escapeHtml(name)}</div>
+        <div class="slot-dht">
           <div class="sensor-readings">
             <div class="sensor-pill">
-              <svg class="icon pill-icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>
               <span class="pill-label">TEMP</span>
-              <span class="pill-val" id="temp_${node.id}">--</span>
-              <span class="pill-unit">&deg;C</span>
+              <div class="pill-value-group">
+                <span class="pill-val" id="temp_${node.id}">--</span>
+                <span class="pill-unit">&deg;C</span>
+              </div>
             </div>
             <div class="sensor-pill">
-              <svg class="icon pill-icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
-              <span class="pill-label">HUM</span>
-              <span class="pill-val" id="hum_${node.id}">--</span>
-              <span class="pill-unit">%</span>
+              <span class="pill-label">HUMIDITY</span>
+              <div class="pill-value-group">
+                <span class="pill-val" id="hum_${node.id}">--</span>
+                <span class="pill-unit">%</span>
+              </div>
             </div>
           </div>
         </div>
       `;
-    } else if (type === 4 || type === 5) { // Ultrasonic
+    } else if (type === 4 || type === 5) { // Ultrasonic Sensor
       if (type === 4) {
         out += `
-          <div class="slot-item slot-tank">
+          <div class="slot-tank">
             <div class="tank-header-row">
-              <span class="slot-label" style="display:flex; align-items:center; gap:6px;">
-                <svg class="icon" style="width:14px; height:14px; color:#38bdf8;" viewBox="0 0 24 24"><path d="M2 12h20"/><path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/><path d="M4 8V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>
-                ${escapeHtml(name)}
-              </span>
-              <span class="pill-val" style="color:#38bdf8;" id="dist_${node.id}">-- cm</span>
+              <span class="slot-label">${escapeHtml(name)}</span>
+              <span class="pill-val" style="font-size:13px;" id="dist_${node.id}">-- cm</span>
             </div>
             <div class="tank-bar-track">
               <div class="tank-bar-fluid" id="tank_fill_${node.id}" style="width: 0%"></div>
@@ -477,7 +605,6 @@ function renderSlots(node, isGuest) {
   return out;
 }
 
-// Handle Live State Updates from Master
 function handleStateUpdate(stateMsg) {
   currentState = stateMsg;
   if (!stateMsg || !stateMsg.nodes) return;
@@ -488,9 +615,9 @@ function handleStateUpdate(stateMsg) {
     const statusEl = document.getElementById(`status_${nodeId}`);
     if (statusEl) {
       if (n.online) {
-        statusEl.innerHTML = `<span class="status-indicator-dot dot-online"></span><span class="status-indicator-text">Online</span>`;
+        statusEl.innerHTML = `<span class="status-dot dot-online"></span><span style="color:var(--text-muted);">Online</span>`;
       } else {
-        statusEl.innerHTML = `<span class="status-indicator-dot dot-offline"></span><span class="status-indicator-text">Offline</span>`;
+        statusEl.innerHTML = `<span class="status-dot dot-offline"></span><span style="color:var(--danger);">Offline</span>`;
       }
     }
 
@@ -527,7 +654,6 @@ function handleStateUpdate(stateMsg) {
   });
 }
 
-// User Action: Toggle Relay (Sends Command with Token to Master)
 function toggleRelay(nodeId, slot) {
   if (!isHubOnline) {
     showToast('Master Hub is offline. Controls locked.', 'error');
@@ -556,7 +682,9 @@ function toggleRelay(nodeId, slot) {
   }
 
   const home = getHomeConfig();
-  if (mqttClient && mqttClient.connected) {
+
+  // Dispatch over Cloud MQTT if connected
+  if (activeTransport === 'cloud' && mqttClient && mqttClient.connected) {
     const cmdTopic = `miniha/${home.homeId}/set`;
     const payload = JSON.stringify({
       token: session.token,
@@ -565,7 +693,9 @@ function toggleRelay(nodeId, slot) {
       state: targetState
     });
     mqttClient.publish(cmdTopic, payload);
-  } else if (home.localIp) {
+  }
+  // Dispatch over Local LAN Fallback if reachable
+  else if (home.localIp) {
     fetch(`${home.localIp}/api/control`, {
       method: 'POST',
       headers: {
@@ -573,14 +703,29 @@ function toggleRelay(nodeId, slot) {
         'X-Auth-Token': session.token
       },
       body: JSON.stringify({ target: nodeId, slot: parseInt(slot), val: targetState })
-    }).catch(err => console.error('[Local Control Error]', err));
+    })
+    .then(r => r.json())
+    .then(res => {
+      if (res && res.status === 'ok') {
+        // Success
+      } else {
+        // Revert toggle
+        if (btn) btn.classList.toggle('active');
+        showToast(res.error || 'Control rejected', 'error');
+      }
+    })
+    .catch(err => {
+      if (btn) btn.classList.toggle('active');
+      showToast('Local control failed. Check hub.', 'error');
+    });
   } else {
-    showToast('Not connected. Check internet.', 'error');
+    if (btn) btn.classList.toggle('active');
+    showToast('No connection to Hub.', 'error');
   }
 }
 
 // =========================================================================
-// INVITES & SHARING
+// ONBOARDING & SHARING
 // =========================================================================
 
 function checkUrlInvite() {
@@ -595,10 +740,10 @@ function checkUrlInvite() {
     try {
       const jsonStr = atob(decodeURIComponent(raw));
       const parsed = JSON.parse(jsonStr);
-      if (parsed.brokerUrl) {
+      if (parsed.brokerUrl || parsed.localIp) {
         saveHomeConfig(parsed);
         history.replaceState(null, '', window.location.pathname);
-        showToast('Connected to Home! Please log in.', 'success');
+        showToast('Gateway configured via invite! Please log in.', 'success');
         return true;
       }
     } catch (e) {
@@ -610,34 +755,29 @@ function checkUrlInvite() {
 
 function switchOnboardTab(tab) {
   const inv = document.getElementById('onboardInviteSection');
-  const brk = document.getElementById('onboardBrokerSection');
-  const loc = document.getElementById('onboardLocalSection');
+  const man = document.getElementById('onboardManualSection');
   if (inv) inv.style.display = (tab === 'invite') ? 'block' : 'none';
-  if (brk) brk.style.display = (tab === 'broker') ? 'block' : 'none';
-  if (loc) loc.style.display = (tab === 'local') ? 'block' : 'none';
+  if (man) man.style.display = (tab === 'manual') ? 'block' : 'none';
   
   const bInv = document.getElementById('tabBtnInvite');
-  const bBrk = document.getElementById('tabBtnBroker');
-  const bLoc = document.getElementById('tabBtnLocal');
-  if (bInv) bInv.className = 'tab-pill ' + (tab === 'invite' ? 'active' : '');
-  if (bBrk) bBrk.className = 'tab-pill ' + (tab === 'broker' ? 'active' : '');
-  if (bLoc) bLoc.className = 'tab-pill ' + (tab === 'local' ? 'active' : '');
+  const bMan = document.getElementById('tabBtnManual');
+  if (bInv) bInv.className = 'segment-tab ' + (tab === 'invite' ? 'active' : '');
+  if (bMan) bMan.className = 'segment-tab ' + (tab === 'manual' ? 'active' : '');
 }
 
 function applyPastedLink() {
   const input = document.getElementById('pasteLinkInput').value.trim();
   if (!input) return showToast('Paste an invite link first', 'error');
   try {
-    let raw = '';
+    let raw = input;
     if (input.includes('cfg=')) {
       raw = input.split('cfg=')[1].split('&')[0];
     }
-    if (!raw) throw new Error('No configuration found');
     const parsed = JSON.parse(atob(decodeURIComponent(raw)));
-    if (parsed.brokerUrl) {
+    if (parsed.brokerUrl || parsed.localIp) {
       saveHomeConfig(parsed);
-      showToast('Connected to Home Gateway!', 'success');
-      connectMqtt();
+      showToast('Gateway connected! Please log in.', 'success');
+      connectGateway();
       updateView();
     } else {
       throw new Error('Invalid config');
@@ -653,58 +793,32 @@ async function pasteFromClipboard() {
     document.getElementById('pasteLinkInput').value = text;
     applyPastedLink();
   } catch (e) {
-    showToast('Could not read clipboard. Please paste manually.', 'error');
+    showToast('Could not access clipboard. Paste manually.', 'error');
   }
 }
 
-function saveQuickBrokerConfig() {
-  const broker = document.getElementById('quickBrokerUrl').value.trim();
+function saveQuickGatewayConfig() {
   const homeId = document.getElementById('quickHomeId').value.trim() || 'home_1';
+  const broker = document.getElementById('quickBrokerUrl').value.trim();
   const user = document.getElementById('quickBrokerUser').value.trim();
   const pass = document.getElementById('quickBrokerPass').value;
-  if (!broker) return showToast('Broker WebSocket URL required', 'error');
+  const localIp = document.getElementById('quickLocalIp').value.trim() || 'http://miniha.local';
 
   saveHomeConfig({
     brokerUrl: broker,
     homeId: homeId,
     user: user,
     pass: pass,
-    localIp: ''
-  });
-  showToast('Broker configured. Connecting...', 'info');
-  connectMqtt();
-  updateView();
-}
-
-function saveQuickLocalConfig() {
-  const localIp = document.getElementById('quickLocalIp').value.trim() || 'http://miniha.local';
-  saveHomeConfig({
-    brokerUrl: '',
-    homeId: 'local_hub',
-    user: '',
-    pass: '',
     localIp: localIp
   });
-  showToast('Local Hub selected', 'info');
-  updateView();
-}
 
-function togglePassVisibility(inputId, btn) {
-  const input = document.getElementById(inputId);
-  if (!input) return;
-  const isPass = input.type === 'password';
-  input.type = isPass ? 'text' : 'password';
-  btn.style.color = isPass ? '#60a5fa' : 'var(--text-muted)';
+  showToast('Gateway settings saved. Connecting...', 'info');
+  connectGateway();
+  updateView();
 }
 
 function openShareModal() {
   const home = getHomeConfig();
-  if (!home.brokerUrl) {
-    showToast('Configure home connection first', 'error');
-    openSettingsModal();
-    return;
-  }
-
   const encoded = btoa(JSON.stringify({
     brokerUrl: home.brokerUrl,
     homeId: home.homeId,
@@ -734,31 +848,10 @@ function copyShareLink() {
   const input = document.getElementById('shareLinkInput');
   input.select();
   navigator.clipboard.writeText(input.value)
-    .then(() => showToast('Home Invite link copied! Send via WhatsApp.', 'success'))
+    .then(() => showToast('Invite link copied to clipboard', 'success'))
     .catch(() => showToast('Link selected. Press Copy.', 'info'));
 }
 
-function promptPasteLink() {
-  const input = prompt('Paste your Home Invite Link or Code:');
-  if (input && input.trim()) {
-    const val = input.trim();
-    let raw = val.includes('cfg=') ? val.split('cfg=')[1].split('&')[0] : val;
-    try {
-      const decoded = JSON.parse(atob(raw));
-      if (decoded.brokerUrl) {
-        saveHomeConfig(decoded);
-        showToast('Home connected! Please log in.', 'success');
-        connectMqtt();
-        updateView();
-        return;
-      }
-    } catch (e) {
-      alert('Invalid home invite link.');
-    }
-  }
-}
-
-// Settings Modal Controls (Admin)
 function openSettingsModal() {
   const home = getHomeConfig();
   document.getElementById('modalBroker').value = home.brokerUrl;
@@ -782,54 +875,39 @@ function saveHomeAndConnect() {
     homeId: document.getElementById('modalHomeId').value.trim() || 'home_1',
     user: document.getElementById('modalUser').value.trim(),
     pass: document.getElementById('modalPass').value,
-    localIp: document.getElementById('modalLocalIp').value.trim()
+    localIp: document.getElementById('modalLocalIp').value.trim() || 'http://miniha.local'
   });
 
   closeSettingsModal();
-  showToast('Home settings saved. Connecting...', 'info');
-  connectMqtt();
+  showToast('Settings saved. Connecting...', 'info');
+  connectGateway();
   updateView();
 }
 
 // =========================================================================
-// HUB STATUS (LWT) & NATIVE NOTIFICATIONS
+// HUB STATUS & NOTIFICATIONS
 // =========================================================================
 
 function handleHubStatusUpdate(data) {
   isHubOnline = (data && data.online !== false);
-  const banner = document.getElementById('hubOfflineBanner');
+  updateHubOfflineBanner();
   if (isHubOnline) {
-    setStatus('Online', 'online');
-    if (banner) banner.style.display = 'none';
+    if (activeTransport === 'cloud') setStatus('Cloud Online', 'online');
   } else {
     setStatus('Hub Offline', 'offline');
-    if (banner) banner.style.display = 'flex';
   }
-
-  const session = getUserSession();
-  const isGuest = (session.role === 'guest');
-  const cannotToggle = (!isHubOnline || isGuest);
-  const disabledTitle = !isHubOnline ? 'Master Hub is offline' : (isGuest ? 'Guests cannot toggle controls' : '');
-
-  document.querySelectorAll('.toggle-btn').forEach(btn => {
-    btn.disabled = cannotToggle;
-    btn.title = disabledTitle;
-  });
 }
 
 function handleNotification(data) {
   const title = data.title || 'Mini-HA Alert';
   const msg = data.msg || 'Automation alert triggered';
 
-  // 1. Phone Vibration (Haptic feedback)
   if ('vibrate' in navigator) {
     try { navigator.vibrate([120, 80, 120]); } catch (e) {}
   }
 
-  // 2. Synthesized pleasant dual-tone chime
   playNotificationChime();
 
-  // 3. Native Browser Notification (Option A)
   if ('Notification' in window && Notification.permission === 'granted') {
     try {
       if (navigator.serviceWorker && navigator.serviceWorker.controller) {
@@ -843,17 +921,13 @@ function handleNotification(data) {
           });
         });
       } else {
-        new Notification(title, {
-          body: msg,
-          icon: './icon.svg'
-        });
+        new Notification(title, { body: msg, icon: './icon.svg' });
       }
     } catch (e) {
       console.warn('Native notification failed:', e);
     }
   }
 
-  // 4. In-App Toast
   showToast(`${title}: ${msg}`, 'warning');
 }
 
@@ -865,82 +939,94 @@ function playNotificationChime() {
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5
+    osc.frequency.setValueAtTime(587.33, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15);
     gain.gain.setValueAtTime(0.3, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.35);
-    osc.start(ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+    osc.start();
     osc.stop(ctx.currentTime + 0.35);
   } catch (e) {}
 }
 
-async function toggleNotificationPermission() {
+function toggleNativeNotifications() {
   if (!('Notification' in window)) {
-    showToast('Notifications not supported by this browser', 'error');
+    showToast('Notifications are not supported by this browser', 'error');
     return;
   }
-
   if (Notification.permission === 'granted') {
-    showToast('Notifications active & enabled', 'success');
-    playNotificationChime();
-    updateNotifButtonState();
-    return;
-  }
-
-  if (Notification.permission === 'denied') {
-    showToast('Notifications blocked in browser settings', 'error');
-    return;
-  }
-
-  const permission = await Notification.requestPermission();
-  if (permission === 'granted') {
-    showToast('Push alerts enabled successfully', 'success');
-    playNotificationChime();
+    showToast('Notifications are enabled', 'info');
+  } else if (Notification.permission === 'denied') {
+    showToast('Notifications are blocked in site settings', 'error');
   } else {
-    showToast('Notification permission was not granted', 'error');
+    Notification.requestPermission().then(permission => {
+      if (permission === 'granted') {
+        showToast('Notifications enabled!', 'success');
+        updateNotifButtonState();
+      } else {
+        showToast('Permission not granted', 'info');
+      }
+    });
   }
-  updateNotifButtonState();
 }
 
 function updateNotifButtonState() {
-  const btn = document.getElementById('notifBtn');
+  const btn = document.getElementById('notifBellBtn');
   if (!btn) return;
   if ('Notification' in window && Notification.permission === 'granted') {
-    btn.style.color = '#60a5fa';
-    btn.style.borderColor = '#2563eb';
-    btn.title = 'Alerts Enabled (Tap to test)';
+    btn.style.color = 'var(--text-main)';
   } else {
-    btn.style.color = 'var(--text-sub)';
-    btn.style.borderColor = 'var(--card-border)';
-    btn.title = 'Enable Push Alerts';
+    btn.style.color = 'var(--text-dim)';
   }
 }
 
-// Toast Notifications
+// =========================================================================
+// UTILITIES
+// =========================================================================
+
 function showToast(msg, type = 'info') {
-  const container = document.getElementById('toast');
-  if (!container) return;
-  container.textContent = msg;
-  container.className = `toast toast-${type} show`;
-  setTimeout(() => {
-    container.classList.remove('show');
+  const toast = document.getElementById('toast');
+  if (!toast) return;
+
+  toast.textContent = msg;
+  toast.style.display = 'block';
+
+  if (type === 'error') {
+    toast.style.borderColor = 'var(--danger-border)';
+    toast.style.color = '#fca5a5';
+  } else if (type === 'success') {
+    toast.style.borderColor = 'var(--success-border)';
+    toast.style.color = '#6ee7b7';
+  } else if (type === 'warning') {
+    toast.style.borderColor = 'var(--warning-border)';
+    toast.style.color = '#fcd34d';
+  } else {
+    toast.style.borderColor = 'var(--card-border)';
+    toast.style.color = 'var(--text-main)';
+  }
+
+  clearTimeout(toast._timeout);
+  toast._timeout = setTimeout(() => {
+    toast.style.display = 'none';
   }, 3500);
 }
 
 function escapeHtml(str) {
   if (!str) return '';
-  return str.replace(/[&<>"']/g, function(m) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m];
-  });
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-// Boot Sequence
+// =========================================================================
+// INITIALIZATION
+// =========================================================================
+
 window.addEventListener('DOMContentLoaded', () => {
   checkUrlInvite();
   updateView();
   updateNotifButtonState();
-  const home = getHomeConfig();
-  if (home.brokerUrl) {
-    connectMqtt();
-  }
+  connectGateway();
 });

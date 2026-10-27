@@ -27,3 +27,5 @@ Desktop.ini
 # Secrets & Local Overrides
 *.local
 secrets.ini
+
+.agents/

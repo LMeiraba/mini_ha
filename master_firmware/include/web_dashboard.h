@@ -642,7 +642,7 @@ inline void setupWebEndpoints() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mini-HA Supervisor Console</title>
+  <title>Mini-HA Supervisor</title>
   
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -650,44 +650,59 @@ inline void setupWebEndpoints() {
 
   <style>
     :root {
-      --bg: #0a0d14;
-      --card-bg: #111625;
-      --card-bg-elevated: #161e31;
-      --card-border: rgba(255, 255, 255, 0.08);
-      --card-border-focus: rgba(59, 130, 246, 0.5);
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
-      --primary: #2563eb;
-      --primary-hover: #1d4ed8;
-      --primary-glow: rgba(37, 99, 235, 0.35);
+      --bg: #09090b;
+      --card-bg: #121215;
+      --card-elevated: #18181b;
+      --card-border: #27272a;
+      --card-border-subtle: #1f1f23;
+      --card-border-focus: #52525b;
+      
+      --text: #fafafa;
+      --text-muted: #a1a1aa;
+      --text-dim: #71717a;
+
+      --btn-primary-bg: #fafafa;
+      --btn-primary-text: #09090b;
+      --btn-primary-hover: #e4e4e7;
+
+      --btn-secondary-bg: #18181b;
+      --btn-secondary-border: #27272a;
+      --btn-secondary-text: #fafafa;
+      --btn-secondary-hover: #27272a;
+
+      --input-bg: #141417;
+
       --success: #10b981;
-      --success-glow: rgba(16, 185, 129, 0.25);
+      --success-subtle: rgba(16, 185, 129, 0.12);
+      --success-border: rgba(16, 185, 129, 0.25);
+
       --warning: #f59e0b;
+      --warning-subtle: rgba(245, 158, 11, 0.12);
+      --warning-border: rgba(245, 158, 11, 0.25);
+
       --danger: #ef4444;
-      --input-bg: #0c101c;
-      --radius-sm: 8px;
-      --radius-md: 12px;
-      --radius-lg: 18px;
+      --danger-subtle: rgba(239, 68, 68, 0.12);
+      --danger-border: rgba(239, 68, 68, 0.25);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
-      background-image: 
-        radial-gradient(ellipse 70% 40% at 50% -10%, rgba(37, 99, 235, 0.12), transparent),
-        radial-gradient(circle at 90% 90%, rgba(16, 185, 129, 0.03), transparent 35%);
       color: var(--text);
       min-height: 100vh;
       padding: 0;
-      font-size: 14px;
+      font-size: 13px;
       -webkit-font-smoothing: antialiased;
     }
 
     .icon {
       display: inline-block;
-      width: 16px;
-      height: 16px;
+      width: 15px;
+      height: 15px;
       stroke-width: 2;
       stroke: currentColor;
       fill: none;
@@ -699,10 +714,10 @@ inline void setupWebEndpoints() {
 
     /* Top Bar */
     .topbar {
-      background: rgba(11, 15, 23, 0.85);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      padding: 14px 24px;
+      background: rgba(9, 9, 11, 0.95);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      padding: 12px 20px;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -710,32 +725,33 @@ inline void setupWebEndpoints() {
       position: sticky;
       top: 0;
       z-index: 50;
+      gap: 12px;
+      flex-wrap: wrap;
     }
     .brand {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
     }
     .brand-badge {
-      width: 36px;
-      height: 36px;
-      border-radius: var(--radius-md);
-      background: linear-gradient(135deg, #1e293b, #0f172a);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #60a5fa;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      color: var(--text);
     }
     .brand-title-wrap {
       display: flex;
       flex-direction: column;
     }
     .brand-title {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 700;
-      letter-spacing: -0.3px;
+      letter-spacing: -0.2px;
       color: var(--text);
       line-height: 1.2;
     }
@@ -743,23 +759,24 @@ inline void setupWebEndpoints() {
       font-size: 10px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.8px;
+      letter-spacing: 0.6px;
       color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
     }
 
     .status-dot {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
       background: var(--success);
-      box-shadow: 0 0 10px var(--success-glow);
       display: inline-block;
     }
 
     .nav-actions {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
+      flex-wrap: wrap;
     }
 
     /* Buttons & Badges */
@@ -768,147 +785,144 @@ inline void setupWebEndpoints() {
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
-      padding: 4px 10px;
-      border-radius: 20px;
-      background: rgba(37, 99, 235, 0.15);
-      color: #93c5fd;
-      border: 1px solid rgba(59, 130, 246, 0.3);
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: var(--card-elevated);
+      color: var(--text);
+      border: 1px solid var(--card-border);
     }
     .btn {
-      background: linear-gradient(135deg, #2563eb, #1d4ed8);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      padding: 8px 16px;
+      background: var(--btn-primary-bg);
+      color: var(--btn-primary-text);
+      border: none;
+      padding: 8px 14px;
       border-radius: var(--radius-sm);
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
-      transition: all 0.2s;
+      transition: background 0.15s;
     }
     .btn:hover {
-      background: linear-gradient(135deg, #3b82f6, #2563eb);
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
+      background: var(--btn-primary-hover);
     }
     .btn:active { transform: scale(0.98); }
     .btn-secondary {
-      background: rgba(22, 30, 49, 0.7);
-      color: var(--text);
-      border: 1px solid var(--card-border);
-      box-shadow: none;
+      background: var(--btn-secondary-bg);
+      border: 1px solid var(--btn-secondary-border);
+      color: var(--btn-secondary-text);
     }
     .btn-secondary:hover {
-      background: #1e293b;
-      border-color: rgba(255, 255, 255, 0.15);
+      background: #222227;
+      border-color: #3f3f46;
     }
     .btn-danger {
-      background: rgba(127, 29, 29, 0.6);
+      background: var(--danger-subtle);
       color: #fca5a5;
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      box-shadow: none;
+      border: 1px solid var(--danger-border);
     }
     .btn-danger:hover {
-      background: #991b1b;
-      color: #fff;
+      background: rgba(239, 68, 68, 0.2);
     }
-    .btn-sm { padding: 5px 12px; font-size: 12px; }
+    .btn-sm { padding: 5px 10px; font-size: 11px; }
 
     /* App Shell Container */
     .app-container {
-      max-width: 1240px;
+      max-width: 1300px;
       margin: 0 auto;
-      padding: 24px 20px 48px;
+      padding: 20px 16px 40px;
       width: 100%;
     }
 
-    /* Cards & Bento Grid */
+    /* Cards & Grid */
     .card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: var(--radius-lg);
-      padding: 22px;
-      margin-bottom: 20px;
-      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35);
+      border-radius: var(--radius-md);
+      padding: 20px;
+      margin-bottom: 16px;
     }
     .card-title {
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       text-transform: uppercase;
       letter-spacing: 0.6px;
       color: var(--text-dim);
-      margin-bottom: 16px;
+      margin-bottom: 14px;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      font-family: 'JetBrains Mono', monospace;
     }
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-      gap: 16px;
+      grid-template-columns: 1fr;
+      gap: 14px;
     }
+    @media (min-width: 680px) {
+      .grid { grid-template-columns: repeat(2, 1fr); gap: 16px; }
+    }
+    @media (min-width: 1080px) {
+      .grid { grid-template-columns: repeat(3, 1fr); }
+    }
+
     .node-box {
-      background: #0d121f;
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: var(--radius-md);
-      padding: 16px;
-      transition: border-color 0.2s;
-    }
-    .node-box:hover {
-      border-color: rgba(255, 255, 255, 0.12);
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      padding: 14px;
     }
     .node-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 12px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--card-border-subtle);
+      margin-bottom: 10px;
     }
     .slot-row {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 8px 0;
+      padding: 6px 0;
       font-size: 13px;
     }
 
-    /* Tactile Toggle Switch (Apple-style) */
+    /* Tactile Toggle Switch */
     .toggle-btn {
       position: relative;
-      width: 52px;
+      width: 50px;
       height: 28px;
-      background: #1e293b;
+      background: #27272a;
       border-radius: 14px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      border: none;
       cursor: pointer;
-      transition: background 0.25s, box-shadow 0.25s;
+      transition: background 0.2s ease;
       flex-shrink: 0;
+      outline: none;
     }
     .toggle-slider {
       position: absolute;
-      top: 2px;
-      left: 2px;
+      top: 3px;
+      left: 3px;
       width: 22px;
       height: 22px;
-      background: #fff;
+      background: #fafafa;
       border-radius: 50%;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.4);
-      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: transform 0.2s ease;
       display: flex;
       align-items: center;
       justify-content: center;
     }
     .toggle-btn.active {
-      background: var(--primary);
-      box-shadow: 0 0 12px var(--primary-glow);
+      background: var(--success);
     }
     .toggle-btn.active .toggle-slider {
-      transform: translateX(24px);
+      transform: translateX(22px);
     }
     .toggle-btn:disabled {
       opacity: 0.4;
@@ -918,25 +932,26 @@ inline void setupWebEndpoints() {
     /* Sensor Pills */
     .sensor-readings { display: flex; gap: 8px; }
     .sensor-pill {
-      background: rgba(30, 41, 59, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
       border-radius: var(--radius-sm);
-      padding: 4px 9px;
+      padding: 6px 10px;
       display: flex;
       align-items: center;
-      gap: 5px;
+      gap: 6px;
     }
     .pill-label {
       font-size: 9px;
       font-weight: 700;
       color: var(--text-dim);
       text-transform: uppercase;
+      font-family: 'JetBrains Mono', monospace;
     }
     .pill-val {
       font-family: 'JetBrains Mono', monospace;
       font-size: 13px;
-      font-weight: 600;
-      color: #93c5fa;
+      font-weight: 700;
+      color: var(--text);
     }
     .pill-unit { font-size: 10px; color: var(--text-dim); }
 
@@ -944,57 +959,57 @@ inline void setupWebEndpoints() {
     .tank-header { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 6px; }
     .tank-bar-container {
       width: 100%;
-      height: 9px;
-      background: #172033;
-      border-radius: 5px;
+      height: 8px;
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
       overflow: hidden;
-      border: 1px solid rgba(255, 255, 255, 0.08);
     }
     .tank-bar-fill {
       height: 100%;
-      background: linear-gradient(90deg, #0284c7, #38bdf8);
-      border-radius: 5px;
-      transition: width 0.5s ease;
+      background: var(--text);
+      border-radius: 4px;
+      transition: width 0.4s ease;
     }
 
     /* Alert Banner */
     .alert-banner {
-      background: linear-gradient(135deg, rgba(120, 53, 15, 0.4), rgba(69, 26, 3, 0.5));
-      border: 1px solid rgba(245, 158, 11, 0.3);
+      background: var(--warning-subtle);
+      border: 1px solid var(--warning-border);
       color: #fde68a;
-      padding: 14px 18px;
-      border-radius: var(--radius-md);
-      margin-bottom: 20px;
+      padding: 12px 16px;
+      border-radius: var(--radius-sm);
+      margin-bottom: 16px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 13px;
+      font-size: 12px;
+      gap: 12px;
     }
 
     /* Tables & Inputs */
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--card-border); }
-    th { color: var(--text-dim); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--card-border); }
+    th { color: var(--text-dim); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-family: 'JetBrains Mono', monospace; }
     
     input, select {
       background: var(--input-bg);
       border: 1px solid var(--card-border);
       color: var(--text);
-      padding: 10px 14px;
-      border-radius: var(--radius-md);
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
       width: 100%;
-      font-size: 13px;
+      font-size: 12px;
       font-family: inherit;
-      margin: 4px 0 14px 0;
+      margin: 4px 0 12px 0;
       outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: border-color 0.15s;
     }
     input:focus, select:focus {
       border-color: var(--card-border-focus);
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
     }
-    label { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
-    .checkbox-line { display: flex; align-items: center; gap: 10px; margin: 8px 0 14px 0; }
+    label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
+    .checkbox-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px 0; }
     .checkbox-line input { width: auto; margin: 0; }
 
     /* Modal */
@@ -1002,116 +1017,103 @@ inline void setupWebEndpoints() {
       position: fixed;
       inset: 0;
       background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
       display: none;
       align-items: center;
       justify-content: center;
       z-index: 100;
+      padding: 16px;
     }
     .modal {
-      background: #131a2b;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: var(--radius-lg);
-      width: 90%;
-      max-width: 440px;
-      padding: 24px;
-      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      width: 100%;
+      max-width: 420px;
+      padding: 20px;
     }
-    .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
-    /* High-End Hardware Supervisor Login Screen */
+    /* Hardware Supervisor Login Screen */
     .login-container {
-      min-height: 85vh;
+      min-height: 80vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: 16px;
     }
     .login-card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: 24px;
+      border-radius: var(--radius-md);
       width: 100%;
-      max-width: 420px;
-      padding: 34px 28px;
-      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-      position: relative;
-    }
-    .login-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 15%;
-      right: 15%;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.5), transparent);
+      max-width: 400px;
+      padding: 24px;
     }
 
     /* Toast */
     #toast {
       position: fixed;
-      bottom: 24px;
-      right: 24px;
-      background: #1e293b;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      bottom: 20px;
+      right: 20px;
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
       color: var(--text);
-      padding: 12px 20px;
-      border-radius: 30px;
-      font-size: 13px;
+      padding: 10px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
       font-weight: 600;
       transform: translateY(100px);
       opacity: 0;
-      transition: 0.3s;
+      transition: 0.25s;
       z-index: 200;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
     }
     #toast.show { transform: translateY(0); opacity: 1; }
-    #toast.success { background: #064e3b; border-color: #059669; }
-    #toast.error { background: #7f1d1d; border-color: #dc2626; }
+    #toast.success { border-color: var(--success-border); color: #6ee7b7; }
+    #toast.error { border-color: var(--danger-border); color: #fca5a5; }
   </style>
 </head>
 <body>
 
-  <!-- 1. LOGIN SCREEN (HARDWARE SUPERVISOR APPLIANCE) -->
+  <!-- 1. LOGIN SCREEN -->
   <div id="loginView" class="login-container" style="display:none;">
     <div class="login-card">
-      <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
         <div class="brand-badge">
-          <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
+          <svg class="icon" style="width:18px; height:18px;" viewBox="0 0 24 24">
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+            <rect x="9" y="9" width="6" height="6"/>
+            <line x1="9" y1="1" x2="9" y2="4"/>
+            <line x1="15" y1="1" x2="15" y2="4"/>
           </svg>
         </div>
         <div>
-          <div style="font-size:17px; font-weight:800; letter-spacing:-0.3px;">Mini-HA Supervisor</div>
-          <div style="font-size:11px; font-weight:600; text-transform:uppercase; color:var(--text-dim); letter-spacing:0.5px;">Master Hardware Console</div>
+          <div style="font-size:15px; font-weight:700;">Mini-HA Supervisor</div>
+          <div style="font-size:10px; font-weight:600; text-transform:uppercase; color:var(--text-dim); font-family:'JetBrains Mono', monospace;">Hardware Console</div>
         </div>
       </div>
 
-      <div style="font-size:13px; color:var(--text-muted); line-height:1.5; margin-bottom:20px;">
-        Sign in to manage isolated RS-422 bus nodes, star-mesh wireless slaves, and cloud bridge routing.
+      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:18px;">
+        Sign in to manage RS-422 bus nodes, wireless star-mesh slaves, and cloud bridge routing.
       </div>
 
       <form onsubmit="handleLogin(event)">
         <label>Username</label>
-        <div style="position:relative; display:flex; align-items:center;">
-          <input type="text" id="loginUser" required autocomplete="username" autofocus placeholder="admin">
-        </div>
+        <input type="text" id="loginUser" required autocomplete="username" autofocus placeholder="admin">
 
         <label>Password</label>
         <div style="position:relative; display:flex; align-items:center;">
           <input type="password" id="loginPass" required autocomplete="current-password" placeholder="Password">
-          <button type="button" onclick="togglePassVisibilityLocal()" style="position:absolute; right:12px; top:12px; background:none; border:none; color:var(--text-muted); cursor:pointer;">
+          <button type="button" onclick="togglePassVisibilityLocal()" style="position:absolute; right:10px; top:8px; background:none; border:none; color:var(--text-dim); cursor:pointer;">
             <svg class="icon" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
           </button>
         </div>
 
-        <button type="submit" class="btn" style="width:100%; margin-top:8px;">Sign In to Console</button>
+        <button type="submit" class="btn" style="width:100%; margin-top:6px;">Sign In</button>
       </form>
 
-      <div style="margin-top:20px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.06); display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-dim);">
-        <span>Local Host: miniha.local</span>
-        <span style="font-family:'JetBrains Mono', monospace;">Firmware v2.4</span>
+      <div style="margin-top:18px; padding-top:12px; border-top:1px solid var(--card-border-subtle); display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-dim); font-family:'JetBrains Mono', monospace;">
+        <span>miniha.local</span>
+        <span>v2.4</span>
       </div>
     </div>
   </div>
@@ -1122,14 +1124,14 @@ inline void setupWebEndpoints() {
     <div class="topbar">
       <div class="brand">
         <div class="brand-badge">
-          <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24">
-            <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-            <polyline points="9 22 9 12 15 12 15 22"/>
+          <svg class="icon" style="width:16px; height:16px;" viewBox="0 0 24 24">
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+            <rect x="9" y="9" width="6" height="6"/>
           </svg>
         </div>
         <div class="brand-title-wrap">
-          <span class="brand-title">Mini-HA Hub</span>
-          <span class="brand-subtitle">Supervisor Active</span>
+          <span class="brand-title">MINI-HA</span>
+          <span class="brand-subtitle">LOCAL HUB</span>
         </div>
       </div>
       <div class="nav-actions">
@@ -1147,96 +1149,96 @@ inline void setupWebEndpoints() {
       <!-- Default Password Warning Banner -->
       <div id="defaultPassBanner" class="alert-banner" style="display:none;">
         <div>
-          <strong>Security Notice:</strong> Your hub is currently using the factory default credentials (<code>admin / admin123</code>). Change your password now.
+          <strong>Security Notice:</strong> Using factory default credentials (<code>admin / admin123</code>). Change password immediately.
         </div>
         <button class="btn btn-sm" onclick="openPassModal()">Change Password</button>
       </div>
 
-    <!-- TAB 1: OVERVIEW & ENTITIES -->
-    <div id="tabNodes">
-      <div class="card">
-        <div class="card-title">Connected Mesh Nodes & Live Entities</div>
-        <div id="entitiesGrid" class="grid">
-          <div style="color:var(--text-muted);">Loading mesh entities...</div>
-        </div>
-      </div>
-
-      <div class="card admin-only" id="discoveryCard">
-        <div class="card-title">Discovered Unbound Slaves</div>
-        <div id="pendingTable">
-          <div style="color:var(--text-muted);">No unconfigured devices detected on bus.</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- TAB: AUTOMATION RULES & NOTIFICATIONS (ADMIN ONLY) -->
-    <div id="tabRules" style="display:none;">
-      <div class="card">
-        <div class="card-title">
-          <span>Automation Rules & Push Notifications</span>
-          <button class="btn btn-sm" onclick="saveRulesConfig()">Save Rules</button>
-        </div>
-        <div id="rulesList"><div style="color:var(--text-muted);">Loading automation rules...</div></div>
-      </div>
-    </div>
-
-    <!-- TAB 2: USER MANAGEMENT (ADMIN ONLY) -->
-    <div id="tabUsers" style="display:none;">
-      <div class="card">
-        <div class="card-title">
-          <span>User Accounts</span>
-          <button class="btn btn-sm" onclick="openAddUserModal()">+ Add User</button>
-        </div>
-        <div id="usersTable">Loading users...</div>
-      </div>
-    </div>
-
-    <!-- TAB 3: NETWORK & CLOUD SETTINGS (ADMIN ONLY) -->
-    <div id="tabSettings" style="display:none;">
-      <div class="card">
-        <div class="card-title">Home Wi-Fi (Station Connection)</div>
-        <label>Wi-Fi Network Name (SSID)</label>
-        <input type="text" id="cfgStaSSID" placeholder="e.g. MyHomeNetwork">
-        <label>Wi-Fi Password</label>
-        <input type="password" id="cfgStaPass" placeholder="Leave blank to keep existing">
-      </div>
-
-      <div class="card">
-        <div class="card-title">Cloud MQTT Bridge (EMQX / Custom Broker)</div>
-        <div class="checkbox-line">
-          <input type="checkbox" id="cfgMqttEn">
-          <label for="cfgMqttEn" style="cursor:pointer; color:var(--text);">Enable Cloud MQTT Integration (for PWA / Remote Access)</label>
-        </div>
-        <div style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:12px;">
-          Connects to your free EMQX Serverless broker (Port 8883 TLS). Allows your PWA to securely control and monitor your smart home remotely without port forwarding or servers.
-        </div>
-        <label>Broker Host (TLS)</label>
-        <input type="text" id="cfgMqttBroker" placeholder="e.g. xxxxxx.emqx.cloud">
-        <div style="display:flex; gap:10px;">
-          <div style="flex:1;">
-            <label>Port</label>
-            <input type="number" id="cfgMqttPort" placeholder="8883" value="8883">
-          </div>
-          <div style="flex:2;">
-            <label>Home ID</label>
-            <input type="text" id="cfgMqttHomeId" placeholder="e.g. home_1">
+      <!-- TAB 1: OVERVIEW & ENTITIES -->
+      <div id="tabNodes">
+        <div class="card">
+          <div class="card-title">Live Hardware Nodes & Actuators</div>
+          <div id="entitiesGrid" class="grid">
+            <div style="color:var(--text-muted);">Loading mesh entities...</div>
           </div>
         </div>
-        <label>Broker Username</label>
-        <input type="text" id="cfgMqttUser" placeholder="Client Username">
-        <label>Broker Password</label>
-        <input type="password" id="cfgMqttPass" placeholder="Leave empty to keep existing password">
+
+        <div class="card admin-only" id="discoveryCard">
+          <div class="card-title">Discovered Unbound Slaves</div>
+          <div id="pendingTable">
+            <div style="color:var(--text-muted);">No unconfigured devices detected on bus.</div>
+          </div>
+        </div>
       </div>
 
-      <button class="btn" onclick="saveSystemSettings()">Save Settings & Restart</button>
+      <!-- TAB: AUTOMATION RULES & NOTIFICATIONS (ADMIN ONLY) -->
+      <div id="tabRules" style="display:none;">
+        <div class="card">
+          <div class="card-title">
+            <span>Automation Rules & Notifications</span>
+            <button class="btn btn-sm" onclick="saveRulesConfig()">Save Rules</button>
+          </div>
+          <div id="rulesList"><div style="color:var(--text-muted);">Loading rules...</div></div>
+        </div>
+      </div>
+
+      <!-- TAB 2: USER MANAGEMENT (ADMIN ONLY) -->
+      <div id="tabUsers" style="display:none;">
+        <div class="card">
+          <div class="card-title">
+            <span>User Accounts</span>
+            <button class="btn btn-sm" onclick="openAddUserModal()">+ Add User</button>
+          </div>
+          <div id="usersTable">Loading users...</div>
+        </div>
+      </div>
+
+      <!-- TAB 3: NETWORK & CLOUD SETTINGS (ADMIN ONLY) -->
+      <div id="tabSettings" style="display:none;">
+        <div class="card">
+          <div class="card-title">Home Wi-Fi (Station Connection)</div>
+          <label>Wi-Fi Network Name (SSID)</label>
+          <input type="text" id="cfgStaSSID" placeholder="e.g. MyHomeNetwork">
+          <label>Wi-Fi Password</label>
+          <input type="password" id="cfgStaPass" placeholder="Leave blank to keep existing">
+        </div>
+
+        <div class="card">
+          <div class="card-title">Cloud MQTT Bridge (EMQX / Custom Broker)</div>
+          <div class="checkbox-line">
+            <input type="checkbox" id="cfgMqttEn">
+            <label for="cfgMqttEn" style="cursor:pointer; color:var(--text);">Enable Cloud MQTT Integration (for PWA / Remote Access)</label>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:12px;">
+            Connects to your free EMQX Serverless broker (Port 8883 TLS). Allows PWA remote access with automatic LAN fallback.
+          </div>
+          <label>Broker Host (TLS)</label>
+          <input type="text" id="cfgMqttBroker" placeholder="e.g. xxxxxx.emqx.cloud">
+          <div style="display:flex; gap:10px;">
+            <div style="flex:1;">
+              <label>Port</label>
+              <input type="number" id="cfgMqttPort" placeholder="8883" value="8883">
+            </div>
+            <div style="flex:2;">
+              <label>Home ID</label>
+              <input type="text" id="cfgMqttHomeId" placeholder="e.g. home_1">
+            </div>
+          </div>
+          <label>Broker Username</label>
+          <input type="text" id="cfgMqttUser" placeholder="Client Username">
+          <label>Broker Password</label>
+          <input type="password" id="cfgMqttPass" placeholder="Leave empty to keep existing password">
+        </div>
+
+        <button class="btn" onclick="saveSystemSettings()">Save Settings & Restart</button>
+      </div>
     </div>
   </div>
-</div>
 
   <!-- MODAL: CHANGE PASSWORD -->
   <div id="passModal" class="modal-overlay">
     <div class="modal">
-      <div style="font-size:15px; font-weight:600; margin-bottom:12px;" id="passModalTitle">Change Password</div>
+      <div style="font-size:14px; font-weight:700; margin-bottom:12px;" id="passModalTitle">Change Password</div>
       <label>New Password</label>
       <input type="password" id="modalNewPass" required>
       <label>Confirm Password</label>
@@ -1251,7 +1253,7 @@ inline void setupWebEndpoints() {
   <!-- MODAL: ADD USER -->
   <div id="addUserModal" class="modal-overlay">
     <div class="modal">
-      <div style="font-size:15px; font-weight:600; margin-bottom:12px;">Add User Account</div>
+      <div style="font-size:14px; font-weight:700; margin-bottom:12px;">Add User Account</div>
       <label>Username</label>
       <input type="text" id="addUserName" required>
       <label>Password</label>
@@ -1272,12 +1274,12 @@ inline void setupWebEndpoints() {
   <!-- MODAL: BIND NODE -->
   <div id="bindModal" class="modal-overlay">
     <div class="modal">
-      <div style="font-size:15px; font-weight:600; margin-bottom:12px;">Bind Mesh Slave</div>
-      <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;" id="bindMacLabel">MAC: --</div>
-      <label>Assign Node ID (e.g. N01, N02)</label>
+      <div style="font-size:14px; font-weight:700; margin-bottom:12px;">Bind Mesh Slave</div>
+      <div style="font-size:11px; color:var(--text-muted); margin-bottom:10px; font-family:'JetBrains Mono', monospace;" id="bindMacLabel">MAC: --</div>
+      <label>Assign Node ID</label>
       <input type="text" id="bindNodeId" value="N01" required>
-      <label>Friendly Name (e.g. Living Room, Tank)</label>
-      <input type="text" id="bindNodeName" placeholder="Friendly Name" required>
+      <label>Friendly Name</label>
+      <input type="text" id="bindNodeName" placeholder="e.g. Living Room, Tank" required>
       <div class="modal-actions">
         <button class="btn btn-secondary btn-sm" onclick="closeModal('bindModal')">Cancel</button>
         <button class="btn btn-sm" onclick="submitBindNode()">Bind Node</button>
@@ -1285,7 +1287,7 @@ inline void setupWebEndpoints() {
     </div>
   </div>
 
-  <!-- Toast Notification Element -->
+  <!-- Toast Element -->
   <div id="toast">Notification</div>
 
   <script>
@@ -1303,6 +1305,11 @@ inline void setupWebEndpoints() {
 
     function closeModal(id) {
       document.getElementById(id).style.display = 'none';
+    }
+
+    function togglePassVisibilityLocal() {
+      const p = document.getElementById('loginPass');
+      if (p) p.type = (p.type === 'password') ? 'text' : 'password';
     }
 
     function showTab(tab) {
@@ -1367,7 +1374,6 @@ inline void setupWebEndpoints() {
       checkSession();
     }
 
-    // Nodes & Live Telemetry
     async function refreshData() {
       if (!currentSession.loggedIn) return;
       try {
@@ -1407,8 +1413,8 @@ inline void setupWebEndpoints() {
         html += `<div class="node-box">
           <div class="node-header">
             <div>
-              <strong style="font-size:14px;">${node.name || node.id}</strong>
-              <span style="font-family:\'JetBrains Mono\', monospace; font-size:11px; color:#60a5fa; margin-left:6px;">(${node.id})</span>
+              <strong style="font-size:13px;">${node.name || node.id}</strong>
+              <span style="font-family:\'JetBrains Mono\', monospace; font-size:11px; color:var(--text-dim); margin-left:6px;">(${node.id})</span>
             </div>
             <span style="font-size:11px; color:var(--text-dim);">${seen}</span>
           </div>`;
@@ -1422,9 +1428,7 @@ inline void setupWebEndpoints() {
               html += `<div class="slot-row">
                 <span style="font-weight:600;">${slotName}</span>
                 <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleRelay('${node.id}', ${slot.slot}, ${isRelayOn})">
-                  <span class="toggle-slider">
-                    <svg style="width:10px; height:10px; color:#1e293b;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.02"/></svg>
-                  </span>
+                  <span class="toggle-slider"></span>
                 </button>
               </div>`;
             } else if (slot.type === 6 || slot.type === 7) { // DHT
@@ -1432,13 +1436,11 @@ inline void setupWebEndpoints() {
                 <span style="font-weight:600;">${slotName}</span>
                 <div class="sensor-readings">
                   <div class="sensor-pill">
-                    <svg class="icon" style="width:12px; height:12px; color:#60a5fa;" viewBox="0 0 24 24"><path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"/></svg>
                     <span class="pill-label">TEMP</span>
                     <span class="pill-val">${state.temp.toFixed(1)}</span>
                     <span class="pill-unit">&deg;C</span>
                   </div>
                   <div class="sensor-pill">
-                    <svg class="icon" style="width:12px; height:12px; color:#60a5fa;" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
                     <span class="pill-label">HUM</span>
                     <span class="pill-val">${state.hum.toFixed(0)}</span>
                     <span class="pill-unit">%</span>
@@ -1451,11 +1453,8 @@ inline void setupWebEndpoints() {
                 const pct = state.dist >= 0 ? Math.max(0, Math.min(100, Math.round(((200 - state.dist) / 200) * 100))) : 0;
                 html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
                   <div class="tank-header">
-                    <span style="font-weight:600; display:flex; align-items:center; gap:6px;">
-                      <svg class="icon" style="width:13px; height:13px; color:#38bdf8;" viewBox="0 0 24 24"><path d="M2 12h20"/><path d="M20 12v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-8"/><path d="M4 8V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/></svg>
-                      ${slotName}
-                    </span>
-                    <span style="font-family:\'JetBrains Mono\', monospace; font-size:12px; font-weight:600; color:#38bdf8;">${distText} (${pct}%)</span>
+                    <span style="font-weight:600;">${slotName}</span>
+                    <span style="font-family:\'JetBrains Mono\', monospace; font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
                   </div>
                   <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
                 </div>`;
@@ -1524,7 +1523,6 @@ inline void setupWebEndpoints() {
       refreshData();
     }
 
-    // User Management
     async function loadUsers() {
       try {
         const res = await fetch('/api/users');
@@ -1619,7 +1617,6 @@ inline void setupWebEndpoints() {
       }
     }
 
-    // Automation Rules & Notifications
     let currentRules = [];
 
     async function loadRules() {
@@ -1644,7 +1641,7 @@ inline void setupWebEndpoints() {
 
           html += `<div class="node-box" style="margin-bottom:14px;">
             <div class="node-header">
-              <strong style="font-size:14px;">${rule.name || ('Rule #' + (idx + 1))}</strong>
+              <strong style="font-size:13px;">${rule.name || ('Rule #' + (idx + 1))}</strong>
               <label class="checkbox-line" style="margin:0;">
                 <input type="checkbox" id="ruleEn_${idx}" ${isEnabled}>
                 <span>Enabled</span>
@@ -1654,10 +1651,10 @@ inline void setupWebEndpoints() {
               <strong>Condition:</strong> ${condSummary || 'None'} <br>
               <strong>Action:</strong> ${actSummary || 'None'}
             </div>
-            <div style="background:#161922; border:1px solid #283044; border-radius:6px; padding:10px; margin-top:8px;">
+            <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px; margin-top:8px;">
               <label class="checkbox-line" style="margin:0 0 8px 0;">
                 <input type="checkbox" id="ruleNotif_${idx}" ${isNotify}>
-                <span style="font-weight:700; color:#93c5fd;">Push Notification Alert (Option A)</span>
+                <span style="font-weight:700;">Push Notification Alert</span>
               </label>
               <label>Alert Title</label>
               <input type="text" id="ruleTitle_${idx}" value="${nTitle}" placeholder="e.g. Tank Low Alert">
@@ -1696,7 +1693,6 @@ inline void setupWebEndpoints() {
       }
     }
 
-    // Settings
     async function loadSettings() {
       try {
         const res = await fetch('/api/system');
@@ -1734,7 +1730,6 @@ inline void setupWebEndpoints() {
       showToast('Settings saved. Hub is rebooting...', 'success');
     }
 
-    // Init
     checkSession();
     setInterval(refreshData, 3000);
   </script>

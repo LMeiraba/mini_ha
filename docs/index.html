@@ -5,38 +5,55 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#0b0f17">
+  <meta name="theme-color" content="#09090b">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
   <link rel="apple-touch-icon" href="./icon.svg">
-  <title>Mini-HA Smart Home</title>
+  <title>Mini-HA</title>
   
-  <!-- UI UX Pro Max: High-Legibility Typography -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 
   <style>
     :root {
-      --bg: #0b0f17;
-      --card-bg: #121826;
-      --card-bg-elevated: #172033;
-      --card-border: rgba(255, 255, 255, 0.08);
-      --card-border-focus: rgba(59, 130, 246, 0.5);
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
-      --text-dim: #64748b;
-      --primary: #2563eb;
-      --primary-hover: #1d4ed8;
-      --primary-glow: rgba(37, 99, 235, 0.3);
+      --bg: #09090b;
+      --card-bg: #121215;
+      --card-elevated: #18181b;
+      --card-border: #27272a;
+      --card-border-subtle: #1f1f23;
+      --card-border-focus: #52525b;
+      
+      --text-main: #fafafa;
+      --text-muted: #a1a1aa;
+      --text-dim: #71717a;
+
+      --btn-primary-bg: #fafafa;
+      --btn-primary-text: #09090b;
+      --btn-primary-hover: #e4e4e7;
+
+      --btn-secondary-bg: #18181b;
+      --btn-secondary-border: #27272a;
+      --btn-secondary-text: #fafafa;
+      --btn-secondary-hover: #27272a;
+
+      --input-bg: #141417;
+
       --success: #10b981;
-      --success-glow: rgba(16, 185, 129, 0.25);
+      --success-subtle: rgba(16, 185, 129, 0.12);
+      --success-border: rgba(16, 185, 129, 0.25);
+
       --warning: #f59e0b;
+      --warning-subtle: rgba(245, 158, 11, 0.12);
+      --warning-border: rgba(245, 158, 11, 0.25);
+
       --danger: #ef4444;
-      --input-bg: #0d121f;
-      --radius-sm: 8px;
-      --radius-md: 12px;
-      --radius-lg: 18px;
+      --danger-subtle: rgba(239, 68, 68, 0.12);
+      --danger-border: rgba(239, 68, 68, 0.25);
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
     }
 
     * {
@@ -49,9 +66,6 @@
     body {
       font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       background: var(--bg);
-      background-image: 
-        radial-gradient(ellipse 70% 40% at 50% -10%, rgba(37, 99, 235, 0.12), transparent),
-        radial-gradient(circle at 90% 90%, rgba(16, 185, 129, 0.03), transparent 35%);
       color: var(--text-main);
       min-height: 100vh;
       display: flex;
@@ -61,11 +75,10 @@
       -moz-osx-font-smoothing: grayscale;
     }
 
-    /* SVG Icon Helpers */
     .icon {
       display: inline-block;
-      width: 18px;
-      height: 18px;
+      width: 16px;
+      height: 16px;
       stroke-width: 2;
       stroke: currentColor;
       fill: none;
@@ -75,38 +88,44 @@
       flex-shrink: 0;
     }
 
-    /* Header Bar */
+    /* Top Navigation Header */
     header {
-      background: rgba(11, 15, 23, 0.85);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      padding: 12px 24px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      background: rgba(9, 9, 11, 0.95);
       border-bottom: 1px solid var(--card-border);
       position: sticky;
       top: 0;
       z-index: 50;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    .header-inner {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
     }
 
     .brand-group {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
+      user-select: none;
     }
 
-    .brand-logo-badge {
-      width: 36px;
-      height: 36px;
-      border-radius: var(--radius-md);
-      background: linear-gradient(135deg, #1e293b, #0f172a);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+    .brand-logo {
+      width: 32px;
+      height: 32px;
+      border-radius: var(--radius-sm);
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #60a5fa;
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+      color: var(--text-main);
     }
 
     .brand-text {
@@ -115,9 +134,9 @@
     }
 
     .brand-title {
-      font-size: 16px;
+      font-size: 15px;
       font-weight: 700;
-      letter-spacing: -0.3px;
+      letter-spacing: -0.2px;
       color: var(--text-main);
       line-height: 1.2;
     }
@@ -126,46 +145,49 @@
       font-size: 10px;
       font-weight: 600;
       text-transform: uppercase;
-      letter-spacing: 0.8px;
+      letter-spacing: 0.6px;
       color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
     }
 
     .header-center {
       display: flex;
       align-items: center;
-      gap: 10px;
     }
 
     .status-badge {
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 7px;
-      background: rgba(18, 24, 38, 0.8);
+      background: var(--card-elevated);
       border: 1px solid var(--card-border);
-      padding: 5px 12px;
+      padding: 4px 10px;
       border-radius: 20px;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 600;
       letter-spacing: -0.1px;
     }
 
     .status-dot {
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
       background: var(--text-dim);
-      transition: all 0.3s ease;
+      transition: background 0.3s ease;
+      flex-shrink: 0;
     }
-    .dot-online { 
-      background: var(--success); 
-      box-shadow: 0 0 10px var(--success-glow); 
+
+    .dot-online {
+      background: var(--success);
     }
-    .dot-connecting { 
-      background: var(--warning); 
-      animation: pulse 1s infinite alternate; 
+
+    .dot-connecting {
+      background: var(--warning);
+      animation: pulse 1s infinite alternate;
     }
-    .dot-offline { 
-      background: var(--danger); 
+
+    .dot-offline {
+      background: var(--danger);
     }
 
     @keyframes pulse {
@@ -182,154 +204,312 @@
     .user-pill {
       display: flex;
       align-items: center;
-      gap: 8px;
-      background: rgba(30, 41, 59, 0.7);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      gap: 7px;
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
       padding: 5px 12px;
       border-radius: 20px;
       font-size: 12px;
       font-weight: 600;
-      color: #93c5fd;
+      color: var(--text-main);
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s ease;
     }
-    .user-pill:hover { 
-      background: rgba(30, 41, 59, 1);
-      border-color: rgba(96, 165, 250, 0.3);
-    }
-    .user-pill:active { 
-      transform: scale(0.97); 
+    .user-pill:hover {
+      background: #222227;
+      border-color: #3f3f46;
     }
 
     .icon-btn {
-      background: rgba(18, 24, 38, 0.7);
+      background: var(--card-elevated);
       border: 1px solid var(--card-border);
       color: var(--text-muted);
-      width: 38px;
-      height: 38px;
-      border-radius: var(--radius-md);
+      width: 34px;
+      height: 34px;
+      border-radius: var(--radius-sm);
       display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.15s ease;
     }
     .icon-btn:hover {
-      background: var(--card-bg-elevated);
       color: var(--text-main);
-      border-color: rgba(255, 255, 255, 0.15);
-    }
-    .icon-btn:active {
-      transform: scale(0.96);
+      background: #222227;
+      border-color: #3f3f46;
     }
 
-    /* Main Responsive Container */
+    /* Main Container (Adaptive) */
     main {
       flex: 1;
-      padding: 24px 20px 48px;
-      max-width: 1200px;
-      margin: 0 auto;
       width: 100%;
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 16px;
     }
 
-    /* Hub Offline Alert Banner */
-    .offline-alert-banner {
-      background: linear-gradient(135deg, rgba(127, 29, 29, 0.4), rgba(69, 10, 10, 0.5));
-      border: 1px solid rgba(239, 68, 68, 0.3);
-      color: #fecaca;
-      padding: 14px 18px;
+    /* Hardware Hub Offline Alert Banner */
+    .offline-banner {
+      background: var(--danger-subtle);
+      border: 1px solid var(--danger-border);
+      color: #fca5a5;
+      padding: 10px 14px;
       border-radius: var(--radius-md);
-      margin-bottom: 20px;
-      font-size: 13px;
+      font-size: 12px;
+      font-weight: 500;
+      margin-bottom: 16px;
       display: flex;
       align-items: center;
-      gap: 14px;
-      backdrop-filter: blur(8px);
-    }
-    .offline-alert-icon {
-      color: #f87171;
+      gap: 10px;
     }
 
-    /* Multi-column Grid (Bento Grid) */
-    .nodes-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-      gap: 18px;
-    }
-
-    .node-card {
+    /* Clean Card Container (No Vibe-Coding) */
+    .view-card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
       border-radius: var(--radius-lg);
-      padding: 18px;
-      box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.3);
-      transition: transform 0.2s, border-color 0.2s;
+      padding: 24px;
+      margin: 24px auto;
+      width: 100%;
     }
-    .node-card:hover {
-      border-color: rgba(255, 255, 255, 0.12);
+
+    .view-card-center {
+      max-width: 520px;
+    }
+
+    .card-header-block {
+      margin-bottom: 20px;
+    }
+
+    .card-title {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: var(--text-main);
+      margin-bottom: 4px;
+    }
+
+    .card-desc {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+
+    /* Segmented Tab Bar */
+    .segment-bar {
+      display: flex;
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      padding: 3px;
+      border-radius: var(--radius-md);
+      gap: 4px;
+      margin-bottom: 20px;
+    }
+
+    .segment-tab {
+      flex: 1;
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .segment-tab.active {
+      background: var(--card-elevated);
+      color: var(--text-main);
+      border: 1px solid var(--card-border);
+    }
+
+    /* Form Controls */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    .form-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .form-hint {
+      font-size: 11px;
+      color: var(--text-dim);
+      font-weight: 400;
+    }
+
+    .input-field {
+      width: 100%;
+      height: 40px;
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      color: var(--text-main);
+      font-size: 13px;
+      padding: 0 12px;
+      outline: none;
+      transition: border-color 0.15s ease;
+      font-family: inherit;
+    }
+    .input-field:focus {
+      border-color: var(--card-border-focus);
+    }
+    .input-field::placeholder {
+      color: var(--text-dim);
+    }
+    .input-field[readonly] {
+      color: var(--text-muted);
+      cursor: default;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      height: 40px;
+      padding: 0 16px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      background: var(--btn-primary-bg);
+      color: var(--btn-primary-text);
+      transition: background 0.15s ease;
+      text-decoration: none;
+    }
+    .btn:hover {
+      background: var(--btn-primary-hover);
+    }
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: var(--btn-secondary-bg);
+      border: 1px solid var(--btn-secondary-border);
+      color: var(--btn-secondary-text);
+    }
+    .btn-secondary:hover {
+      background: #222227;
+      border-color: #3f3f46;
+    }
+
+    .btn-full {
+      width: 100%;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    /* Dashboard Bento Grid (Adaptive) */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+
+    @media (min-width: 680px) {
+      .dashboard-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 16px;
+      }
+    }
+
+    @media (min-width: 1080px) {
+      .dashboard-grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+      }
+    }
+
+    @media (min-width: 1400px) {
+      .dashboard-grid {
+        grid-template-columns: repeat(4, 1fr);
+      }
+    }
+
+    /* Node Card */
+    .node-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
     }
 
     .node-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 14px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      margin-bottom: 14px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--card-border-subtle);
     }
 
     .node-title-group {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
     }
 
     .node-name {
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 700;
       color: var(--text-main);
       letter-spacing: -0.2px;
     }
 
-    .node-id-badge {
+    .node-id-chip {
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px;
-      font-weight: 600;
-      color: #60a5fa;
-      background: rgba(37, 99, 235, 0.15);
-      border: 1px solid rgba(59, 130, 246, 0.3);
-      padding: 2px 7px;
-      border-radius: 6px;
+      color: var(--text-dim);
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      padding: 2px 6px;
+      border-radius: 4px;
     }
 
     .node-status {
-      display: flex;
+      display: inline-flex;
       align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: var(--text-muted);
+      gap: 5px;
+      font-size: 11px;
+      color: var(--text-dim);
+      font-weight: 500;
     }
 
-    .slots-container {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    /* Relay Slot */
+    /* Relay Slot: Tactile Switch */
     .slot-relay {
-      background: #0d131f;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: var(--radius-md);
-      padding: 12px 16px;
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      padding: 12px 14px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      transition: all 0.2s;
-    }
-    .slot-relay:hover {
-      background: #111827;
-      border-color: rgba(255, 255, 255, 0.08);
+      gap: 12px;
     }
 
     .slot-info {
@@ -339,102 +519,102 @@
     }
 
     .slot-label {
-      font-size: 14px;
+      font-size: 13px;
       font-weight: 600;
       color: var(--text-main);
     }
 
     .slot-state-text {
       font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
+      font-weight: 600;
       color: var(--text-dim);
+      font-family: 'JetBrains Mono', monospace;
+      letter-spacing: 0.5px;
     }
 
-    /* Tactile Toggle Switch (Apple-style) */
+    /* Hardware Toggle Switch */
     .toggle-btn {
-      position: relative;
-      width: 54px;
+      width: 52px;
       height: 30px;
-      background: #1e293b;
       border-radius: 15px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: #27272a;
+      border: none;
+      position: relative;
       cursor: pointer;
-      transition: background 0.25s, box-shadow 0.25s, border-color 0.25s;
+      transition: background 0.2s ease;
       flex-shrink: 0;
+      outline: none;
+    }
+
+    .toggle-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
     }
 
     .toggle-slider {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: #fafafa;
       position: absolute;
       top: 3px;
       left: 3px;
-      width: 22px;
-      height: 22px;
-      background: #fff;
-      border-radius: 50%;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.4);
-      transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: transform 0.2s ease;
       display: flex;
       align-items: center;
       justify-content: center;
     }
 
     .toggle-btn.active {
-      background: #2563eb;
-      border-color: #3b82f6;
-      box-shadow: 0 0 14px rgba(37, 99, 235, 0.4);
+      background: var(--success);
     }
 
     .toggle-btn.active .toggle-slider {
-      transform: translateX(24px);
-    }
-    .toggle-btn:disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
+      transform: translateX(22px);
     }
 
-    /* DHT Sensor Slot */
+    /* Sensor Metrics (DHT) */
     .slot-dht {
-      background: #0d131f;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: var(--radius-md);
-      padding: 12px 16px;
       display: flex;
-      justify-content: space-between;
-      align-items: center;
+      flex-direction: column;
+      gap: 8px;
     }
 
     .sensor-readings {
-      display: flex;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
       gap: 8px;
     }
 
     .sensor-pill {
-      background: rgba(30, 41, 59, 0.6);
-      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
       border-radius: var(--radius-sm);
-      padding: 5px 10px;
+      padding: 10px 12px;
       display: flex;
-      align-items: center;
-      gap: 6px;
+      align-items: baseline;
+      justify-content: space-between;
     }
 
-    .pill-icon {
-      color: #60a5fa;
-    }
     .pill-label {
-      font-size: 9px;
-      font-weight: 700;
+      font-size: 10px;
+      font-weight: 600;
       color: var(--text-dim);
       text-transform: uppercase;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .pill-value-group {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 2px;
     }
 
     .pill-val {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-main);
       font-family: 'JetBrains Mono', monospace;
-      font-size: 14px;
-      font-weight: 600;
-      color: #93c5fd;
     }
 
     .pill-unit {
@@ -442,570 +622,327 @@
       color: var(--text-dim);
     }
 
-    /* Tank Slot */
+    /* Tank Level Bar */
     .slot-tank {
-      background: #0d131f;
-      border: 1px solid rgba(255, 255, 255, 0.05);
-      border-radius: var(--radius-md);
-      padding: 14px 16px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 8px;
     }
 
     .tank-header-row {
       display: flex;
       justify-content: space-between;
-      align-items: center;
+      align-items: baseline;
     }
 
     .tank-bar-track {
       width: 100%;
-      height: 10px;
-      background: #172033;
-      border-radius: 5px;
+      height: 8px;
+      background: var(--input-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
       overflow: hidden;
-      border: 1px solid rgba(255, 255, 255, 0.08);
     }
 
     .tank-bar-fluid {
       height: 100%;
-      background: linear-gradient(90deg, #0284c7, #38bdf8);
-      border-radius: 5px;
-      transition: width 0.5s ease;
+      background: var(--text-main);
+      transition: width 0.4s ease;
     }
 
-    /* Modern Onboarding Card (Connect to Home Screen) */
-    .onboarding-card {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: 24px;
-      max-width: 620px;
-      margin: 40px auto;
-      padding: 36px 32px;
-      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
-      position: relative;
-      overflow: hidden;
-    }
-
-    .onboarding-card::before {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: 10%;
-      right: 10%;
-      height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.5), transparent);
-    }
-
-    .hero-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      background: rgba(37, 99, 235, 0.12);
-      border: 1px solid rgba(59, 130, 246, 0.25);
-      color: #93c5fd;
-      padding: 4px 12px;
-      border-radius: 20px;
-      margin-bottom: 16px;
-    }
-
-    .onboarding-title {
-      font-size: 24px;
-      font-weight: 800;
-      letter-spacing: -0.5px;
-      color: var(--text-main);
-      margin-bottom: 8px;
-    }
-
-    .onboarding-sub {
-      font-size: 14px;
-      color: var(--text-muted);
-      line-height: 1.5;
-      margin-bottom: 24px;
-    }
-
-    /* Tab Switcher in Onboarding */
-    .tab-pills {
-      display: flex;
-      background: #0d121f;
-      border: 1px solid var(--card-border);
-      border-radius: var(--radius-md);
-      padding: 4px;
-      gap: 4px;
-      margin-bottom: 24px;
-    }
-
-    .tab-pill {
-      flex: 1;
-      background: transparent;
-      border: none;
-      color: var(--text-muted);
-      padding: 9px 12px;
-      border-radius: var(--radius-sm);
-      font-size: 13px;
-      font-weight: 600;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: all 0.2s;
-    }
-    .tab-pill.active {
-      background: var(--card-bg-elevated);
-      color: var(--text-main);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-    }
-
-    /* Form Controls */
-    .form-group {
-      margin-bottom: 16px;
-      text-align: left;
-    }
-
-    .form-label {
-      display: block;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-muted);
-      margin-bottom: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.4px;
-    }
-
-    .input-wrapper {
-      position: relative;
-      display: flex;
-      align-items: center;
-    }
-
-    .input-icon {
-      position: absolute;
-      left: 14px;
-      color: var(--text-dim);
-      pointer-events: none;
-    }
-
-    .input-field {
-      width: 100%;
-      background: var(--input-bg);
-      border: 1px solid var(--card-border);
-      color: var(--text-main);
-      padding: 12px 14px 12px 42px;
-      border-radius: var(--radius-md);
-      font-size: 14px;
-      font-family: inherit;
-      outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
-    }
-    .input-field:focus {
-      border-color: var(--card-border-focus);
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
-    }
-
-    .input-suffix-btn {
-      position: absolute;
-      right: 12px;
-      background: none;
-      border: none;
-      color: var(--text-muted);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      padding: 4px;
-    }
-    .input-suffix-btn:hover {
-      color: var(--text-main);
-    }
-
-    /* Buttons */
-    .btn {
-      background: linear-gradient(135deg, #2563eb, #1d4ed8);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      padding: 12px 20px;
-      border-radius: var(--radius-md);
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
-      transition: all 0.2s;
-    }
-    .btn:hover {
-      background: linear-gradient(135deg, #3b82f6, #2563eb);
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4);
-    }
-    .btn:active {
-      transform: scale(0.98);
-    }
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .btn-secondary {
-      background: var(--card-bg-elevated);
-      color: var(--text-main);
-      border: 1px solid var(--card-border);
-      box-shadow: none;
-    }
-    .btn-secondary:hover {
-      background: #1e293b;
-      border-color: rgba(255, 255, 255, 0.15);
-    }
-
-    .btn-text {
-      background: none;
-      border: none;
-      color: #60a5fa;
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      padding: 8px 12px;
-      transition: color 0.15s;
-    }
-    .btn-text:hover {
-      color: #93c5fd;
-      text-decoration: underline;
-    }
-
-    /* Modal Backdrop */
+    /* Modals */
     .modal-backdrop {
       position: fixed;
       inset: 0;
       background: rgba(0, 0, 0, 0.75);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      display: none;
+      z-index: 100;
+      display: flex;
       align-items: center;
       justify-content: center;
-      z-index: 100;
-      padding: 20px;
+      padding: 16px;
     }
 
     .modal-card {
-      background: #131a2b;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
       border-radius: var(--radius-lg);
-      width: 100%;
-      max-width: 460px;
       padding: 24px;
-      box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
     }
 
     .modal-title {
-      font-size: 17px;
-      font-weight: 700;
-      margin-bottom: 16px;
       display: flex;
       justify-content: space-between;
       align-items: center;
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-main);
     }
 
     .modal-actions {
       display: flex;
       justify-content: flex-end;
-      gap: 10px;
-      margin-top: 20px;
+      gap: 8px;
+      margin-top: 8px;
     }
 
     /* Toast */
     .toast {
       position: fixed;
-      bottom: 24px;
-      left: 50%;
-      transform: translateX(-50%) translateY(100px);
-      background: #1e293b;
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      padding: 12px 22px;
-      border-radius: 30px;
-      font-size: 13px;
+      bottom: 20px;
+      right: 20px;
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
+      color: var(--text-main);
+      padding: 10px 16px;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
       font-weight: 600;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
-      transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
       z-index: 200;
-      pointer-events: none;
-      display: flex;
-      align-items: center;
-      gap: 8px;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
     }
-    .toast.show { transform: translateX(-50%) translateY(0); }
-    .toast-success { background: #064e3b; border-color: #059669; }
-    .toast-error { background: #7f1d1d; border-color: #dc2626; }
-    .toast-warning { background: #78350f; border-color: #d97706; }
   </style>
 
   <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
 </head>
 <body>
 
-  <!-- Top Navigation Header -->
+  <!-- Top Navigation Bar -->
   <header>
-    <div class="brand-group">
-      <div class="brand-logo-badge">
-        <!-- SVG Smart Hub Logo -->
-        <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24">
-          <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-          <polyline points="9 22 9 12 15 12 15 22"/>
-        </svg>
-      </div>
-      <div class="brand-text">
-        <div class="brand-title">Mini-HA</div>
-        <div class="brand-subtitle">Smart Home Hub</div>
-      </div>
-    </div>
-
-    <div class="header-center">
-      <div class="status-badge">
-        <span class="status-dot" id="statusDot"></span>
-        <span id="statusText">Ready</span>
-      </div>
-    </div>
-
-    <div class="header-actions">
-      <!-- Notification Permission Button (SVG Bell) -->
-      <button class="icon-btn" id="notifBtn" onclick="toggleNotificationPermission()" title="Enable Push Alerts">
-        <svg class="icon" viewBox="0 0 24 24">
-          <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
-          <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
-        </svg>
-      </button>
-
-      <!-- Active User Profile Pill -->
-      <div id="userBadge" class="user-pill" style="display:none;" onclick="openUserMenuModal()" title="Account & User Switch">
-        <svg class="icon" style="width:14px; height:14px;" viewBox="0 0 24 24">
-          <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
-          <circle cx="12" cy="7" r="4"/>
-        </svg>
-        <span id="userBadgeName">User</span>
+    <div class="header-inner">
+      <div class="brand-group">
+        <div class="brand-logo">
+          <svg class="icon" viewBox="0 0 24 24">
+            <rect x="4" y="4" width="16" height="16" rx="2"/>
+            <rect x="9" y="9" width="6" height="6"/>
+            <line x1="9" y1="1" x2="9" y2="4"/>
+            <line x1="15" y1="1" x2="15" y2="4"/>
+            <line x1="9" y1="20" x2="9" y2="23"/>
+            <line x1="15" y1="20" x2="15" y2="23"/>
+            <line x1="20" y1="9" x2="23" y2="9"/>
+            <line x1="20" y1="14" x2="23" y2="14"/>
+            <line x1="1" y1="9" x2="4" y2="9"/>
+            <line x1="1" y1="14" x2="4" y2="14"/>
+          </svg>
+        </div>
+        <div class="brand-text">
+          <span class="brand-title">MINI-HA</span>
+          <span class="brand-subtitle">HOME HUB</span>
+        </div>
       </div>
 
-      <!-- Share Invite Button (SVG Share) -->
-      <button class="icon-btn" onclick="openShareModal()" title="Share Home Invite">
-        <svg class="icon" viewBox="0 0 24 24">
-          <circle cx="18" cy="5" r="3"/>
-          <circle cx="6" cy="12" r="3"/>
-          <circle cx="18" cy="19" r="3"/>
-          <line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/>
-          <line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/>
-        </svg>
-      </button>
+      <div class="header-center">
+        <div class="status-badge" id="hubStatusPill">
+          <span class="status-dot dot-offline" id="statusDot"></span>
+          <span id="statusText">Checking</span>
+        </div>
+      </div>
 
-      <!-- Settings Button (SVG Sliders) -->
-      <button class="icon-btn" onclick="openSettingsModal()" title="Broker Connection">
-        <svg class="icon" viewBox="0 0 24 24">
-          <line x1="4" x2="20" y1="21" y2="21"/>
-          <line x1="4" x2="20" y1="14" y2="14"/>
-          <line x1="4" x2="20" y1="7" y2="7"/>
-          <circle cx="8" cy="21" r="2"/>
-          <circle cx="16" cy="14" r="2"/>
-          <circle cx="10" cy="7" r="2"/>
-        </svg>
-      </button>
+      <div class="header-actions">
+        <!-- User Profile Pill -->
+        <div id="userBadge" class="user-pill" style="display:none;" onclick="openUserMenuModal()" title="Account & Switch User">
+          <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24">
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+          <span id="userBadgeName">User</span>
+        </div>
+
+        <!-- Share Invite Button -->
+        <button class="icon-btn" onclick="openShareModal()" title="Share Home Invite">
+          <svg class="icon" viewBox="0 0 24 24">
+            <circle cx="18" cy="5" r="3"/>
+            <circle cx="6" cy="12" r="3"/>
+            <circle cx="18" cy="19" r="3"/>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/>
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/>
+          </svg>
+        </button>
+
+        <!-- Push Notifications Toggle -->
+        <button class="icon-btn" id="notifBellBtn" onclick="toggleNativeNotifications()" title="Notifications">
+          <svg class="icon" viewBox="0 0 24 24">
+            <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>
+            <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>
+          </svg>
+        </button>
+
+        <!-- Home Settings Modal Button -->
+        <button class="icon-btn" onclick="openSettingsModal()" title="Home Gateway Configuration">
+          <svg class="icon" viewBox="0 0 24 24">
+            <line x1="4" y1="21" x2="4" y2="14"/>
+            <line x1="4" y1="10" x2="4" y2="3"/>
+            <line x1="12" y1="21" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12" y2="3"/>
+            <line x1="20" y1="21" x2="20" y2="16"/>
+            <line x1="20" y1="12" x2="20" y2="3"/>
+            <line x1="1" y1="14" x2="7" y2="14"/>
+            <line x1="9" y1="8" x2="15" y2="8"/>
+            <line x1="17" y1="16" x2="23" y2="16"/>
+          </svg>
+        </button>
+      </div>
     </div>
   </header>
 
+  <!-- Main View Area -->
   <main>
-    <!-- Master Hub Offline Alert Banner -->
-    <div id="hubOfflineBanner" class="offline-alert-banner" style="display:none;">
-      <svg class="icon offline-alert-icon" style="width:22px; height:22px;" viewBox="0 0 24 24">
-        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-        <line x1="12" x2="12" y1="9" y2="13"/>
-        <line x1="12" x2="12.01" y1="17" y2="17"/>
+    <!-- Master Hub Offline Banner -->
+    <div id="hubOfflineBanner" class="offline-banner" style="display:none;">
+      <svg class="icon" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="12" y1="8" x2="12" y2="12"/>
+        <line x1="12" y1="16" x2="12.01" y2="16"/>
       </svg>
-      <div>
-        <strong style="display:block; font-size:14px; color:#fee2e2;">Master Hub Offline</strong>
-        <span style="font-size:12px; opacity:0.9;">The hub lost power or network connection. Control actions are temporarily paused.</span>
-      </div>
+      <span>Master Hub hardware is unreachable. Relays and automation controls are temporarily locked.</span>
     </div>
 
-    <!-- SCREEN 1: Connect to a Home (Level 1: Gateway Connection) -->
-    <div id="emptyHomeState" class="onboarding-card" style="display:none;">
-      <div class="hero-badge">
-        <svg class="icon" style="width:12px; height:12px;" viewBox="0 0 24 24">
-          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10"/>
-        </svg>
-        Distributed Smart Home
+    <!-- VIEW 1: Connect to Home (Gateway Connection) -->
+    <div id="emptyHomeState" class="view-card view-card-center" style="display:none;">
+      <div class="card-header-block">
+        <h2 class="card-title">Connect to Home</h2>
+        <p class="card-desc">Configure your Home Gateway connection. Join using an invite link or configure broker credentials with automatic local LAN fallback.</p>
       </div>
-      <h2 class="onboarding-title">Connect to Your Home</h2>
-      <p class="onboarding-sub">Link this device to your Mini-HA ecosystem. Use an invite link from family, enter your cloud broker, or connect directly over local Wi-Fi.</p>
 
-      <div class="tab-pills">
-        <button class="tab-pill active" id="tabBtnInvite" onclick="switchOnboardTab('invite')">
-          <svg class="icon" style="width:14px; height:14px;" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+      <div class="segment-bar">
+        <button class="segment-tab active" id="tabBtnInvite" onclick="switchOnboardTab('invite')">
+          <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+          </svg>
           Invite Link
         </button>
-        <button class="tab-pill" id="tabBtnBroker" onclick="switchOnboardTab('broker')">
-          <svg class="icon" style="width:14px; height:14px;" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-          Cloud Broker
-        </button>
-        <button class="tab-pill" id="tabBtnLocal" onclick="switchOnboardTab('local')">
-          <svg class="icon" style="width:14px; height:14px;" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" x2="12.01" y1="20" y2="20"/></svg>
-          Local Wi-Fi
+        <button class="segment-tab" id="tabBtnManual" onclick="switchOnboardTab('manual')">
+          <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+          Gateway Setup
         </button>
       </div>
 
-      <!-- Tab 1: Invite Link -->
+      <!-- Tab A: Invite Link -->
       <div id="onboardInviteSection">
         <div class="form-group">
-          <label class="form-label">Home Invite or WhatsApp Link</label>
-          <div class="input-wrapper">
-            <svg class="icon input-icon" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-            <input type="text" id="pasteLinkInput" class="input-field" placeholder="Paste https://lmeiraba.github.io/mini_ha/#cfg=...">
-          </div>
+          <label class="form-label">Paste Invite URL or Code</label>
+          <input type="text" id="pasteLinkInput" class="input-field" placeholder="https://...#cfg=... or raw code">
         </div>
-        <div style="display:flex; gap:10px;">
-          <button class="btn" style="flex:1;" onclick="applyPastedLink()">Connect to Home</button>
-          <button class="btn btn-secondary" onclick="pasteFromClipboard()">Paste Clipboard</button>
+        <div class="btn-row">
+          <button class="btn btn-secondary" style="flex:1;" onclick="pasteFromClipboard()">Paste Clipboard</button>
+          <button class="btn" style="flex:1;" onclick="applyPastedLink()">Connect</button>
         </div>
       </div>
 
-      <!-- Tab 2: Manual Cloud Broker (EMQX Serverless) -->
-      <div id="onboardBrokerSection" style="display:none;">
+      <!-- Tab B: Unified Manual Gateway Setup (Cloud + Automatic Fallback) -->
+      <div id="onboardManualSection" style="display:none;">
         <div class="form-group">
-          <label class="form-label">EMQX WebSocket URL (WSS)</label>
-          <div class="input-wrapper">
-            <svg class="icon input-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/></svg>
-            <input type="text" id="quickBrokerUrl" class="input-field" placeholder="wss://hed8fb22.ala.asia-southeast1.emqxsl.com:8084/mqtt">
-          </div>
+          <label class="form-label">Home ID</label>
+          <input type="text" id="quickHomeId" class="input-field" placeholder="e.g. home_1" value="home_1">
         </div>
-        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div class="form-group">
+          <label class="form-label">Cloud Broker WebSocket URL (WSS)</label>
+          <input type="text" id="quickBrokerUrl" class="input-field" placeholder="wss://broker.example.com:8084/mqtt">
+        </div>
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
           <div class="form-group">
-            <label class="form-label">Home ID</label>
-            <input type="text" id="quickHomeId" class="input-field" style="padding-left:14px;" placeholder="home_yum">
+            <label class="form-label">Broker User <span class="form-hint">(optional)</span></label>
+            <input type="text" id="quickBrokerUser" class="input-field" placeholder="Username">
           </div>
           <div class="form-group">
-            <label class="form-label">Broker Username</label>
-            <input type="text" id="quickBrokerUser" class="input-field" style="padding-left:14px;" placeholder="Username">
+            <label class="form-label">Broker Pass <span class="form-hint">(optional)</span></label>
+            <input type="password" id="quickBrokerPass" class="input-field" placeholder="Password">
           </div>
         </div>
         <div class="form-group">
-          <label class="form-label">Broker Password</label>
-          <div class="input-wrapper">
-            <svg class="icon input-icon" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            <input type="password" id="quickBrokerPass" class="input-field" placeholder="Broker Password">
-          </div>
+          <label class="form-label">
+            <span>Local LAN Fallback Address</span>
+            <span class="form-hint">mDNS or IP</span>
+          </label>
+          <input type="text" id="quickLocalIp" class="input-field" placeholder="http://miniha.local" value="http://miniha.local">
+          <span class="form-hint" style="margin-top:2px;">Used automatically when internet or cloud broker is unreachable.</span>
         </div>
-        <button class="btn" style="width:100%; margin-top:6px;" onclick="saveQuickBrokerConfig()">Save & Connect</button>
-      </div>
-
-      <!-- Tab 3: Local Wi-Fi Direct (No Cloud) -->
-      <div id="onboardLocalSection" style="display:none;">
-        <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">Connect directly to your ESP32 Master Hub via local mDNS broadcast or local IP address when internet is unavailable.</p>
-        <div class="form-group">
-          <label class="form-label">Master Local Host or IP</label>
-          <div class="input-wrapper">
-            <svg class="icon input-icon" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" x2="12.01" y1="20" y2="20"/></svg>
-            <input type="text" id="quickLocalIp" class="input-field" value="http://miniha.local" placeholder="http://miniha.local or http://192.168.4.1">
-          </div>
-        </div>
-        <button class="btn" style="width:100%;" onclick="saveQuickLocalConfig()">Use Local Hub Directly</button>
+        <button class="btn btn-full" style="margin-top:10px;" onclick="saveQuickGatewayConfig()">Save & Connect Gateway</button>
       </div>
     </div>
 
-    <!-- SCREEN 2: User Login inside HOME (Level 2: User Authentication) -->
-    <div id="userLoginCard" class="onboarding-card" style="display:none;">
-      <div class="hero-badge">
-        <span class="status-dot dot-online" style="width:6px; height:6px;"></span>
-        <span id="loginHomeTag">Home Connected</span>
+    <!-- VIEW 2: Sign In to Home (User Authentication) -->
+    <div id="userLoginCard" class="view-card view-card-center" style="display:none;">
+      <div class="card-header-block">
+        <div style="display:inline-flex; align-items:center; gap:6px; margin-bottom:8px;">
+          <span class="status-dot dot-online"></span>
+          <span id="loginHomeTag" style="font-size:12px; font-weight:600; color:var(--text-muted); font-family:'JetBrains Mono', monospace;">Home Connected</span>
+        </div>
+        <h2 class="card-title">Sign In</h2>
+        <p class="card-desc">Enter your user credentials to access home controls and dashboards.</p>
       </div>
-      <h2 class="onboarding-title">Sign In to Home</h2>
-      <p class="onboarding-sub">Enter your individual user credentials. Roles and permissions are cryptographically verified by the Master Hub.</p>
 
       <form onsubmit="event.preventDefault(); submitUserLogin();">
         <div class="form-group">
           <label class="form-label">Username</label>
-          <div class="input-wrapper">
-            <svg class="icon input-icon" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-            <input type="text" id="loginUser" class="input-field" placeholder="Username (e.g. admin, dad)" autocomplete="username" required>
-          </div>
+          <input type="text" id="loginUser" class="input-field" placeholder="e.g. admin or family_user" autocomplete="username" required>
         </div>
-
         <div class="form-group">
           <label class="form-label">Password</label>
-          <div class="input-wrapper">
-            <svg class="icon input-icon" viewBox="0 0 24 24"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-            <input type="password" id="loginPass" class="input-field" placeholder="Password" autocomplete="current-password" required>
-            <button type="button" class="input-suffix-btn" onclick="togglePassVisibility('loginPass', this)" title="Toggle visibility">
-              <svg class="icon" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
-          </div>
+          <input type="password" id="loginPass" class="input-field" placeholder="Password" autocomplete="current-password" required>
         </div>
-
-        <button type="submit" class="btn" id="loginBtn" style="width:100%; margin-top:8px;">Sign In</button>
+        <button type="submit" id="loginBtn" class="btn btn-full" style="margin-top:10px;">Log In</button>
       </form>
 
       <div style="margin-top:18px; text-align:center;">
-        <button class="btn-text" onclick="unlinkHome()">Unlink or Switch Home</button>
+        <button onclick="unlinkHome()" style="background:transparent; border:none; color:var(--text-dim); font-size:12px; cursor:pointer; text-decoration:underline;">Switch or Unlink Home</button>
       </div>
     </div>
 
-    <!-- SCREEN 3: Live Multi-Column Dashboard (Active User) -->
-    <div class="nodes-grid" id="nodesGrid" style="display:none;"></div>
+    <!-- VIEW 3: Live Nodes Dashboard Grid -->
+    <div id="nodesGrid" class="dashboard-grid" style="display:none;"></div>
   </main>
 
-  <!-- User Menu Modal (Switch User / Log Out) -->
-  <div class="modal-backdrop" id="userMenuModal">
+  <!-- User Menu Modal (Switch User / Unlink) -->
+  <div class="modal-backdrop" id="userMenuModal" style="display:none;">
     <div class="modal-card">
       <div class="modal-title">
-        <span>Account & Profile</span>
-        <button class="icon-btn" style="width:30px; height:30px;" onclick="closeUserMenuModal()">
-          <svg class="icon" style="width:14px; height:14px;" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <span>Active User Session</span>
+        <button class="icon-btn" style="width:28px; height:28px;" onclick="closeUserMenuModal()">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
-      
-      <div style="background:#0d121f; border:1px solid rgba(255,255,255,0.08); border-radius:var(--radius-md); padding:16px; margin-bottom:18px;">
-        <div style="display:flex; align-items:center; gap:12px;">
-          <div style="width:40px; height:40px; border-radius:50%; background:rgba(37,99,235,0.2); border:1px solid rgba(59,130,246,0.3); display:flex; align-items:center; justify-content:center; color:#60a5fa;">
-            <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          </div>
-          <div>
-            <div style="font-size:16px; font-weight:700;" id="menuUserName">User</div>
-            <div style="font-size:12px; color:var(--text-muted);" id="menuUserRole">Role: Member</div>
-          </div>
-        </div>
-        <div style="margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.05); font-size:12px; font-family:'JetBrains Mono', monospace; color:#93c5fd;" id="menuHomeId">Home: home_1</div>
+      <div style="background:var(--input-bg); border:1px solid var(--card-border); padding:12px; border-radius:var(--radius-sm); font-size:13px;">
+        <div style="font-weight:700; color:var(--text-main); margin-bottom:4px;" id="menuUserName">User</div>
+        <div style="color:var(--text-dim); font-size:11px;" id="menuUserRole">Role: Admin</div>
+        <div style="color:var(--text-dim); font-size:11px; font-family:'JetBrains Mono', monospace;" id="menuHomeId">Home: home_1</div>
       </div>
-
-      <div style="display:flex; flex-direction:column; gap:10px;">
-        <button class="btn" onclick="switchUser()">Switch User</button>
-        <button class="btn btn-secondary" onclick="unlinkHome()">Unlink This Home</button>
+      <div class="btn-row" style="flex-direction:column; gap:8px;">
+        <button class="btn btn-secondary btn-full" onclick="switchUser()">Switch User</button>
+        <button class="btn btn-secondary btn-full" style="color:var(--danger); border-color:var(--danger-border);" onclick="unlinkHome()">Unlink This Home</button>
       </div>
     </div>
   </div>
 
-  <!-- Share / Invite Family Modal -->
-  <div class="modal-backdrop" id="shareModal">
+  <!-- Share / Invite Modal -->
+  <div class="modal-backdrop" id="shareModal" style="display:none;">
     <div class="modal-card">
       <div class="modal-title">
-        <span>Share Home with Family</span>
-        <button class="icon-btn" style="width:30px; height:30px;" onclick="closeShareModal()">
-          <svg class="icon" style="width:14px; height:14px;" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <span>Share Home Invite</span>
+        <button class="icon-btn" style="width:28px; height:28px;" onclick="closeShareModal()">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
-      <p style="font-size:13px; color:var(--text-muted); line-height:1.5; margin-bottom:16px;">
-        Family members connect to this <strong>HOME</strong> via this link or QR code. Once connected, they log in with their own individual username and password.
-      </p>
-
-      <div style="display:flex; justify-content:center; margin:16px 0;">
-        <img id="shareQrImg" style="width:190px; height:190px; border-radius:12px; background:#fff; padding:8px; box-shadow:0 4px 14px rgba(0,0,0,0.4);" alt="QR Code">
+      <p style="font-size:13px; color:var(--text-muted); line-height:1.5;">Family members can scan this QR code or click the invite link to join this Home. Once linked, each user logs in with their own account.</p>
+      
+      <div style="display:flex; justify-content:center; padding:12px 0;">
+        <img id="shareQrImg" style="width:200px; height:200px; border-radius:var(--radius-md); background:#fff; padding:8px;" alt="Home QR Code">
       </div>
 
       <div class="form-group">
         <label class="form-label">Invite Link</label>
-        <input type="text" id="shareLinkInput" class="input-field" style="padding-left:14px; font-size:12px; color:#93c5fd;" readonly>
+        <input type="text" id="shareLinkInput" class="input-field" readonly>
       </div>
 
       <div class="modal-actions">
@@ -1015,40 +952,44 @@
     </div>
   </div>
 
-  <!-- Connection Setup Modal (Level 1: HOME Config) -->
-  <div class="modal-backdrop" id="settingsModal">
+  <!-- Gateway Settings Modal -->
+  <div class="modal-backdrop" id="settingsModal" style="display:none;">
     <div class="modal-card">
       <div class="modal-title">
-        <span>Home Gateway Connection</span>
-        <button class="icon-btn" style="width:30px; height:30px;" onclick="closeSettingsModal()">
-          <svg class="icon" style="width:14px; height:14px;" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        <span>Home Gateway Settings</span>
+        <button class="icon-btn" style="width:28px; height:28px;" onclick="closeSettingsModal()">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
 
       <div class="form-group">
-        <label class="form-label">EMQX WebSocket URL (WSS)</label>
-        <input type="text" id="modalBroker" class="input-field" style="padding-left:14px;" placeholder="wss://hed8fb22.ala.asia-southeast1.emqxsl.com:8084/mqtt">
-      </div>
-
-      <div class="form-group">
         <label class="form-label">Home ID</label>
-        <input type="text" id="modalHomeId" class="input-field" style="padding-left:14px;" placeholder="home_yum">
+        <input type="text" id="modalHomeId" class="input-field" placeholder="e.g. home_1">
       </div>
 
-      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+      <div class="form-group">
+        <label class="form-label">Cloud Broker WebSocket URL (WSS)</label>
+        <input type="text" id="modalBroker" class="input-field" placeholder="wss://broker.example.com:8084/mqtt">
+      </div>
+
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
         <div class="form-group">
-          <label class="form-label">Broker Username</label>
-          <input type="text" id="modalUser" class="input-field" style="padding-left:14px;" placeholder="Client Username">
+          <label class="form-label">Broker User</label>
+          <input type="text" id="modalUser" class="input-field" placeholder="Username">
         </div>
         <div class="form-group">
-          <label class="form-label">Broker Password</label>
-          <input type="password" id="modalPass" class="input-field" style="padding-left:14px;" placeholder="Client Password">
+          <label class="form-label">Broker Pass</label>
+          <input type="password" id="modalPass" class="input-field" placeholder="Password">
         </div>
       </div>
 
       <div class="form-group">
-        <label class="form-label">Master Local Address (mDNS / IP)</label>
-        <input type="text" id="modalLocalIp" class="input-field" style="padding-left:14px;" placeholder="http://miniha.local">
+        <label class="form-label">
+          <span>Local LAN Fallback Address</span>
+          <span class="form-hint">mDNS or IP</span>
+        </label>
+        <input type="text" id="modalLocalIp" class="input-field" placeholder="http://miniha.local">
+        <span class="form-hint" style="margin-top:2px;">Used automatically when internet or cloud broker is unreachable.</span>
       </div>
 
       <div class="modal-actions">
@@ -1058,7 +999,7 @@
     </div>
   </div>
 
-  <!-- Toast Notification Container -->
+  <!-- Toast Notification -->
   <div id="toast" class="toast"></div>
 
   <script src="./app.js"></script>

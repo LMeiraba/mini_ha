@@ -475,6 +475,7 @@ void setup() {
   // Setup Web Endpoints & Collect Session Headers
   const char* headerkeys[] = {"Cookie", "X-Auth-Token"};
   webServer.collectHeaders(headerkeys, 2);
+  webServer.enableCORS(true);
   setupWebEndpoints();
   webServer.begin();
 

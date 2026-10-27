@@ -215,9 +215,8 @@ function connectMqtt() {
       const stateTopic = `miniha/${home.homeId}/state`;
       const statusTopic = `miniha/${home.homeId}/status`;
       const notifyTopic = `miniha/${home.homeId}/notify`;
-      const authReplyWildcard = `miniha/${home.homeId}/auth/reply/+`;
 
-      mqttClient.subscribe([schemaTopic, stateTopic, statusTopic, notifyTopic, authReplyWildcard], (err) => {
+      mqttClient.subscribe([schemaTopic, stateTopic, statusTopic, notifyTopic], (err) => {
         if (!err) {
           console.log(`[MQTT] Subscribed to ${home.homeId}`);
         } else {
@@ -241,7 +240,7 @@ function connectMqtt() {
           handleStateUpdate(data);
         } else if (topic.startsWith(`miniha/${home.homeId}/auth/reply/`)) {
           if (authReplyCallback) {
-            authReplyCallback(data);
+            authReplyCallback(topic, data);
           }
         }
       } catch (err) {
@@ -368,13 +367,20 @@ function submitUserLogin() {
 
   // Route A: Over Cloud MQTT (if connected)
   if (mqttClient && mqttClient.connected) {
-    const clientReqId = 'pwa_' + Math.random().toString(16).substr(2, 6);
+    const clientReqId = 'pwa_' + Math.random().toString(16).substr(2, 8);
     const loginTopic = `miniha/${home.homeId}/auth/login`;
+    const replyTopic = `miniha/${home.homeId}/auth/reply/${clientReqId}`;
+
+    // Ephemeral single-client subscription
+    mqttClient.subscribe(replyTopic);
 
     let resolved = false;
-    authReplyCallback = (reply) => {
+    authReplyCallback = (incomingTopic, reply) => {
+      if (incomingTopic !== replyTopic) return;
       resolved = true;
       authReplyCallback = null;
+      mqttClient.unsubscribe(replyTopic);
+
       if (loginBtn) {
         loginBtn.textContent = 'Log In';
         loginBtn.disabled = false;
@@ -398,6 +404,7 @@ function submitUserLogin() {
     setTimeout(() => {
       if (!resolved) {
         authReplyCallback = null;
+        try { mqttClient.unsubscribe(replyTopic); } catch (e) {}
         // Fall back to local HTTP attempt if available
         if (home.localIp) {
           submitLocalHttpLogin(username, password, loginBtn);

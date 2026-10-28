@@ -79,6 +79,7 @@ void sendAnnouncement();
 void setOutputSlot(uint8_t slot, bool state, bool pushNotify = true);
 void toggleOutputSlot(uint8_t slot, bool pushNotify = true);
 void startCaptivePortal();
+void stopCaptivePortal();
 
 inline uint32_t getLocalEpoch() {
   if (currentEpoch == 0) return 0;
@@ -94,7 +95,7 @@ void loadConfigFromStorage() {
     memset(&config, 0, sizeof(NodeStorageConfig));
     config.magic = SCHEMA_MAGIC;
     memset(config.nodeId, 0, sizeof(config.nodeId));
-    strncpy(config.nodeId, "UNBOUND", sizeof(config.nodeId) - 1);
+    strncpy(config.nodeId, "UNBOUND", sizeof(config.nodeId));
     config.transportMode = MODE_WIRED; // Default to wired RS-422 star bus
     config.wifiSsid[0] = '\0';
     config.wifiPass[0] = '\0';
@@ -345,8 +346,14 @@ void processIncomingPacket(const ParsedPacket& pkt) {
         String newId = pkt.payload.substring(idIdx + 8);
         strncpy(config.nodeId, newId.c_str(), sizeof(config.nodeId) - 1);
         config.nodeId[sizeof(config.nodeId) - 1] = '\0';
+        if (config.transportMode != MODE_WIRELESS) {
+          config.transportMode = MODE_WIRED;
+        }
         saveConfig();
+        stopCaptivePortal();
         sendPacketToMaster("ACK", "BOUND_OK");
+        Serial.printf("[BIND] Slave successfully bound as Node ID: %s | Mode: %s\n",
+                      config.nodeId, config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED");
       }
     }
   }
@@ -419,9 +426,10 @@ void processIncomingPacket(const ParsedPacket& pkt) {
 }
 
 // =========================================================================
-// OPTION 1: CAPTIVE PORTAL ONBOARDING WIZARD
+// OPTION 1: CAPTIVE PORTAL ONBOARDING WIZARD & DUAL-LISTEN HANDLER
 // =========================================================================
 void startCaptivePortal() {
+  if (inCaptivePortal) return; // Already running
   inCaptivePortal = true;
   Serial.println("\n[PORTAL] Launching Captive Portal Setup Wizard...");
 
@@ -466,8 +474,9 @@ void startCaptivePortal() {
     
     html += "<label>Transport Mode</label>";
     html += "<select name='mode' id='mode' onchange='toggleMode()'>";
-    html += "<option value='1'" + String(config.transportMode == MODE_WIRELESS ? " selected" : "") + ">Wireless (Wi-Fi Star-Mesh Client)</option>";
-    html += "<option value='0'" + String(config.transportMode == MODE_WIRED ? " selected" : "") + ">Wired (RS-422 / Serial Star Hub)</option>";
+    bool selectWireless = (config.transportMode == MODE_WIRELESS || strcmp(config.nodeId, "UNBOUND") == 0);
+    html += "<option value='1'" + String(selectWireless ? " selected" : "") + ">Wireless (Wi-Fi Star-Mesh Client)</option>";
+    html += "<option value='0'" + String(!selectWireless ? " selected" : "") + ">Wired (RS-422 / Serial Star Hub)</option>";
     html += "</select>";
 
     html += "<div id='wifi_fields'>";
@@ -561,6 +570,31 @@ void startCaptivePortal() {
   portalServer->begin();
 }
 
+void stopCaptivePortal() {
+  if (!inCaptivePortal) return;
+  inCaptivePortal = false;
+  Serial.println("[PORTAL] Stopping Captive Portal setup wizard...");
+  if (dnsServer) {
+    dnsServer->stop();
+    delete dnsServer;
+    dnsServer = nullptr;
+  }
+  if (portalServer) {
+    delete portalServer;
+    portalServer = nullptr;
+  }
+  if (!config.apEnabled) {
+    WiFi.softAPdisconnect(true);
+    #if defined(ESP8266)
+      WiFi.mode(WIFI_OFF);
+      WiFi.forceSleepBegin();
+    #else
+      WiFi.mode(WIFI_OFF);
+    #endif
+  }
+  Serial.println("[PORTAL] Captive Portal stopped successfully.");
+}
+
 void setup() {
   Serial.begin(115200);
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
@@ -592,34 +626,40 @@ void setup() {
     }
   }
 
-  // If force requested or wireless mode without configured Wi-Fi credentials -> Start Captive Portal
-  if (forcePortal || (config.transportMode == MODE_WIRELESS && strlen(config.wifiSsid) == 0)) {
+  bool isUnbound = (strcmp(config.nodeId, "UNBOUND") == 0);
+
+  // OPTION 1: UNBOUND DUAL-LISTEN
+  // If the node is unbound (factory state) or portal was forced:
+  // Concurrently run Captive Portal SoftAP AND keep RS-422 Serial bus active!
+  if (forcePortal || isUnbound) {
     startCaptivePortal();
-    return;
-  }
-
-  // Initialize Wireless Mode
-  if (config.transportMode == MODE_WIRELESS) {
-    Serial.printf("[WIFI] Connecting to Parent AP '%s'...\n", config.wifiSsid);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(config.wifiSsid, config.wifiPass);
-
-    unsigned long startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
-      delay(300);
-      Serial.print(".");
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.printf("\n[WIFI] Connected! Assigned IP: %s\n", WiFi.localIP().toString().c_str());
-    } else {
-      Serial.println("\n[WIFI] Could not connect to parent AP! Falling back to Captive Portal...");
+    Serial.printf("[SETUP] %s: Listening on RS-422 Serial AND Wi-Fi SoftAP (%s)\n",
+                  isUnbound ? "UNBOUND FACTORY STATE (Dual-Listen)" : "FORCED SETUP",
+                  ("SLAVE-SETUP-" + (getDeviceMacAddress().length() >= 4 ? getDeviceMacAddress().substring(getDeviceMacAddress().length() - 4) : "NODE")).c_str());
+  } else if (config.transportMode == MODE_WIRELESS) {
+    if (strlen(config.wifiSsid) == 0) {
+      Serial.println("[WIFI] Wireless mode configured but no SSID! Launching Captive Portal...");
       startCaptivePortal();
-      return;
+    } else {
+      Serial.printf("[WIFI] Connecting to Parent AP '%s'...\n", config.wifiSsid);
+      WiFi.mode(WIFI_STA);
+      WiFi.begin(config.wifiSsid, config.wifiPass);
+
+      unsigned long startAttempt = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 15000) {
+        delay(300);
+        Serial.print(".");
+      }
+
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("\n[WIFI] Connected! Assigned IP: %s\n", WiFi.localIP().toString().c_str());
+      } else {
+        Serial.println("\n[WIFI] Could not connect to parent AP! Falling back to Captive Portal...");
+        startCaptivePortal();
+      }
     }
-  } 
-  // Initialize Wired Mode
-  else {
+  } else {
+    // Bound Wired Mode
     Serial.println("[WIRED] Operating on Isolated RS-422 Hardware Serial Star Bus.");
     if (config.apEnabled) {
       Serial.printf("[AP] Starting downstream SoftAP '%s' for child nodes...\n", config.apSsid);
@@ -652,9 +692,10 @@ void loop() {
   static unsigned long lastHeartbeat = 0;
   if (millis() - lastHeartbeat > 3000) {
     lastHeartbeat = millis();
-    Serial.printf("[SLAVE ALIVE] Node: %s | Mode: %s | Bus: 115200 baud\n",
+    Serial.printf("[SLAVE ALIVE] Node: %s | Mode: %s%s | Bus: 115200 baud\n",
                   config.nodeId, 
-                  config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED");
+                  config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED",
+                  inCaptivePortal ? " (PORTAL ACTIVE)" : "");
   }
 
   // 1. Monitor physical inputs with sub-ms local link execution

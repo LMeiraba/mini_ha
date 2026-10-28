@@ -405,11 +405,35 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
         while (slotIdx < MAX_GPIO_SLOTS) {
           int nextColon = outs.indexOf(':', lastColon + 1);
           String valStr = (nextColon == -1) ? outs.substring(lastColon + 1) : outs.substring(lastColon + 1, nextColon);
-          ns->relayStates[slotIdx] = (valStr.toInt() == 1);
+          bool st = (valStr.toInt() == 1);
+          ns->relayStates[slotIdx] = st;
+          ns->slotValues[slotIdx] = st ? 1.0 : 0.0;
           slotIdx++;
           if (nextColon == -1) break;
           lastColon = nextColon;
         }
+      }
+
+      // Parse multi-sensor slot tokens: :S<slot>:<val>, :S<slot>T:<val>, :S<slot>H:<val>
+      int curPos = 0;
+      while ((curPos = pkt.payload.indexOf(":S", curPos)) != -1) {
+        int nextColon = pkt.payload.indexOf(':', curPos + 2);
+        if (nextColon == -1) break;
+        String tag = pkt.payload.substring(curPos + 2, nextColon);
+        int afterValColon = pkt.payload.indexOf(':', nextColon + 1);
+        String valStr = (afterValColon == -1) ? pkt.payload.substring(nextColon + 1) : pkt.payload.substring(nextColon + 1, afterValColon);
+
+        if (tag.endsWith("T")) {
+          int s = tag.substring(0, tag.length() - 1).toInt();
+          if (s >= 0 && s < MAX_GPIO_SLOTS) ns->slotValues[s] = valStr.toFloat();
+        } else if (tag.endsWith("H")) {
+          int s = tag.substring(0, tag.length() - 1).toInt();
+          if (s >= 0 && s < MAX_GPIO_SLOTS) ns->slotSecondary[s] = valStr.toFloat();
+        } else {
+          int s = tag.toInt();
+          if (s >= 0 && s < MAX_GPIO_SLOTS) ns->slotValues[s] = valStr.toFloat();
+        }
+        curPos = nextColon + 1;
       }
     }
   }
@@ -425,7 +449,24 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
         int state = pkt.payload.substring(stIdx + 7).toInt();
         if (slot >= 0 && slot < MAX_GPIO_SLOTS) {
           ns->relayStates[slot] = (state == 1);
+          ns->slotValues[slot] = (state == 1) ? 1.0 : 0.0;
           publishMqttState();
+        }
+      }
+    }
+  }
+  // 4. Physical Input Trigger Event
+  else if (pkt.verb == "INPUT") {
+    GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
+    if (ns) {
+      ns->lastSeen = millis();
+      int sIdx = pkt.payload.indexOf("SLOT:");
+      int stIdx = pkt.payload.indexOf(":STATE:");
+      if (sIdx != -1 && stIdx != -1) {
+        int slot = pkt.payload.substring(sIdx + 5, stIdx).toInt();
+        int state = pkt.payload.substring(stIdx + 7).toInt();
+        if (slot >= 0 && slot < MAX_GPIO_SLOTS) {
+          ns->slotValues[slot] = state;
         }
       }
     }

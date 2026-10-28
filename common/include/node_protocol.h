@@ -16,7 +16,7 @@
 #define MAX_GPIO_SLOTS          16    // Max virtual slots per node
 #define MAX_LINKS               16    // Max local sensor-actuator link rules per node
 #define MAX_SCHEDULES           8     // Max standalone local schedule slots per node
-#define PROTOCOL_SCHEMA_VERSION 0x0005
+#define PROTOCOL_SCHEMA_VERSION 0x0006
 #define SCHEMA_MAGIC            (0xAA550000 | PROTOCOL_SCHEMA_VERSION)
 #define DEFAULT_MESH_PORT       8266
 
@@ -79,13 +79,14 @@ struct LinkRuleDef {
 // Standalone Local Time Schedule (Runs locally on slave even if Master is dead/disconnected!)
 struct LocalScheduleDef {
   uint8_t enabled;            // 1 = Active, 0 = Disabled
-  uint8_t targetSlot;         // Output slot to actuate (e.g. Relay Slot 0)
+  uint8_t targetSlot;         // Output slot to actuate (legacy single slot)
   uint8_t action;             // LinkRuleAction (e.g. LINK_TURN_ON or LINK_TURN_OFF)
   uint8_t onHour;             // 0-23
   uint8_t onMinute;           // 0-59
   uint8_t offHour;            // 0-23
   uint8_t offMinute;          // 0-59
   uint8_t daysOfWeekMask;     // Bitmask: bit 0 = Sun, bit 1 = Mon ... bit 6 = Sat (0x7F = Everyday)
+  uint16_t targetSlotsMask;   // Bitmask of target slots to actuate (multi-actuator: bit 0 = Slot 0, bit 1 = Slot 1...)
 };
 
 // Complete Persistent Storage Layout (Stored in Slave EEPROM / Flash Sector)

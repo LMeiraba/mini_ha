@@ -47,11 +47,10 @@ unsigned long lastToggleTime[MAX_GPIO_SLOTS];
 uint32_t currentEpoch = 0;
 unsigned long lastEpochSyncMillis = 0;
 
-// Sensor Peripherals
-DHT* dhtSensor = nullptr;
-int dhtSlotIndex = -1;
-int trigSlotIndex = -1;
-int echoSlotIndex = -1;
+// Sensor Peripherals & Multi-Sensor Telemetry Cache
+DHT* dhtSensors[MAX_GPIO_SLOTS] = {nullptr};
+float slotValues[MAX_GPIO_SLOTS] = {0.0};
+float slotSecondary[MAX_GPIO_SLOTS] = {0.0};
 int cachedDistance = -1;
 float cachedTemperature = 0.0;
 float cachedHumidity = 0.0;
@@ -121,12 +120,13 @@ void saveConfig() {
 }
 
 void applyHardwareConfiguration() {
-  dhtSlotIndex = -1;
-  trigSlotIndex = -1;
-  echoSlotIndex = -1;
-  if (dhtSensor) { delete dhtSensor; dhtSensor = nullptr; }
-
   for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
+    if (dhtSensors[i]) {
+      delete dhtSensors[i];
+      dhtSensors[i] = nullptr;
+    }
+    slotValues[i] = 0;
+    slotSecondary[i] = 0;
     outputStates[i] = false;
     lastInputStates[i] = LOW;
     lastToggleTime[i] = 0;
@@ -142,20 +142,19 @@ void applyHardwareConfiguration() {
     } else if (type == SLOT_INPUT_TOUCH || type == SLOT_INPUT_BUTTON) {
       pinMode(pin, (type == SLOT_INPUT_BUTTON) ? INPUT_PULLUP : INPUT);
       lastInputStates[i] = digitalRead(pin);
+      slotValues[i] = lastInputStates[i];
     } else if (type == SLOT_SENSOR_ULTRASONIC_TRIG) {
       pinMode(pin, OUTPUT);
       digitalWrite(pin, LOW);
-      trigSlotIndex = i;
+      slotValues[i] = -1;
     } else if (type == SLOT_SENSOR_ULTRASONIC_ECHO) {
       pinMode(pin, INPUT);
-      echoSlotIndex = i;
     } else if (type == SLOT_SENSOR_DHT11 || type == SLOT_SENSOR_DHT22) {
-      dhtSlotIndex = i;
-      dhtSensor = new DHT(pin, (type == SLOT_SENSOR_DHT11) ? DHT11 : DHT22);
-      dhtSensor->begin();
+      dhtSensors[i] = new DHT(pin, (type == SLOT_SENSOR_DHT11) ? DHT11 : DHT22);
+      dhtSensors[i]->begin();
     }
   }
-  Serial.println("[HAL] Applied hardware configuration successfully.");
+  Serial.println("[HAL] Applied multi-sensor hardware configuration successfully.");
 }
 
 // Unified packet transmitter: Sends to Serial and/or active TCP connection
@@ -219,12 +218,18 @@ void evaluateLocalSchedules() {
       if (curTimeFloat >= onTimeFloat && curTimeFloat < offTimeFloat) shouldBeActive = true;
     }
 
-    uint8_t target = config.schedules[s].targetSlot;
-    if (target < MAX_GPIO_SLOTS) {
-      if (shouldBeActive && !outputStates[target]) {
-        setOutputSlot(target, true, true);
-      } else if (!shouldBeActive && outputStates[target]) {
-        setOutputSlot(target, false, true);
+    uint16_t mask = config.schedules[s].targetSlotsMask;
+    if (mask == 0 && config.schedules[s].targetSlot < MAX_GPIO_SLOTS) {
+      mask = (1 << config.schedules[s].targetSlot);
+    }
+
+    for (uint8_t target = 0; target < MAX_GPIO_SLOTS; target++) {
+      if ((mask & (1 << target)) != 0 && config.slots[target].type == SLOT_OUTPUT_RELAY) {
+        if (shouldBeActive && !outputStates[target]) {
+          setOutputSlot(target, true, true);
+        } else if (!shouldBeActive && outputStates[target]) {
+          setOutputSlot(target, false, true);
+        }
       }
     }
   }
@@ -262,28 +267,66 @@ void checkPhysicalInputs() {
       sendPacketToMaster("INPUT", "SLOT:" + String(i) + ":STATE:" + String(current));
     }
     lastInputStates[i] = current;
+    slotValues[i] = current;
   }
 
-  // Periodic sensor readings
+  // Periodic multi-sensor readings
   if (millis() - lastSensorPoll > 1000) {
     lastSensorPoll = millis();
 
-    if (trigSlotIndex != -1 && echoSlotIndex != -1) {
-      uint8_t trig = config.slots[trigSlotIndex].gpio;
-      uint8_t echo = config.slots[echoSlotIndex].gpio;
-      digitalWrite(trig, LOW); delayMicroseconds(2);
-      digitalWrite(trig, HIGH); delayMicroseconds(10);
-      digitalWrite(trig, LOW);
-      long dur = pulseIn(echo, HIGH, 30000);
-      cachedDistance = (dur > 0) ? (dur * 0.034 / 2) : -1;
+    // 1. Read all Ultrasonic Trig slots
+    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
+      if (config.slots[i].type == SLOT_SENSOR_ULTRASONIC_TRIG) {
+        int echoSlot = -1;
+        for (int e = i + 1; e < MAX_GPIO_SLOTS; e++) {
+          if (config.slots[e].type == SLOT_SENSOR_ULTRASONIC_ECHO) {
+            echoSlot = e;
+            break;
+          }
+        }
+        if (echoSlot == -1) {
+          for (int e = 0; e < MAX_GPIO_SLOTS; e++) {
+            if (config.slots[e].type == SLOT_SENSOR_ULTRASONIC_ECHO) {
+              echoSlot = e;
+              break;
+            }
+          }
+        }
+
+        if (echoSlot != -1) {
+          uint8_t trigPin = config.slots[i].gpio;
+          uint8_t echoPin = config.slots[echoSlot].gpio;
+          digitalWrite(trigPin, LOW); delayMicroseconds(2);
+          digitalWrite(trigPin, HIGH); delayMicroseconds(10);
+          digitalWrite(trigPin, LOW);
+          long dur = pulseIn(echoPin, HIGH, 25000);
+          float dist = (dur > 0) ? (dur * 0.034 / 2) : -1;
+          slotValues[i] = dist;
+          if (cachedDistance == -1 || i == 0) cachedDistance = (int)dist;
+        }
+      }
     }
 
-    if (dhtSensor) {
-      float h = dhtSensor->readHumidity();
-      float t = dhtSensor->readTemperature();
-      if (!isnan(h) && !isnan(t)) {
-        cachedHumidity = h;
-        cachedTemperature = t;
+    // 2. Read all DHT sensors
+    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
+      if (dhtSensors[i]) {
+        float h = dhtSensors[i]->readHumidity();
+        float t = dhtSensors[i]->readTemperature();
+        if (!isnan(t) && !isnan(h)) {
+          slotValues[i] = t;
+          slotSecondary[i] = h;
+          if (cachedTemperature == 0.0 || i == 0) {
+            cachedTemperature = t;
+            cachedHumidity = h;
+          }
+        }
+      }
+    }
+
+    // 3. Update relay slot values
+    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
+      if (config.slots[i].type == SLOT_OUTPUT_RELAY) {
+        slotValues[i] = outputStates[i] ? 1 : 0;
       }
     }
   }
@@ -323,6 +366,17 @@ void processIncomingPacket(const ParsedPacket& pkt) {
                  ":TMP:" + String(cachedTemperature, 1) + 
                  ":HUM:" + String(cachedHumidity, 1) + 
                  ":OUT:" + stateStr;
+    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
+      uint8_t t = config.slots[i].type;
+      if (t == SLOT_SENSOR_ULTRASONIC_TRIG) {
+        rep += ":S" + String(i) + ":" + String((int)slotValues[i]);
+      } else if (t == SLOT_SENSOR_DHT11 || t == SLOT_SENSOR_DHT22) {
+        rep += ":S" + String(i) + "T:" + String(slotValues[i], 1);
+        rep += ":S" + String(i) + "H:" + String(slotSecondary[i], 1);
+      } else if (t == SLOT_INPUT_TOUCH || t == SLOT_INPUT_BUTTON) {
+        rep += ":S" + String(i) + ":" + String((int)slotValues[i]);
+      }
+    }
     sendPacketToMaster("REP", rep);
   }
   // Verb 2: SET (e.g. SET:SLOT:<id>:STATE:<0|1>)
@@ -400,7 +454,8 @@ void processIncomingPacket(const ParsedPacket& pkt) {
       int sIdx = p[0];
       if (sIdx >= 0 && sIdx < MAX_SCHEDULES) {
         config.schedules[sIdx].enabled = p[1];
-        config.schedules[sIdx].targetSlot = p[2];
+        config.schedules[sIdx].targetSlot = (p[2] < MAX_GPIO_SLOTS) ? p[2] : 0;
+        config.schedules[sIdx].targetSlotsMask = p[2];
         config.schedules[sIdx].action = p[3];
         config.schedules[sIdx].onHour = p[4];
         config.schedules[sIdx].onMinute = p[5];

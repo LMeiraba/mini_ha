@@ -505,7 +505,7 @@ inline void setupWebEndpoints() {
   // 10. Read Live Telemetry & States
   webServer.on("/api/state", HTTP_GET, []() {
     if (!requireRole(ROLE_GUEST)) return;
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(4096);
     JsonArray arr = doc.createNestedArray("nodes");
     for (uint8_t i = 0; i < numTrackedNodes; i++) {
       JsonObject n = arr.createNestedObject();
@@ -517,6 +517,12 @@ inline void setupWebEndpoints() {
       JsonArray relays = n.createNestedArray("relays");
       for (int s = 0; s < MAX_GPIO_SLOTS; s++) {
         relays.add(nodeStates[i].relayStates[s] ? 1 : 0);
+      }
+      JsonArray slotVals = n.createNestedArray("slotVals");
+      JsonArray slotSec = n.createNestedArray("slotSec");
+      for (int s = 0; s < MAX_GPIO_SLOTS; s++) {
+        slotVals.add(nodeStates[i].slotValues[s]);
+        slotSec.add(nodeStates[i].slotSecondary[s]);
       }
     }
     String json;
@@ -745,9 +751,21 @@ inline void setupWebEndpoints() {
     for (size_t sIdx = 0; sIdx < scheds.size() && sIdx < 8; sIdx++) {
       JsonObject s = scheds[sIdx];
       delay(30);
+      uint16_t mask = 0;
+      if (s.containsKey("targetSlots") && s["targetSlots"].is<JsonArray>()) {
+        for (int slotId : s["targetSlots"].as<JsonArray>()) {
+          if (slotId >= 0 && slotId < 16) mask |= (1 << slotId);
+        }
+      } else if (s.containsKey("targetSlotsMask")) {
+        mask = s["targetSlotsMask"].as<uint16_t>();
+      } else if (s.containsKey("targetSlot")) {
+        int ts = s["targetSlot"].as<int>();
+        if (ts >= 0 && ts < 16) mask = (1 << ts);
+      }
+
       String p = "SCHED:" + String(sIdx) +
                  ":" + String(s["enabled"].as<int>()) +
-                 ":" + String(s["targetSlot"].as<int>()) +
+                 ":" + String(mask) +
                  ":" + String(s["action"].as<int>()) +
                  ":" + String(s["onHour"].as<int>()) +
                  ":" + String(s["onMinute"].as<int>()) +
@@ -1420,6 +1438,7 @@ inline void setupWebEndpoints() {
       <div class="nav-actions">
         <button class="btn btn-secondary btn-sm" onclick="showTab('nodes')">Overview</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('rules')">Rules</button>
+        <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('schedules')">Schedules</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('users')">Users</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('settings')">Settings</button>
         <button class="btn btn-secondary btn-sm" onclick="showTab('account')">Account</button>
@@ -1469,6 +1488,31 @@ inline void setupWebEndpoints() {
             </div>
           </div>
           <div id="rulesList"><div style="color:var(--text-muted);">Loading rules...</div></div>
+        </div>
+      </div>
+
+      <!-- TAB: DOWNTIME-SAFE STANDALONE SCHEDULES (ADMIN ONLY) -->
+      <div id="tabSchedules" style="display:none;">
+        <div class="card">
+          <div class="card-title" style="flex-wrap:wrap; gap:10px;">
+            <div>
+              <div style="font-size:15px; font-weight:700;">Downtime-Safe Standalone Schedules</div>
+              <div style="font-size:11px; color:var(--text-muted); font-weight:normal; margin-top:3px;">
+                Schedules run directly inside each slave microcontroller's on-chip EEPROM. If the Master hub is powered off or disconnected, all scheduled lights, pumps, and valves continue operating automatically.
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <label style="margin:0; font-size:12px; color:var(--text-muted);">Target Node:</label>
+              <select id="schedTabNodeSelect" onchange="onSchedNodeChange()" style="margin:0; padding:6px 10px; width:auto; font-size:12px;"></select>
+            </div>
+          </div>
+
+          <div id="schedTabList" style="margin-top:14px; display:flex; flex-direction:column; gap:10px;"></div>
+
+          <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; border-top:1px solid var(--card-border-subtle); padding-top:14px;">
+            <button class="btn btn-secondary btn-sm" onclick="addScheduleToActiveNode()">+ Add Daily Schedule</button>
+            <button class="btn btn-sm" onclick="saveActiveNodeSchedules()">Save &amp; Push to Slave EEPROM</button>
+          </div>
         </div>
       </div>
 
@@ -1522,8 +1566,6 @@ inline void setupWebEndpoints() {
 
         <button class="btn" onclick="saveSystemSettings()">Save Settings & Restart</button>
       </div>
-    </div>
-  </div>
 
 
       <!-- TAB 4: ACCOUNT PROFILE & HARDWARE DIAGNOSTICS -->
@@ -1592,6 +1634,8 @@ inline void setupWebEndpoints() {
           </div>
         </div>
       </div>
+    </div>
+  </div>
 
   <!-- MODAL: CHANGE PASSWORD -->
   <div id="passModal" class="modal-overlay">
@@ -1684,11 +1728,11 @@ inline void setupWebEndpoints() {
         <div style="display:grid; grid-template-columns: 2fr 1.5fr 1fr 1fr; gap:8px;">
           <div>
             <label style="margin:0 0 4px; font-size:11px;">Source Node</label>
-            <select id="ruleModalCondNode"></select>
+            <select id="ruleModalCondNode" onchange="onRuleCondNodeChange()"></select>
           </div>
           <div>
-            <label style="margin:0 0 4px; font-size:11px;">Sensor / Key</label>
-            <input type="text" id="ruleModalCondKey" value="LVL" placeholder="LVL, TMP, HUM">
+            <label style="margin:0 0 4px; font-size:11px;">Sensor / Metric</label>
+            <select id="ruleModalCondKey" style="margin:0;"></select>
           </div>
           <div>
             <label style="margin:0 0 4px; font-size:11px;">Op</label>
@@ -1710,14 +1754,14 @@ inline void setupWebEndpoints() {
 
       <div style="margin-top:10px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
         <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Action (Then)</div>
-        <div style="display:grid; grid-template-columns: 2fr 1fr 1.5fr; gap:8px;">
+        <div style="display:grid; grid-template-columns: 2fr 1.5fr 1.5fr; gap:8px;">
           <div>
             <label style="margin:0 0 4px; font-size:11px;">Target Node</label>
-            <select id="ruleModalActTarget"></select>
+            <select id="ruleModalActTarget" onchange="onRuleActTargetChange()"></select>
           </div>
           <div>
-            <label style="margin:0 0 4px; font-size:11px;">Slot #</label>
-            <input type="number" id="ruleModalActSlot" value="1" min="0" max="15">
+            <label style="margin:0 0 4px; font-size:11px;">Actuator Slot</label>
+            <select id="ruleModalActSlot" style="margin:0;"></select>
           </div>
           <div>
             <label style="margin:0 0 4px; font-size:11px;">Command</label>
@@ -1800,12 +1844,14 @@ inline void setupWebEndpoints() {
     function showTab(tab) {
       document.getElementById('tabNodes').style.display = (tab === 'nodes') ? 'block' : 'none';
       document.getElementById('tabRules').style.display = (tab === 'rules') ? 'block' : 'none';
+      document.getElementById('tabSchedules').style.display = (tab === 'schedules') ? 'block' : 'none';
       document.getElementById('tabUsers').style.display = (tab === 'users') ? 'block' : 'none';
       document.getElementById('tabSettings').style.display = (tab === 'settings') ? 'block' : 'none';
       const tabAcc = document.getElementById('tabAccount');
       if (tabAcc) tabAcc.style.display = (tab === 'account') ? 'block' : 'none';
       if (tab === 'account') loadAccountDiagnostics();
       if (tab === 'rules') loadRules();
+      if (tab === 'schedules') loadSchedulesTab();
       if (tab === 'users') loadUsers();
       if (tab === 'settings') loadSettings();
     }
@@ -1926,7 +1972,7 @@ inline void setupWebEndpoints() {
             <div style="display:flex; align-items:center; gap:10px;">
               ${statusBadge}
               <button class="btn btn-secondary btn-sm admin-only" onclick="openGpioModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Configure GPIOs</button>
-              <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Schedules</button>
+              <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleTabForNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Schedules</button>
               <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Delete</button>
             </div>
           </div>
@@ -1943,39 +1989,59 @@ inline void setupWebEndpoints() {
               const isRelayOn = (state.relays && state.relays[slot.slot] === 1);
               const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
               html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(GPIO ${slot.gpio})</small></span>
+                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Relay GPIO ${slot.gpio})</small></span>
                 <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleRelay('${node.id}', ${slot.slot}, ${isRelayOn})">
                   <span class="toggle-slider"></span>
                 </button>
               </div>`;
             } else if (slot.type === 6 || slot.type === 7) { // DHT
+              const curT = (state.slotVals && state.slotVals[slot.slot] !== undefined && state.slotVals[slot.slot] > 0) ? state.slotVals[slot.slot] : state.temp;
+              const curH = (state.slotSec && state.slotSec[slot.slot] !== undefined && state.slotSec[slot.slot] > 0) ? state.slotSec[slot.slot] : state.hum;
               html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(GPIO ${slot.gpio})</small></span>
+                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(DHT GPIO ${slot.gpio})</small></span>
                 <div class="sensor-readings">
                   <div class="sensor-pill">
                     <span class="pill-label">TEMP</span>
-                    <span class="pill-val">${state.temp.toFixed(1)}</span>
+                    <span class="pill-val">${curT.toFixed(1)}</span>
                     <span class="pill-unit">&deg;C</span>
                   </div>
                   <div class="sensor-pill">
                     <span class="pill-label">HUM</span>
-                    <span class="pill-val">${state.hum.toFixed(0)}</span>
+                    <span class="pill-val">${curH.toFixed(0)}</span>
                     <span class="pill-unit">%</span>
                   </div>
                 </div>
               </div>`;
-            } else if (slot.type === 4 || slot.type === 5) { // Ultrasonic
-              if (slot.type === 4) {
-                const distText = state.dist >= 0 ? `${state.dist} cm` : '--';
-                const pct = state.dist >= 0 ? Math.max(0, Math.min(100, Math.round(((200 - state.dist) / 200) * 100))) : 0;
-                html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
-                  <div class="tank-header">
-                    <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Trig ${slot.gpio})</small></span>
-                    <span style="font-family:var(--font-mono); font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
-                  </div>
-                  <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
-                </div>`;
-              }
+            } else if (slot.type === 4) { // Ultrasonic Trig
+              const slotDist = (state.slotVals && state.slotVals[slot.slot] !== undefined && state.slotVals[slot.slot] >= 0) ? state.slotVals[slot.slot] : state.dist;
+              const distText = slotDist >= 0 ? `${Math.round(slotDist)} cm` : '--';
+              const pct = slotDist >= 0 ? Math.max(0, Math.min(100, Math.round(((200 - slotDist) / 200) * 100))) : 0;
+              html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
+                <div class="tank-header">
+                  <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Trig GPIO ${slot.gpio})</small></span>
+                  <span style="font-family:var(--font-mono); font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
+                </div>
+                <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
+              </div>`;
+            } else if (slot.type === 5) { // Ultrasonic Echo
+              html += `<div class="slot-row" style="opacity:0.65;">
+                <span style="font-size:12px; font-weight:500;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Echo GPIO ${slot.gpio})</small></span>
+                <span style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">PAIRED ECHO</span>
+              </div>`;
+            } else if (slot.type === 2 || slot.type === 3) { // Touch or Button
+              const isInputActive = (state.slotVals && state.slotVals[slot.slot] !== undefined && state.slotVals[slot.slot] == 1);
+              html += `<div class="slot-row">
+                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(${slot.type === 2 ? 'Touch' : 'Button'} GPIO ${slot.gpio})</small></span>
+                <span class="badge" style="background:${isInputActive ? 'var(--success)' : 'var(--card-elevated)'}; color:${isInputActive ? '#000' : 'var(--text-dim)'}; font-size:10px; font-weight:700;">
+                  ${isInputActive ? 'ACTIVE / PRESSED' : 'IDLE / OPEN'}
+                </span>
+              </div>`;
+            } else if (slot.type === 9) { // Analog ADC
+              const adcVal = (state.slotVals && state.slotVals[slot.slot] !== undefined) ? state.slotVals[slot.slot] : 0;
+              html += `<div class="slot-row">
+                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(ADC GPIO ${slot.gpio})</small></span>
+                <span style="font-family:var(--font-mono); font-size:12px; font-weight:700;">${adcVal}</span>
+              </div>`;
             } else {
               html += `<div class="slot-row"><span style="font-weight:600;">${slotName}</span><span style="font-size:11px; color:var(--text-dim);">GPIO ${slot.gpio} (Active)</span></div>`;
             }
@@ -2246,6 +2312,60 @@ inline void setupWebEndpoints() {
 
     let activeEditRuleIdx = -1;
 
+    function updateRuleCondKeys(nodeId, selectedKey) {
+      const select = document.getElementById('ruleModalCondKey');
+      const node = configuredNodes.find(n => n.id === nodeId);
+      let optHtml = '';
+      if (node && node.slots && node.slots.length > 0) {
+        node.slots.forEach(s => {
+          const sName = s.name || `Slot ${s.slot}`;
+          if (s.type === 4) { // Ultrasonic Trig
+            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Distance / Level (cm)</option>`;
+          } else if (s.type === 6 || s.type === 7) { // DHT
+            optHtml += `<option value="SLOT_${s.slot}_TMP">Slot ${s.slot} (${sName}): Temperature (&deg;C)</option>`;
+            optHtml += `<option value="SLOT_${s.slot}_HUM">Slot ${s.slot} (${sName}): Humidity (%)</option>`;
+          } else if (s.type === 1) { // Relay
+            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Relay Output State (0/1)</option>`;
+          } else if (s.type === 2 || s.type === 3) { // Button/Touch
+            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Physical Input State (0/1)</option>`;
+          } else if (s.type === 9) { // Analog
+            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Analog Value</option>`;
+          }
+        });
+      }
+      optHtml += `<option value="LVL">Global / Primary Distance (cm)</option>`;
+      optHtml += `<option value="TMP">Global / Primary Temperature (&deg;C)</option>`;
+      optHtml += `<option value="HUM">Global / Primary Humidity (%)</option>`;
+      select.innerHTML = optHtml;
+      if (selectedKey) select.value = selectedKey;
+    }
+
+    function updateRuleActSlots(nodeId, selectedSlot) {
+      const select = document.getElementById('ruleModalActSlot');
+      const node = configuredNodes.find(n => n.id === nodeId);
+      let optHtml = '';
+      if (node && node.slots && node.slots.length > 0) {
+        node.slots.filter(s => s.type === 1).forEach(s => {
+          optHtml += `<option value="${s.slot}">Slot ${s.slot}: ${s.name || ('Relay ' + s.slot)}</option>`;
+        });
+      }
+      if (!optHtml) {
+        optHtml = `<option value="0">Slot 0 (Default)</option><option value="1">Slot 1</option>`;
+      }
+      select.innerHTML = optHtml;
+      if (selectedSlot !== undefined) select.value = selectedSlot;
+    }
+
+    function onRuleCondNodeChange() {
+      const cNode = document.getElementById('ruleModalCondNode').value;
+      updateRuleCondKeys(cNode);
+    }
+
+    function onRuleActTargetChange() {
+      const aTarget = document.getElementById('ruleModalActTarget').value;
+      updateRuleActSlots(aTarget);
+    }
+
     function openAddRuleModal(editIdx = -1) {
       activeEditRuleIdx = editIdx;
       document.getElementById('ruleModalTitle').innerText = (editIdx >= 0) ? 'Edit Automation Rule' : 'Add Automation Rule';
@@ -2265,13 +2385,13 @@ inline void setupWebEndpoints() {
         document.getElementById('ruleModalName').value = r.name || '';
         const c = (r.conditions && r.conditions[0]) ? r.conditions[0] : {};
         condSelect.value = c.node || 'LOCAL';
-        document.getElementById('ruleModalCondKey').value = c.key || 'LVL';
+        updateRuleCondKeys(c.node || 'LOCAL', c.key || 'LVL');
         document.getElementById('ruleModalCondOp').value = c.op || '>=';
         document.getElementById('ruleModalCondVal').value = (c.val !== undefined) ? c.val : 100;
 
         const a = (r.actions && r.actions[0]) ? r.actions[0] : {};
         actSelect.value = a.target || 'LOCAL';
-        document.getElementById('ruleModalActSlot').value = a.slot || 1;
+        updateRuleActSlots(a.target || 'LOCAL', a.slot !== undefined ? a.slot : 0);
         document.getElementById('ruleModalActVal').value = (a.val !== undefined) ? a.val : 1;
 
         document.getElementById('ruleModalNotif').checked = !!r.notify;
@@ -2280,12 +2400,12 @@ inline void setupWebEndpoints() {
       } else {
         document.getElementById('ruleModalName').value = 'Rule #' + (currentRules.length + 1);
         if (configuredNodes.length > 0) condSelect.value = configuredNodes[0].id;
-        document.getElementById('ruleModalCondKey').value = 'LVL';
+        updateRuleCondKeys(condSelect.value, 'LVL');
         document.getElementById('ruleModalCondOp').value = '>=';
         document.getElementById('ruleModalCondVal').value = 140;
 
         actSelect.value = 'LOCAL';
-        document.getElementById('ruleModalActSlot').value = 1;
+        updateRuleActSlots(actSelect.value, 0);
         document.getElementById('ruleModalActVal').value = 1;
 
         document.getElementById('ruleModalNotif').checked = true;
@@ -2301,12 +2421,12 @@ inline void setupWebEndpoints() {
       if (!name) return showToast('Please enter a rule name', 'error');
 
       const cNode = document.getElementById('ruleModalCondNode').value;
-      const cKey = document.getElementById('ruleModalCondKey').value.trim() || 'LVL';
+      const cKey = document.getElementById('ruleModalCondKey').value || 'LVL';
       const cOp = document.getElementById('ruleModalCondOp').value;
       const cVal = parseFloat(document.getElementById('ruleModalCondVal').value) || 0;
 
       const aTarget = document.getElementById('ruleModalActTarget').value;
-      const aSlot = parseInt(document.getElementById('ruleModalActSlot').value) || 1;
+      const aSlot = parseInt(document.getElementById('ruleModalActSlot').value) || 0;
       const aVal = parseInt(document.getElementById('ruleModalActVal').value) || 1;
 
       const isNotif = document.getElementById('ruleModalNotif').checked;
@@ -2550,35 +2670,77 @@ inline void setupWebEndpoints() {
     let activeSchedNodeId = null;
     let currentSchedules = [];
 
-    function openScheduleModal(nodeId) {
+    function openScheduleTabForNode(nodeId) {
       activeSchedNodeId = nodeId;
-      const node = configuredNodes.find(n => n.id === nodeId);
-      if (!node) return;
-
-      document.getElementById('schedModalTitle').innerText = `Standalone Schedules: ${node.name || nodeId} (${nodeId})`;
-      currentSchedules = JSON.parse(JSON.stringify(node.schedules || []));
-      renderScheduleRows();
-      document.getElementById('scheduleModal').style.display = 'flex';
+      showTab('schedules');
     }
 
-    function renderScheduleRows() {
-      const list = document.getElementById('schedList');
+    function openScheduleModal(nodeId) {
+      openScheduleTabForNode(nodeId);
+    }
+
+    function loadSchedulesTab() {
+      const select = document.getElementById('schedTabNodeSelect');
+      if (!select) return;
+
+      let optHtml = '';
+      configuredNodes.forEach(n => {
+        optHtml += `<option value="${n.id}">${n.name || n.id} (${n.id})</option>`;
+      });
+      select.innerHTML = optHtml;
+
+      if (!activeSchedNodeId && configuredNodes.length > 0) {
+        activeSchedNodeId = configuredNodes[0].id;
+      }
+      if (activeSchedNodeId) {
+        select.value = activeSchedNodeId;
+      }
+      onSchedNodeChange();
+    }
+
+    function onSchedNodeChange() {
+      const select = document.getElementById('schedTabNodeSelect');
+      if (select && select.value) {
+        activeSchedNodeId = select.value;
+      }
       const node = configuredNodes.find(n => n.id === activeSchedNodeId);
-      const slots = (node && node.slots) ? node.slots : [];
+      currentSchedules = node ? JSON.parse(JSON.stringify(node.schedules || [])) : [];
+      renderSchedulesTab();
+    }
+
+    function renderSchedulesTab() {
+      const list = document.getElementById('schedTabList');
+      if (!list) return;
+
+      const node = configuredNodes.find(n => n.id === activeSchedNodeId);
+      if (!node) {
+        list.innerHTML = '<div style="color:var(--text-dim); padding:16px 0; font-size:13px;">No hardware node selected.</div>';
+        return;
+      }
+
+      const relaySlots = (node.slots || []).filter(s => s.type === 1);
 
       if (currentSchedules.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding:10px; font-size:12px;">No standalone schedules configured. Click <strong>+ Add Daily Schedule</strong> below.</div>';
+        list.innerHTML = '<div style="color:var(--text-dim); padding:16px; background:var(--card-elevated); border-radius:var(--radius-sm); border:1px solid var(--card-border); font-size:13px;">No standalone schedules configured for this node. Click <strong>+ Add Daily Schedule</strong> below.</div>';
         return;
       }
 
       let html = '';
       currentSchedules.forEach((s, idx) => {
-        let slotOptions = '';
-        slots.forEach(slot => {
-          slotOptions += `<option value="${slot.slot}" ${s.targetSlot === slot.slot ? 'selected' : ''}>Slot ${slot.slot}: ${slot.name || ('Slot ' + slot.slot)}</option>`;
-        });
-        if (slots.length === 0) {
-          slotOptions = `<option value="0">Slot 0 (Default)</option>`;
+        let actCheckboxes = '';
+        if (relaySlots.length > 0) {
+          relaySlots.forEach(rs => {
+            let isChecked = false;
+            if (s.targetSlots && Array.isArray(s.targetSlots)) isChecked = s.targetSlots.includes(rs.slot);
+            else if (s.targetSlotsMask !== undefined && s.targetSlotsMask > 0) isChecked = !!(s.targetSlotsMask & (1 << rs.slot));
+            else isChecked = (s.targetSlot === rs.slot);
+            actCheckboxes += `<label style="display:inline-flex; align-items:center; gap:5px; margin-right:8px; margin-bottom:4px; cursor:pointer; background:var(--card); padding:4px 8px; border-radius:var(--radius-sm); border:1px solid var(--card-border); font-size:11px;">
+              <input type="checkbox" class="sched-chk-${idx}" value="${rs.slot}" ${isChecked ? 'checked' : ''}>
+              <span>Slot ${rs.slot}: ${rs.name || ('Relay ' + rs.slot)}</span>
+            </label>`;
+          });
+        } else {
+          actCheckboxes = '<span style="color:var(--warning); font-size:11px;">No Relay output slots configured on this node. Go to Overview &rarr; Configure GPIOs to assign relay pins.</span>';
         }
 
         const onH = String(s.onHour || 0).padStart(2, '0');
@@ -2586,62 +2748,75 @@ inline void setupWebEndpoints() {
         const offH = String(s.offHour || 0).padStart(2, '0');
         const offM = String(s.offMinute || 0).padStart(2, '0');
 
-        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:8px 10px; display:grid; grid-template-columns: 2fr 110px 110px 75px 36px; gap:8px; align-items:center;">
-          <div>
-            <label style="font-size:10px; margin:0 0 2px;">Target Actuator</label>
-            <select id="schedSlot_${idx}" style="margin:0; padding:5px;">${slotOptions}</select>
+        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:12px 14px; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid var(--card-border-subtle); padding-bottom:6px;">
+            <div style="display:flex; align-items:center; gap:8px;">
+              <strong style="font-size:13px;">Daily Schedule #${idx + 1}</strong>
+              <label style="display:inline-flex; align-items:center; gap:4px; margin:0; cursor:pointer; font-size:11px; color:var(--text-muted);">
+                <input type="checkbox" id="schedEn_${idx}" ${s.enabled ? 'checked' : ''} style="width:auto; margin:0;">
+                <span>Enabled</span>
+              </label>
+            </div>
+            <button class="btn btn-danger btn-sm" onclick="removeScheduleRow(${idx})" style="padding:2px 8px; font-size:11px;">Delete</button>
           </div>
-          <div>
-            <label style="font-size:10px; margin:0 0 2px;">Turn ON Time</label>
-            <input type="time" id="schedOn_${idx}" value="${onH}:${onM}" style="margin:0; padding:5px;">
+          
+          <div style="margin-bottom:8px;">
+            <label style="font-size:10px; margin:0 0 4px; display:block; text-transform:uppercase; color:var(--text-dim); font-weight:700;">Target Actuators (Multi-Select Support)</label>
+            <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:2px;">
+              ${actCheckboxes}
+            </div>
           </div>
-          <div>
-            <label style="font-size:10px; margin:0 0 2px;">Turn OFF Time</label>
-            <input type="time" id="schedOff_${idx}" value="${offH}:${offM}" style="margin:0; padding:5px;">
-          </div>
-          <div style="text-align:center;">
-            <label style="font-size:10px; margin:0 0 2px;">Active</label>
-            <input type="checkbox" id="schedEn_${idx}" ${s.enabled ? 'checked' : ''} style="width:auto; margin:4px auto 0; display:block;">
-          </div>
-          <div style="text-align:right;">
-            <button class="btn btn-danger btn-sm" onclick="removeScheduleRow(${idx})" style="padding:4px 6px; font-size:11px; margin-top:14px;">&times;</button>
+
+          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:6px;">
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Turn ON Time</label>
+              <input type="time" id="schedOn_${idx}" value="${onH}:${onM}" style="margin:0; padding:6px;">
+            </div>
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Turn OFF Time</label>
+              <input type="time" id="schedOff_${idx}" value="${offH}:${offM}" style="margin:0; padding:6px;">
+            </div>
           </div>
         </div>`;
       });
       list.innerHTML = html;
     }
 
-    function addScheduleRow() {
+    function addScheduleToActiveNode() {
       if (currentSchedules.length >= 8) {
         showToast('Max 8 standalone schedules per slave microcontroller', 'error');
         return;
       }
       syncScheduleInputs();
+      const node = configuredNodes.find(n => n.id === activeSchedNodeId);
+      const relaySlots = node ? (node.slots || []).filter(s => s.type === 1) : [];
+      const defaultSlot = (relaySlots.length > 0) ? relaySlots[0].slot : 0;
+
       currentSchedules.push({
         enabled: 1,
-        targetSlot: 0,
+        targetSlot: defaultSlot,
+        targetSlots: [defaultSlot],
+        targetSlotsMask: (1 << defaultSlot),
         action: 1,
-        onHour: 6,
+        onHour: 18,
         onMinute: 0,
-        offHour: 18,
-        offMinute: 30
+        offHour: 6,
+        offMinute: 0
       });
-      renderScheduleRows();
+      renderSchedulesTab();
     }
 
     function removeScheduleRow(idx) {
       syncScheduleInputs();
       currentSchedules.splice(idx, 1);
-      renderScheduleRows();
+      renderSchedulesTab();
     }
 
     function syncScheduleInputs() {
       currentSchedules.forEach((s, idx) => {
-        const slotEl = document.getElementById('schedSlot_' + idx);
         const onEl = document.getElementById('schedOn_' + idx);
         const offEl = document.getElementById('schedOff_' + idx);
         const enEl = document.getElementById('schedEn_' + idx);
-        if (slotEl) s.targetSlot = parseInt(slotEl.value) || 0;
         if (enEl) s.enabled = enEl.checked ? 1 : 0;
         if (onEl && onEl.value) {
           const parts = onEl.value.split(':');
@@ -2653,11 +2828,23 @@ inline void setupWebEndpoints() {
           s.offHour = parseInt(parts[0]) || 0;
           s.offMinute = parseInt(parts[1]) || 0;
         }
+
+        const chks = document.querySelectorAll(`.sched-chk-${idx}:checked`);
+        const targetSlots = [];
+        let mask = 0;
+        chks.forEach(cb => {
+          const slotVal = parseInt(cb.value);
+          targetSlots.push(slotVal);
+          mask |= (1 << slotVal);
+        });
+        s.targetSlots = targetSlots;
+        s.targetSlotsMask = mask;
+        s.targetSlot = (targetSlots.length > 0) ? targetSlots[0] : 0;
         s.action = 1;
       });
     }
 
-    async function saveNodeSchedules() {
+    async function saveActiveNodeSchedules() {
       syncScheduleInputs();
       if (!activeSchedNodeId) return;
 
@@ -2668,8 +2855,9 @@ inline void setupWebEndpoints() {
       });
 
       if (res.ok) {
-        closeModal('scheduleModal');
-        showToast('Schedules saved and pushed to slave EEPROM!', 'success');
+        const node = configuredNodes.find(n => n.id === activeSchedNodeId);
+        if (node) node.schedules = currentSchedules;
+        showToast('Schedules saved and pushed to slave EEPROM over RS-422!', 'success');
         refreshData();
       } else {
         showToast('Failed to save schedules', 'error');

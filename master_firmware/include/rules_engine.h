@@ -18,6 +18,8 @@ struct GenericNodeTelemetry {
   float temp = 0.0;
   float hum = 0.0;
   bool relayStates[MAX_GPIO_SLOTS] = {false};
+  float slotValues[MAX_GPIO_SLOTS] = {0.0};
+  float slotSecondary[MAX_GPIO_SLOTS] = {0.0};
   unsigned long lastSeen = 0;
 };
 
@@ -93,8 +95,17 @@ inline void evaluateDynamicRules() {
       else if (key == "TMP") currentVal = ns->temp;
       else if (key == "HUM") currentVal = ns->hum;
       else if (key.startsWith("SLOT_")) {
-        int s = key.substring(5).toInt();
-        if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->relayStates[s] ? 1 : 0;
+        String sub = key.substring(5);
+        if (sub.endsWith("_TMP")) {
+          int s = sub.substring(0, sub.indexOf('_')).toInt();
+          if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->slotValues[s];
+        } else if (sub.endsWith("_HUM")) {
+          int s = sub.substring(0, sub.indexOf('_')).toInt();
+          if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->slotSecondary[s];
+        } else {
+          int s = sub.toInt();
+          if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->slotValues[s];
+        }
       }
 
       // Check condition

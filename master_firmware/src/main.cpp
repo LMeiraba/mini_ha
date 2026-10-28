@@ -19,25 +19,33 @@
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
   #define MASTER_CHIP_NAME     "ESP32-C3"
-  #define S1_UART_RX_PIN       4
-  #define S1_UART_TX_PIN       5
-  #define SERIAL_BUS_UART_NUM  1
+  #define PORT1_RX_PIN         4
+  #define PORT1_TX_PIN         5
+  HardwareSerial BusPort1(1);
 #else
   // Classic ESP32 Dev Board (Dual-Core Xtensa ESP32-WROOM-32)
   #define MASTER_CHIP_NAME     "ESP32-DevKit"
-  #define S1_UART_RX_PIN       16   // Default Hardware RX2 on ESP32
-  #define S1_UART_TX_PIN       17   // Default Hardware TX2 on ESP32
-  #define SERIAL_BUS_UART_NUM  2
+  // Port 1: Hardware UART1 (GPIO 4 RX, GPIO 5 TX) -> Dedicated Star Branch 1
+  #define PORT1_RX_PIN         4
+  #define PORT1_TX_PIN         5
+  HardwareSerial BusPort1(1);
+
+  // Port 2: Hardware UART2 (GPIO 16 RX, GPIO 17 TX) -> Dedicated Star Branch 2
+  #define PORT2_RX_PIN         16
+  #define PORT2_TX_PIN         17
+  HardwareSerial BusPort2(2);
 #endif
 
-HardwareSerial SerialBus(SERIAL_BUS_UART_NUM);
 WebServer webServer(80);
 DNSServer dnsServer;
 
-// Unified Packet Dispatcher: Broadcasts strictly over the isolated RS-422 hardware serial bus.
-// (Wireless slaves connect downstream to a wired slave's SoftAP repeater, never directly to the Master AP)
+// Unified Star Hub Dispatcher: Broadcasts full-duplex out all physical isolated UART star ports.
+// (Each wired slave has its own dedicated physical UART line - zero bus contention)
 void broadcastBusPacket(const String& pkt) {
-  SerialBus.println(pkt);
+  BusPort1.println(pkt);
+#if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(ESP32C3)
+  BusPort2.println(pkt);
+#endif
 }
 
 // Global State & Telemetry Storage
@@ -47,9 +55,31 @@ uint8_t numPendingNodes = 0;
 GenericNodeTelemetry nodeStates[MAX_TRACKED_NODES];
 uint8_t numTrackedNodes = 0;
 
-String busRxBuf = "";
+String busRxBuf1 = "";
+String busRxBuf2 = "";
 unsigned long lastRulePoll = 0;
 unsigned long lastBusPoll = 0;
+
+void handleIncomingBusPacket(const ParsedPacket& pkt);
+
+void pollBusPort(HardwareSerial& port, String& buf) {
+  while (port.available()) {
+    char c = (char)port.read();
+    if (c == '\n') {
+      buf.trim();
+      if (buf.length() > 0) {
+        ParsedPacket pkt = parseProtocolLine(buf);
+        if (pkt.isValid) {
+          handleIncomingBusPacket(pkt);
+        }
+      }
+      buf = "";
+    } else if (c != '\r') {
+      buf += c;
+      if (buf.length() > PROTOCOL_MAX_LINE) buf = "";
+    }
+  }
+}
 
 SystemSecurityConfig sysSecurity;
 
@@ -406,10 +436,13 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   Serial.printf("\n[MASTER] Booting Mini-HomeAssistant Supervisor on %s...\n", MASTER_CHIP_NAME);
-  Serial.printf("[MASTER] RS-422 Bus: UART%d (RX: GPIO%d, TX: GPIO%d)\n", SERIAL_BUS_UART_NUM, S1_UART_RX_PIN, S1_UART_TX_PIN);
-
-  // Initialize Isolated RS-422 Hardware Serial Bus
-  SerialBus.begin(115200, SERIAL_8N1, S1_UART_RX_PIN, S1_UART_TX_PIN);
+  // Initialize Isolated RS-422 Star Hardware Serial Ports
+  BusPort1.begin(115200, SERIAL_8N1, PORT1_RX_PIN, PORT1_TX_PIN);
+  Serial.printf("[MASTER] Star Port 1: UART1 (RX: GPIO%d, TX: GPIO%d)\n", PORT1_RX_PIN, PORT1_TX_PIN);
+#if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(ESP32C3)
+  BusPort2.begin(115200, SERIAL_8N1, PORT2_RX_PIN, PORT2_TX_PIN);
+  Serial.printf("[MASTER] Star Port 2: UART2 (RX: GPIO%d, TX: GPIO%d)\n", PORT2_RX_PIN, PORT2_TX_PIN);
+#endif
 
   // Initialize LittleFS Flash Storage
   initLittleFSStorage();
@@ -486,23 +519,11 @@ void loop() {
   webServer.handleClient();
   maintainMqtt();
 
-  // 2. Read incoming packets from isolated RS-422 bus
-  while (SerialBus.available()) {
-    char c = (char)SerialBus.read();
-    if (c == '\n') {
-      busRxBuf.trim();
-      if (busRxBuf.length() > 0) {
-        ParsedPacket pkt = parseProtocolLine(busRxBuf);
-        if (pkt.isValid) {
-          handleIncomingBusPacket(pkt);
-        }
-      }
-      busRxBuf = "";
-    } else if (c != '\r') {
-      busRxBuf += c;
-      if (busRxBuf.length() > PROTOCOL_MAX_LINE) busRxBuf = "";
-    }
-  }
+  // 2. Read incoming packets from isolated full-duplex star ports
+  pollBusPort(BusPort1, busRxBuf1);
+#if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(ESP32C3)
+  pollBusPort(BusPort2, busRxBuf2);
+#endif
 
   // 3. Evaluate Dynamic Rules Engine every 500ms
   if (millis() - lastRulePoll > 500) {

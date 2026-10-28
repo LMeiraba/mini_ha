@@ -536,4 +536,14 @@ void loop() {
     lastBusPoll = millis();
     broadcastBusPacket(buildPacket("ALL", "M", "REQ", "POLL"));
   }
+
+  // 5. Periodic Real-Time Clock Synchronization to Slaves (every 60 seconds)
+  static unsigned long lastTimeSync = 0;
+  if (millis() - lastTimeSync > 60000) {
+    lastTimeSync = millis();
+    time_t now = time(nullptr);
+    if (now > 1700000000) {
+      broadcastBusPacket(buildPacket("ALL", "M", "TIME", String((uint32_t)now)));
+    }
+  }
 }

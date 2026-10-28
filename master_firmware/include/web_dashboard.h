@@ -695,6 +695,85 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Slots saved and dispatched\"}");
   });
 
+  // 14d. Configure & Dispatch Node Standalone Schedules API (Downtime-Safe)
+  webServer.on("/api/nodes/schedules", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    if (!webServer.hasArg("plain")) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"No body\"}");
+      return;
+    }
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, webServer.arg("plain"));
+    if (err) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"Invalid JSON\"}");
+      return;
+    }
+
+    String targetId = doc["id"].as<String>();
+    JsonArray scheds = doc["schedules"].as<JsonArray>();
+
+    File f = LittleFS.open(NODES_CONFIG_PATH, "r");
+    DynamicJsonDocument nodesDoc(4096);
+    if (f) {
+      deserializeJson(nodesDoc, f);
+      f.close();
+    }
+
+    JsonArray nodes = nodesDoc["nodes"].as<JsonArray>();
+    bool nodeFound = false;
+    for (JsonObject node : nodes) {
+      if (node["id"].as<String>() == targetId) {
+        nodeFound = true;
+        node["schedules"] = scheds;
+        break;
+      }
+    }
+
+    if (!nodeFound) {
+      webServer.send(404, "application/json; charset=utf-8", "{\"error\":\"Node not found\"}");
+      return;
+    }
+
+    File outF = LittleFS.open(NODES_CONFIG_PATH, "w");
+    if (outF) {
+      serializeJson(nodesDoc, outF);
+      outF.close();
+    }
+
+    // Push each schedule over the wire directly into slave EEPROM
+    extern void broadcastBusPacket(const String& pkt);
+    for (size_t sIdx = 0; sIdx < scheds.size() && sIdx < 8; sIdx++) {
+      JsonObject s = scheds[sIdx];
+      delay(30);
+      String p = "SCHED:" + String(sIdx) +
+                 ":" + String(s["enabled"].as<int>()) +
+                 ":" + String(s["targetSlot"].as<int>()) +
+                 ":" + String(s["action"].as<int>()) +
+                 ":" + String(s["onHour"].as<int>()) +
+                 ":" + String(s["onMinute"].as<int>()) +
+                 ":" + String(s["offHour"].as<int>()) +
+                 ":" + String(s["offMinute"].as<int>());
+      broadcastBusPacket(buildPacket(targetId, "M", "CFG", p));
+    }
+
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Schedules pushed to slave EEPROM\"}");
+  });
+
+  // 14e. Time Sync API (Sync real-world clock from browser/phone even when offline!)
+  webServer.on("/api/time", HTTP_POST, []() {
+    if (webServer.hasArg("plain")) {
+      uint32_t clientEpoch = webServer.arg("plain").toInt();
+      if (clientEpoch > 1700000000) {
+        struct timeval tv = { (time_t)clientEpoch, 0 };
+        settimeofday(&tv, nullptr);
+        extern void broadcastBusPacket(const String& pkt);
+        broadcastBusPacket(buildPacket("ALL", "M", "TIME", String(clientEpoch)));
+        Serial.printf("[TIME] Synced real-world epoch: %u\n", clientEpoch);
+      }
+    }
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Time synced\"}");
+  });
+
   // 14c. Delete / Unbind Node API
   webServer.on("/api/nodes/delete", HTTP_POST, []() {
     if (!requireRole(ROLE_ADMIN)) return;
@@ -1674,6 +1753,25 @@ inline void setupWebEndpoints() {
     </div>
   </div>
 
+  <!-- MODAL: DOWNTIME-SAFE STANDALONE SCHEDULES -->
+  <div id="scheduleModal" class="modal-overlay">
+    <div class="modal" style="max-width:620px; width:95%;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-size:15px; font-weight:700;" id="schedModalTitle">Standalone Node Schedules</div>
+        <button onclick="closeModal('scheduleModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
+        <strong>Downtime-Safe Silicon Execution</strong>: These schedules are programmed directly into the slave's on-chip EEPROM. The slave executes them on its own internal clock even if the RS-422 bus is severed or the Master hub is powered off.
+      </div>
+      <div id="schedList" style="max-height:280px; overflow-y:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:8px;"></div>
+      <button class="btn btn-secondary btn-sm" onclick="addScheduleRow()" style="margin-bottom:14px;">+ Add Daily Schedule</button>
+      <div class="modal-actions">
+        <button class="btn btn-secondary btn-sm" onclick="closeModal('scheduleModal')">Cancel</button>
+        <button class="btn btn-sm" onclick="saveNodeSchedules()">Save & Push to Slave EEPROM</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Element -->
   <div id="toast">Notification</div>
 
@@ -1725,6 +1823,9 @@ inline void setupWebEndpoints() {
           const isAdmin = (data.role === 'admin');
           document.querySelectorAll('.admin-only').forEach(el => el.style.display = isAdmin ? 'block' : 'none');
           document.getElementById('defaultPassBanner').style.display = (isAdmin && data.isDefault) ? 'flex' : 'none';
+
+          // Sync browser real-world time to Master & Slaves (downtime-safe local RTC)
+          fetch('/api/time', { method: 'POST', body: String(Math.floor(Date.now() / 1000)) }).catch(()=>{});
 
           refreshData();
         } else {
@@ -1825,6 +1926,7 @@ inline void setupWebEndpoints() {
             <div style="display:flex; align-items:center; gap:10px;">
               ${statusBadge}
               <button class="btn btn-secondary btn-sm admin-only" onclick="openGpioModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Configure GPIOs</button>
+              <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Schedules</button>
               <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Delete</button>
             </div>
           </div>
@@ -2442,7 +2544,139 @@ inline void setupWebEndpoints() {
       }
     }
 
-    async function saveSystemSettings() {
+    // =========================================================================
+    // DOWNTIME-SAFE STANDALONE NODE SCHEDULES (SILICON EEPROM)
+    // =========================================================================
+    let activeSchedNodeId = null;
+    let currentSchedules = [];
+
+    function openScheduleModal(nodeId) {
+      activeSchedNodeId = nodeId;
+      const node = configuredNodes.find(n => n.id === nodeId);
+      if (!node) return;
+
+      document.getElementById('schedModalTitle').innerText = `Standalone Schedules: ${node.name || nodeId} (${nodeId})`;
+      currentSchedules = JSON.parse(JSON.stringify(node.schedules || []));
+      renderScheduleRows();
+      document.getElementById('scheduleModal').style.display = 'flex';
+    }
+
+    function renderScheduleRows() {
+      const list = document.getElementById('schedList');
+      const node = configuredNodes.find(n => n.id === activeSchedNodeId);
+      const slots = (node && node.slots) ? node.slots : [];
+
+      if (currentSchedules.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-dim); padding:10px; font-size:12px;">No standalone schedules configured. Click <strong>+ Add Daily Schedule</strong> below.</div>';
+        return;
+      }
+
+      let html = '';
+      currentSchedules.forEach((s, idx) => {
+        let slotOptions = '';
+        slots.forEach(slot => {
+          slotOptions += `<option value="${slot.slot}" ${s.targetSlot === slot.slot ? 'selected' : ''}>Slot ${slot.slot}: ${slot.name || ('Slot ' + slot.slot)}</option>`;
+        });
+        if (slots.length === 0) {
+          slotOptions = `<option value="0">Slot 0 (Default)</option>`;
+        }
+
+        const onH = String(s.onHour || 0).padStart(2, '0');
+        const onM = String(s.onMinute || 0).padStart(2, '0');
+        const offH = String(s.offHour || 0).padStart(2, '0');
+        const offM = String(s.offMinute || 0).padStart(2, '0');
+
+        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:8px 10px; display:grid; grid-template-columns: 2fr 110px 110px 75px 36px; gap:8px; align-items:center;">
+          <div>
+            <label style="font-size:10px; margin:0 0 2px;">Target Actuator</label>
+            <select id="schedSlot_${idx}" style="margin:0; padding:5px;">${slotOptions}</select>
+          </div>
+          <div>
+            <label style="font-size:10px; margin:0 0 2px;">Turn ON Time</label>
+            <input type="time" id="schedOn_${idx}" value="${onH}:${onM}" style="margin:0; padding:5px;">
+          </div>
+          <div>
+            <label style="font-size:10px; margin:0 0 2px;">Turn OFF Time</label>
+            <input type="time" id="schedOff_${idx}" value="${offH}:${offM}" style="margin:0; padding:5px;">
+          </div>
+          <div style="text-align:center;">
+            <label style="font-size:10px; margin:0 0 2px;">Active</label>
+            <input type="checkbox" id="schedEn_${idx}" ${s.enabled ? 'checked' : ''} style="width:auto; margin:4px auto 0; display:block;">
+          </div>
+          <div style="text-align:right;">
+            <button class="btn btn-danger btn-sm" onclick="removeScheduleRow(${idx})" style="padding:4px 6px; font-size:11px; margin-top:14px;">&times;</button>
+          </div>
+        </div>`;
+      });
+      list.innerHTML = html;
+    }
+
+    function addScheduleRow() {
+      if (currentSchedules.length >= 8) {
+        showToast('Max 8 standalone schedules per slave microcontroller', 'error');
+        return;
+      }
+      syncScheduleInputs();
+      currentSchedules.push({
+        enabled: 1,
+        targetSlot: 0,
+        action: 1,
+        onHour: 6,
+        onMinute: 0,
+        offHour: 18,
+        offMinute: 30
+      });
+      renderScheduleRows();
+    }
+
+    function removeScheduleRow(idx) {
+      syncScheduleInputs();
+      currentSchedules.splice(idx, 1);
+      renderScheduleRows();
+    }
+
+    function syncScheduleInputs() {
+      currentSchedules.forEach((s, idx) => {
+        const slotEl = document.getElementById('schedSlot_' + idx);
+        const onEl = document.getElementById('schedOn_' + idx);
+        const offEl = document.getElementById('schedOff_' + idx);
+        const enEl = document.getElementById('schedEn_' + idx);
+        if (slotEl) s.targetSlot = parseInt(slotEl.value) || 0;
+        if (enEl) s.enabled = enEl.checked ? 1 : 0;
+        if (onEl && onEl.value) {
+          const parts = onEl.value.split(':');
+          s.onHour = parseInt(parts[0]) || 0;
+          s.onMinute = parseInt(parts[1]) || 0;
+        }
+        if (offEl && offEl.value) {
+          const parts = offEl.value.split(':');
+          s.offHour = parseInt(parts[0]) || 0;
+          s.offMinute = parseInt(parts[1]) || 0;
+        }
+        s.action = 1;
+      });
+    }
+
+    async function saveNodeSchedules() {
+      syncScheduleInputs();
+      if (!activeSchedNodeId) return;
+
+      const res = await fetch('/api/nodes/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: activeSchedNodeId, schedules: currentSchedules })
+      });
+
+      if (res.ok) {
+        closeModal('scheduleModal');
+        showToast('Schedules saved and pushed to slave EEPROM!', 'success');
+        refreshData();
+      } else {
+        showToast('Failed to save schedules', 'error');
+      }
+    }
+
+        async function saveSystemSettings() {
       const payload = {
         sta_ssid: document.getElementById('cfgStaSSID').value.trim(),
         sta_pass: document.getElementById('cfgStaPass').value,

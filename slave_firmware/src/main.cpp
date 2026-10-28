@@ -33,6 +33,16 @@ bool outputStates[MAX_GPIO_SLOTS];
 int lastInputStates[MAX_GPIO_SLOTS];
 unsigned long lastToggleTime[MAX_GPIO_SLOTS];
 
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
+  #if ARDUINO_USB_CDC_ON_BOOT
+    #define BusSerial Serial0
+  #else
+    #define BusSerial Serial
+  #endif
+#else
+  #define BusSerial Serial
+#endif
+
 // Timekeeping variables (Synced from Master, kept alive by millis())
 uint32_t currentEpoch = 0;
 unsigned long lastEpochSyncMillis = 0;
@@ -151,8 +161,13 @@ void applyHardwareConfiguration() {
 void sendPacketToMaster(const String& verb, const String& payload) {
   String pkt = buildPacket("M", config.nodeId, verb, payload);
   
-  // 1. Output to Hardware Serial (always available for wired bus or diagnostics)
-  Serial.println(pkt);
+  // 1. Output to Hardware Serial Bus (always available for wired bus)
+  BusSerial.println(pkt);
+  #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
+    #if ARDUINO_USB_CDC_ON_BOOT
+      Serial.println(pkt); // Also echo to USB console if separate
+    #endif
+  #endif
 
   // 2. Output to Wireless TCP Client if in wireless mode
   if (config.transportMode == MODE_WIRELESS && tcpClient.connected()) {
@@ -547,6 +562,11 @@ void startCaptivePortal() {
 
 void setup() {
   Serial.begin(115200);
+#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
+  #if ARDUINO_USB_CDC_ON_BOOT
+    BusSerial.begin(115200);
+  #endif
+#endif
   delay(100);
 
   loadConfigFromStorage();
@@ -635,8 +655,8 @@ void loop() {
   }
 
   // 3. Read incoming serial stream (RS-422 bus)
-  while (Serial.available()) {
-    char c = (char)Serial.read();
+  while (BusSerial.available()) {
+    char c = (char)BusSerial.read();
     if (c == '\n') {
       rxBuffer.trim();
       if (rxBuffer.length() > 0) {
@@ -651,6 +671,28 @@ void loop() {
       if (rxBuffer.length() > PROTOCOL_MAX_LINE) rxBuffer = "";
     }
   }
+
+  // Also read from USB Serial if separate (allows debugging via serial monitor)
+  #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
+    #if ARDUINO_USB_CDC_ON_BOOT
+      while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\n') {
+          rxBuffer.trim();
+          if (rxBuffer.length() > 0) {
+            ParsedPacket pkt = parseProtocolLine(rxBuffer);
+            if (pkt.isValid) {
+              processIncomingPacket(pkt);
+            }
+          }
+          rxBuffer = "";
+        } else if (c != '\r') {
+          rxBuffer += c;
+          if (rxBuffer.length() > PROTOCOL_MAX_LINE) rxBuffer = "";
+        }
+      }
+    #endif
+  #endif
 
   // 4. Wireless Mode: Maintain TCP socket to Master or Parent AP
   if (config.transportMode == MODE_WIRELESS) {
@@ -705,7 +747,7 @@ void loop() {
     if (bridgeClient && bridgeClient.connected()) {
       while (bridgeClient.available()) {
         char c = (char)bridgeClient.read();
-        Serial.write(c); // Forward child packet directly over RS-422 bus to Master
+        BusSerial.write(c); // Forward child packet directly over RS-422 bus to Master
       }
     }
   }

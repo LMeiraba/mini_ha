@@ -95,7 +95,7 @@ void loadConfigFromStorage() {
     config.magic = SCHEMA_MAGIC;
     memset(config.nodeId, 0, sizeof(config.nodeId));
     strncpy(config.nodeId, "UNBOUND", sizeof(config.nodeId) - 1);
-    config.transportMode = MODE_WIRELESS; // Default to wireless onboarding
+    config.transportMode = MODE_WIRED; // Default to wired RS-422 star bus
     config.wifiSsid[0] = '\0';
     config.wifiPass[0] = '\0';
     strncpy(config.masterHost, "192.168.4.1", sizeof(config.masterHost) - 1);
@@ -296,6 +296,7 @@ void sendAnnouncement() {
                    ":SLOTS:" + String(MAX_GPIO_SLOTS) + 
                    ":MODE:" + String(config.transportMode == MODE_WIRELESS ? "WIFI" : "WIRED") +
                    ":FW:3.1.0";
+  Serial.println("[BUS TX] Sending ANN to Master: " + payload);
   sendPacketToMaster("ANN", payload);
 }
 
@@ -564,13 +565,18 @@ void setup() {
   Serial.begin(115200);
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
   #if ARDUINO_USB_CDC_ON_BOOT
-    BusSerial.begin(115200);
+    BusSerial.begin(115200, SERIAL_8N1, 20, 21); // Explicitly pin GPIO 20 (RX) and GPIO 21 (TX)
   #endif
 #endif
-  delay(100);
+  delay(200);
 
   loadConfigFromStorage();
   applyHardwareConfiguration();
+
+  Serial.println("\n==========================================");
+  Serial.printf(" [MINI-HA SLAVE] Node: %s | Chip: %s\n", config.nodeId, CHIP_NAME_STR);
+  Serial.printf(" Transport: %s | Bus: 115200 baud\n", config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED");
+  Serial.println("==========================================\n");
 
   // Check if onboard Boot/Flash button is held down (forces Captive Portal)
   bool forcePortal = false;
@@ -636,12 +642,19 @@ void setup() {
 }
 
 void loop() {
-  // If in Captive Portal mode, handle DNS and HTTP requests
+  // If in Captive Portal mode, handle DNS and HTTP requests concurrently
   if (inCaptivePortal) {
     if (dnsServer) dnsServer->processNextRequest();
     if (portalServer) portalServer->handleClient();
-    checkPhysicalInputs();
-    return;
+  }
+
+  // Periodic heartbeat on USB Serial so monitor is never blank
+  static unsigned long lastHeartbeat = 0;
+  if (millis() - lastHeartbeat > 3000) {
+    lastHeartbeat = millis();
+    Serial.printf("[SLAVE ALIVE] Node: %s | Mode: %s | Bus: 115200 baud\n",
+                  config.nodeId, 
+                  config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED");
   }
 
   // 1. Monitor physical inputs with sub-ms local link execution

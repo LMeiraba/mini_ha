@@ -556,6 +556,16 @@ inline void setupWebEndpoints() {
     doc["mqtt_port"] = sysSecurity.mqttPort;
     doc["mqtt_user"] = sysSecurity.mqttUser;
     doc["mqtt_home_id"] = sysSecurity.mqttHomeId;
+    doc["free_heap"] = ESP.getFreeHeap();
+    doc["total_heap"] = ESP.getHeapSize();
+    doc["uptime_sec"] = (uint32_t)(millis() / 1000);
+    doc["chip_model"] = ESP.getChipModel();
+    doc["chip_cores"] = ESP.getChipCores();
+    doc["cpu_freq"] = ESP.getCpuFreqMHz();
+    doc["littlefs_total"] = LittleFS.totalBytes();
+    doc["littlefs_used"] = LittleFS.usedBytes();
+    doc["port1_name"] = "UART1 (RX: GPIO 4, TX: GPIO 5)";
+    doc["port2_name"] = "UART2 (RX: GPIO 16, TX: GPIO 17)";
     String json;
     serializeJson(doc, json);
     webServer.send(200, "application/json; charset=utf-8", json);
@@ -671,11 +681,17 @@ inline void setupWebEndpoints() {
     }
     webServer.send(302, "text/plain", "");
   };
+  // Windows NCSI probes: respond 200 OK to eliminate "Action needed"
+  webServer.on("/connecttest.txt", HTTP_GET, []() {
+    webServer.send(200, "text/plain", "Microsoft Connect Test");
+  });
+  webServer.on("/ncsi.txt", HTTP_GET, []() {
+    webServer.send(200, "text/plain", "Microsoft NCSI");
+  });
+
   webServer.on("/generate_204", handleCaptiveRedirect);
   webServer.on("/gen_204", handleCaptiveRedirect);
   webServer.on("/hotspot-detect.html", handleCaptiveRedirect);
-  webServer.on("/ncsi.txt", handleCaptiveRedirect);
-  webServer.on("/connecttest.txt", handleCaptiveRedirect);
   webServer.onNotFound([]() {
     String host = webServer.hostHeader();
     bool isKnownHost = (host.indexOf("192.168.4.1") != -1) ||
@@ -1068,7 +1084,38 @@ inline void setupWebEndpoints() {
     }
     label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
     .checkbox-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px 0; }
-    .checkbox-line input { width: auto; margin: 0; }
+    input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      background: var(--card-elevated);
+      border: 1px solid var(--card-border);
+      border-radius: 4px;
+      cursor: pointer;
+      display: inline-grid;
+      place-content: center;
+      transition: background 0.15s, border-color 0.15s;
+      vertical-align: middle;
+      flex-shrink: 0;
+      margin: 0;
+    }
+    input[type="checkbox"]:hover {
+      border-color: #52525b;
+    }
+    input[type="checkbox"]:checked {
+      background: var(--success);
+      border-color: var(--success);
+    }
+    input[type="checkbox"]:checked::before {
+      content: "";
+      width: 9px;
+      height: 5px;
+      border-left: 2px solid #000;
+      border-bottom: 2px solid #000;
+      transform: rotate(-45deg) translate(1px, -1px);
+    }
+    .checkbox-line { display: flex; align-items: center; gap: 10px; margin: 8px 0 12px 0; font-size: 13px; font-weight: 500; cursor: pointer; }
 
     /* Modal */
     .modal-overlay {
@@ -1198,7 +1245,7 @@ inline void setupWebEndpoints() {
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('rules')">Rules</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('users')">Users</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('settings')">Settings</button>
-        <button class="btn btn-secondary btn-sm" onclick="openPassModal()">Account</button>
+        <button class="btn btn-secondary btn-sm" onclick="showTab('account')">Account</button>
         <button class="btn btn-secondary btn-sm" onclick="handleLogout()">Sign Out</button>
       </div>
     </div>
@@ -1234,7 +1281,10 @@ inline void setupWebEndpoints() {
         <div class="card">
           <div class="card-title">
             <span>Automation Rules & Notifications</span>
-            <button class="btn btn-sm" onclick="saveRulesConfig()">Save Rules</button>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-secondary btn-sm" onclick="addNewRule()">+ Add Rule</button>
+              <button class="btn btn-sm" onclick="saveRulesConfig()">Save Rules</button>
+            </div>
           </div>
           <div id="rulesList"><div style="color:var(--text-muted);">Loading rules...</div></div>
         </div>
@@ -1292,6 +1342,74 @@ inline void setupWebEndpoints() {
       </div>
     </div>
   </div>
+
+
+      <!-- TAB 4: ACCOUNT PROFILE & HARDWARE DIAGNOSTICS -->
+      <div id="tabAccount" style="display:none;">
+        <div class="card">
+          <div class="card-title">
+            <span>User Identity & Security</span>
+            <span class="badge" id="accountRoleBadge" style="background:var(--success); color:#000;">ADMIN</span>
+          </div>
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
+            <div class="node-box">
+              <label>Current Username</label>
+              <div style="font-size:15px; font-weight:700; margin-top:4px;" id="accountUserDisplay">admin</div>
+            </div>
+            <div class="node-box">
+              <label>Authorization & Scope</label>
+              <div style="font-size:13px; font-weight:600; margin-top:4px; color:var(--success);">Permanent Session (No Expiry)</div>
+            </div>
+          </div>
+          <div class="node-box">
+            <strong style="display:block; margin-bottom:10px; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim);">Update Password</strong>
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:12px;">
+              <div>
+                <label>New Password</label>
+                <input type="password" id="accountNewPass" placeholder="Enter new password">
+              </div>
+              <div>
+                <label>Confirm Password</label>
+                <input type="password" id="accountConfirmPass" placeholder="Confirm new password">
+              </div>
+            </div>
+            <button class="btn btn-sm" onclick="submitAccountPassChange()">Update Password</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Master Hub Hardware & Star Ports Diagnostics</span>
+            <span style="font-size:11px; color:var(--text-dim); font-family:monospace;" id="diagUptime">Uptime: --</span>
+          </div>
+          <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px;">
+            <div class="node-box">
+              <label>Processor</label>
+              <div style="font-size:13px; font-weight:700; margin-top:4px;" id="diagCpu">ESP32 Dual-Core @ 240MHz</div>
+            </div>
+            <div class="node-box">
+              <label>RAM (Free Heap)</label>
+              <div style="font-size:13px; font-weight:700; margin-top:4px; color:var(--success);" id="diagHeap">--</div>
+            </div>
+            <div class="node-box">
+              <label>Storage (LittleFS)</label>
+              <div style="font-size:13px; font-weight:700; margin-top:4px;" id="diagStorage">--</div>
+            </div>
+            <div class="node-box">
+              <label>Star Port 1</label>
+              <div style="font-size:12px; font-weight:600; margin-top:4px; color:var(--text-dim);" id="diagPort1">D4/D5 (UART1 Full-Duplex)</div>
+            </div>
+            <div class="node-box">
+              <label>Star Port 2</label>
+              <div style="font-size:12px; font-weight:600; margin-top:4px; color:var(--text-dim);" id="diagPort2">D16/D17 (UART2 Full-Duplex)</div>
+            </div>
+            <div class="node-box">
+              <label>Local AP Gateway</label>
+              <div style="font-size:13px; font-weight:700; margin-top:4px; font-family:monospace;">192.168.4.1</div>
+            </div>
+          </div>
+        </div>
+      </div>
 
   <!-- MODAL: CHANGE PASSWORD -->
   <div id="passModal" class="modal-overlay">
@@ -1375,6 +1493,9 @@ inline void setupWebEndpoints() {
       document.getElementById('tabRules').style.display = (tab === 'rules') ? 'block' : 'none';
       document.getElementById('tabUsers').style.display = (tab === 'users') ? 'block' : 'none';
       document.getElementById('tabSettings').style.display = (tab === 'settings') ? 'block' : 'none';
+      const tabAcc = document.getElementById('tabAccount');
+      if (tabAcc) tabAcc.style.display = (tab === 'account') ? 'block' : 'none';
+      if (tab === 'account') loadAccountDiagnostics();
       if (tab === 'rules') loadRules();
       if (tab === 'users') loadUsers();
       if (tab === 'settings') loadSettings();
@@ -1682,61 +1803,145 @@ inline void setupWebEndpoints() {
         const res = await fetch('/api/rules');
         const data = await res.json();
         currentRules = data.rules || [];
-        const container = document.getElementById('rulesList');
-        if (currentRules.length === 0) {
-          container.innerHTML = '<div style="color:var(--text-muted); padding:10px 0;">No automation rules configured. Default rule files can be defined in /config/rules.json.</div>';
-          return;
-        }
-
-        let html = '';
-        currentRules.forEach((rule, idx) => {
-          const condSummary = (rule.conditions || []).map(c => `${c.node} ${c.type} ${c.op} ${c.val}`).join(' AND ');
-          const actSummary = (rule.actions || []).map(a => `${a.target} Slot ${a.slot} -> ${a.val === 1 ? 'ON' : 'OFF'}`).join(', ');
-          const isEnabled = rule.enabled ? 'checked' : '';
-          const isNotify = rule.notify ? 'checked' : '';
-          const nTitle = rule.notify_title || rule.name || '';
-          const nMsg = rule.notify_msg || 'Automation rule triggered!';
-
-          html += `<div class="node-box" style="margin-bottom:14px;">
-            <div class="node-header">
-              <strong style="font-size:13px;">${rule.name || ('Rule #' + (idx + 1))}</strong>
-              <label class="checkbox-line" style="margin:0;">
-                <input type="checkbox" id="ruleEn_${idx}" ${isEnabled}>
-                <span>Enabled</span>
-              </label>
-            </div>
-            <div style="font-size:12px; color:var(--text-muted); margin-bottom:8px;">
-              <strong>Condition:</strong> ${condSummary || 'None'} <br>
-              <strong>Action:</strong> ${actSummary || 'None'}
-            </div>
-            <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px; margin-top:8px;">
-              <label class="checkbox-line" style="margin:0 0 8px 0;">
-                <input type="checkbox" id="ruleNotif_${idx}" ${isNotify}>
-                <span style="font-weight:700;">Push Notification Alert</span>
-              </label>
-              <label>Alert Title</label>
-              <input type="text" id="ruleTitle_${idx}" value="${nTitle}" placeholder="e.g. Tank Low Alert">
-              <label>Alert Message</label>
-              <input type="text" id="ruleMsg_${idx}" value="${nMsg}" placeholder="e.g. Overhead tank is below 20%">
-            </div>
-          </div>`;
-        });
-        container.innerHTML = html;
+        renderRules();
       } catch (e) {
         console.error(e);
       }
     }
 
+    function renderRules() {
+      const container = document.getElementById('rulesList');
+      if (!container) return;
+      if (currentRules.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-muted); padding:30px 10px; text-align:center;">No automation rules configured yet. Click <strong>+ Add Rule</strong> above to create event-driven automations.</div>';
+        return;
+      }
+
+      let html = '';
+      currentRules.forEach((rule, idx) => {
+        const isEnabled = rule.enabled ? 'checked' : '';
+        const isNotify = rule.notify ? 'checked' : '';
+        const nTitle = rule.notify_title || rule.name || '';
+        const nMsg = rule.notify_msg || 'Automation alert triggered!';
+        const cond = (rule.conditions && rule.conditions[0]) ? rule.conditions[0] : { node: 'N01', key: 'LVL', op: '>=', val: 100 };
+        const act = (rule.actions && rule.actions[0]) ? rule.actions[0] : { target: 'LOCAL', slot: 1, val: 1 };
+
+        html += `<div class="node-box" style="margin-bottom:14px; border: 1px solid var(--card-border);">
+          <div class="node-header" style="display:flex; justify-content:space-between; align-items:center;">
+            <input type="text" id="ruleName_${idx}" value="${rule.name || ('Rule #' + (idx + 1))}" style="font-weight:700; font-size:13px; max-width:280px; margin:0; padding:4px 8px;" placeholder="Rule Name">
+            <div style="display:flex; align-items:center; gap:12px;">
+              <label class="checkbox-line" style="margin:0;">
+                <input type="checkbox" id="ruleEn_${idx}" ${isEnabled}>
+                <span>Enabled</span>
+              </label>
+              <button class="btn btn-danger btn-sm" onclick="deleteRule(${idx})" style="padding:4px 8px; font-size:11px;">Delete</button>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-top:10px;">
+            <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
+              <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Condition (When)</div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <input type="text" id="ruleCondNode_${idx}" value="${cond.node || 'N01'}" style="width:70px; margin:0;" placeholder="Node">
+                <input type="text" id="ruleCondKey_${idx}" value="${cond.key || 'LVL'}" style="width:75px; margin:0;" placeholder="Key (e.g. LVL)">
+                <select id="ruleCondOp_${idx}" style="width:65px; margin:0;">
+                  <option value=">=" ${cond.op === '>=' ? 'selected' : ''}>&gt;=</option>
+                  <option value="<=" ${cond.op === '<=' ? 'selected' : ''}>&lt;=</option>
+                  <option value="==" ${cond.op === '==' ? 'selected' : ''}>==</option>
+                  <option value=">" ${cond.op === '>' ? 'selected' : ''}>&gt;</option>
+                  <option value="<" ${cond.op === '<' ? 'selected' : ''}>&lt;</option>
+                  <option value="!=" ${cond.op === '!=' ? 'selected' : ''}>!=</option>
+                </select>
+                <input type="number" id="ruleCondVal_${idx}" value="${cond.val !== undefined ? cond.val : 100}" style="width:70px; margin:0;" placeholder="Val">
+              </div>
+            </div>
+
+            <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
+              <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Action (Then)</div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <input type="text" id="ruleActTarget_${idx}" value="${act.target || 'LOCAL'}" style="width:80px; margin:0;" placeholder="Target">
+                <input type="number" id="ruleActSlot_${idx}" value="${act.slot || 1}" style="width:60px; margin:0;" placeholder="Slot">
+                <select id="ruleActVal_${idx}" style="width:110px; margin:0;">
+                  <option value="1" ${act.val === 1 ? 'selected' : ''}>Turn ON</option>
+                  <option value="0" ${act.val === 0 ? 'selected' : ''}>Turn OFF</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px; margin-top:10px;">
+            <label class="checkbox-line" style="margin:0 0 8px 0;">
+              <input type="checkbox" id="ruleNotif_${idx}" ${isNotify}>
+              <span style="font-weight:700;">Send Rule-Based Push Notification Alert</span>
+            </label>
+            <div style="display:grid; grid-template-columns: 1fr 2fr; gap:10px;">
+              <div>
+                <label>Alert Title</label>
+                <input type="text" id="ruleTitle_${idx}" value="${nTitle}" style="margin:4px 0 0;" placeholder="e.g. Tank Full Alert">
+              </div>
+              <div>
+                <label>Alert Message</label>
+                <input type="text" id="ruleMsg_${idx}" value="${nMsg}" style="margin:4px 0 0;" placeholder="e.g. Overhead tank is at 100%">
+              </div>
+            </div>
+          </div>
+        </div>`;
+      });
+      container.innerHTML = html;
+    }
+
+    function addNewRule() {
+      currentRules.push({
+        name: "Automation Rule #" + (currentRules.length + 1),
+        enabled: true,
+        conditions: [{ node: "N01", key: "LVL", op: ">=", val: 100 }],
+        actions: [{ target: "LOCAL", slot: 1, val: 1, reason: "Rule Triggered" }],
+        notify: true,
+        notify_title: "Automation Alert",
+        notify_msg: "Automation rule condition reached"
+      });
+      renderRules();
+    }
+
+    function deleteRule(idx) {
+      currentRules.splice(idx, 1);
+      renderRules();
+    }
+
     async function saveRulesConfig() {
       currentRules.forEach((rule, idx) => {
+        const nameEl = document.getElementById('ruleName_' + idx);
         const enEl = document.getElementById('ruleEn_' + idx);
         const notifEl = document.getElementById('ruleNotif_' + idx);
         const titleEl = document.getElementById('ruleTitle_' + idx);
         const msgEl = document.getElementById('ruleMsg_' + idx);
+        const cNode = document.getElementById('ruleCondNode_' + idx);
+        const cKey = document.getElementById('ruleCondKey_' + idx);
+        const cOp = document.getElementById('ruleCondOp_' + idx);
+        const cVal = document.getElementById('ruleCondVal_' + idx);
+        const aTgt = document.getElementById('ruleActTarget_' + idx);
+        const aSlot = document.getElementById('ruleActSlot_' + idx);
+        const aVal = document.getElementById('ruleActVal_' + idx);
+
+        if (nameEl) rule.name = nameEl.value.trim();
         if (enEl) rule.enabled = enEl.checked;
         if (notifEl) rule.notify = notifEl.checked;
         if (titleEl) rule.notify_title = titleEl.value.trim();
         if (msgEl) rule.notify_msg = msgEl.value.trim();
+
+        rule.conditions = [{
+          node: cNode ? cNode.value.trim() : 'N01',
+          key: cKey ? cKey.value.trim() : 'LVL',
+          op: cOp ? cOp.value : '>=',
+          val: cVal ? parseFloat(cVal.value) : 0
+        }];
+
+        rule.actions = [{
+          target: aTgt ? aTgt.value.trim() : 'LOCAL',
+          slot: aSlot ? parseInt(aSlot.value) : 1,
+          val: aVal ? parseInt(aVal.value) : 1,
+          reason: rule.name
+        }];
       });
 
       const res = await fetch('/api/rules', {
@@ -1751,7 +1956,62 @@ inline void setupWebEndpoints() {
       }
     }
 
-    async function loadSettings() {
+    async function loadAccountDiagnostics() {
+      try {
+        const u = localStorage.getItem('miniha_user') || 'admin';
+        const r = localStorage.getItem('miniha_role') || 'ADMIN';
+        document.getElementById('accountUserDisplay').textContent = u;
+        document.getElementById('accountRoleBadge').textContent = r.toUpperCase();
+
+        const res = await fetch('/api/system');
+        const d = await res.json();
+        if (d.chip_model) document.getElementById('diagCpu').textContent = d.chip_model + ' @ ' + (d.cpu_freq || 240) + 'MHz';
+        if (d.free_heap) {
+          const freeKb = Math.round(d.free_heap / 1024);
+          const totalKb = Math.round((d.total_heap || d.free_heap) / 1024);
+          document.getElementById('diagHeap').textContent = freeKb + ' KB Free / ' + totalKb + ' KB';
+        }
+        if (d.littlefs_total) {
+          const usedKb = Math.round((d.littlefs_used || 0) / 1024);
+          const totKb = Math.round(d.littlefs_total / 1024);
+          document.getElementById('diagStorage').textContent = usedKb + ' KB / ' + totKb + ' KB';
+        }
+        if (d.uptime_sec !== undefined) {
+          const sec = d.uptime_sec;
+          const h = Math.floor(sec / 3600);
+          const m = Math.floor((sec % 3600) / 60);
+          const s = sec % 60;
+          document.getElementById('diagUptime').textContent = 'Uptime: ' + h + 'h ' + m + 'm ' + s + 's';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function submitAccountPassChange() {
+      const p1 = document.getElementById('accountNewPass').value;
+      const p2 = document.getElementById('accountConfirmPass').value;
+      if (!p1 || p1 !== p2) {
+        showToast('Passwords do not match or empty', 'error');
+        return;
+      }
+      const u = localStorage.getItem('miniha_user') || 'admin';
+      const r = localStorage.getItem('miniha_role') || 'admin';
+      const res = await fetch('/api/users/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: u, pass: p1, role: r })
+      });
+      if (res.ok) {
+        showToast('Password updated successfully!', 'success');
+        document.getElementById('accountNewPass').value = '';
+        document.getElementById('accountConfirmPass').value = '';
+      } else {
+        showToast('Password change failed', 'error');
+      }
+    }
+
+    async function loadSettings()async function loadSettings() {
       try {
         const res = await fetch('/api/system');
         const data = await res.json();

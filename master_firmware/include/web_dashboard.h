@@ -39,6 +39,7 @@ struct SystemSecurityConfig {
 
 extern SystemSecurityConfig sysSecurity;
 extern void publishMqttState();
+extern bool mqttSchemaNeedsPublish;
 
 #include <mbedtls/sha256.h>
 
@@ -634,6 +635,107 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Provisioning triggered\"}");
   });
 
+  // 14b. Configure & Dispatch Node GPIO Slots API
+  webServer.on("/api/nodes/slots", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    if (!webServer.hasArg("plain")) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"No body\"}");
+      return;
+    }
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, webServer.arg("plain"));
+    if (err) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"Invalid JSON\"}");
+      return;
+    }
+
+    String targetId = doc["id"].as<String>();
+    JsonArray newSlots = doc["slots"].as<JsonArray>();
+
+    File f = LittleFS.open(NODES_CONFIG_PATH, "r");
+    DynamicJsonDocument nodesDoc(4096);
+    if (f) {
+      deserializeJson(nodesDoc, f);
+      f.close();
+    }
+
+    JsonArray nodes = nodesDoc["nodes"].as<JsonArray>();
+    bool nodeFound = false;
+    for (JsonObject node : nodes) {
+      if (node["id"].as<String>() == targetId) {
+        nodeFound = true;
+        node["slots"] = newSlots;
+        break;
+      }
+    }
+
+    if (!nodeFound) {
+      webServer.send(404, "application/json; charset=utf-8", "{\"error\":\"Node not found\"}");
+      return;
+    }
+
+    File outF = LittleFS.open(NODES_CONFIG_PATH, "w");
+    if (outF) {
+      serializeJson(nodesDoc, outF);
+      outF.close();
+    }
+
+    // Dispatch hardware configuration packets over bus to the slave
+    extern void broadcastBusPacket(const String& pkt);
+    for (JsonObject slot : newSlots) {
+      delay(30);
+      String p = "SLOT:" + String(slot["slot"].as<int>()) +
+                 ":GPIO:" + String(slot["gpio"].as<int>()) +
+                 ":TYPE:" + String(slot["type"].as<int>()) +
+                 ":INV:" + String(slot["activeLow"].as<int>());
+      broadcastBusPacket(buildPacket(targetId, "M", "CFG", p));
+    }
+
+    mqttSchemaNeedsPublish = true;
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Slots saved and dispatched\"}");
+  });
+
+  // 14c. Delete / Unbind Node API
+  webServer.on("/api/nodes/delete", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    if (!webServer.hasArg("plain")) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"No body\"}");
+      return;
+    }
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, webServer.arg("plain"));
+    String targetId = doc["id"].as<String>();
+
+    File f = LittleFS.open(NODES_CONFIG_PATH, "r");
+    DynamicJsonDocument nodesDoc(4096);
+    if (f) {
+      deserializeJson(nodesDoc, f);
+      f.close();
+    }
+
+    JsonArray nodes = nodesDoc["nodes"].as<JsonArray>();
+    int delIdx = -1;
+    for (size_t i = 0; i < nodes.size(); i++) {
+      if (nodes[i]["id"].as<String>() == targetId) {
+        delIdx = i;
+        break;
+      }
+    }
+
+    if (delIdx != -1) {
+      nodes.remove(delIdx);
+      File outF = LittleFS.open(NODES_CONFIG_PATH, "w");
+      if (outF) {
+        serializeJson(nodesDoc, outF);
+        outF.close();
+      }
+      mqttSchemaNeedsPublish = true;
+      webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Node deleted\"}");
+    } else {
+      webServer.send(404, "application/json; charset=utf-8", "{\"error\":\"Node not found\"}");
+    }
+  });
+
   // 15. Dynamic Rules API
   webServer.on("/api/rules", HTTP_GET, []() {
     if (!requireRole(ROLE_GUEST)) return;
@@ -667,6 +769,18 @@ inline void setupWebEndpoints() {
     f.close();
     reloadRulesCache();
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Rules updated\"}");
+  });
+
+  // 15b. Clear All Rules API
+  webServer.on("/api/rules/clear", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    File f = LittleFS.open(RULES_CONFIG_PATH, "w");
+    if (f) {
+      f.print(R"({"rules":[]})");
+      f.close();
+    }
+    reloadRulesCache();
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"All rules cleared\"}");
   });
 
   // 16. OS Network Probes & Offline Handlers (No 302 Redirects, No Spoofing)
@@ -1198,7 +1312,7 @@ inline void setupWebEndpoints() {
 
       <div style="margin-top:18px; padding-top:12px; border-top:1px solid var(--card-border-subtle); display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">
         <span>miniha.local</span>
-        <span>v2.4</span>
+        <span>v0.1.0-beta</span>
       </div>
     </div>
   </div>
@@ -1207,7 +1321,7 @@ inline void setupWebEndpoints() {
   <div id="hubView" style="display:none;">
     <!-- Topbar Navigation -->
     <div class="topbar">
-      <div class="brand">
+      <div class="brand" style="display:flex; align-items:center;">
         <div class="brand-badge">
           <svg class="icon" style="width:16px; height:16px;" viewBox="0 0 24 24">
             <rect x="4" y="4" width="16" height="16" rx="2"/>
@@ -1218,9 +1332,13 @@ inline void setupWebEndpoints() {
           <span class="brand-title">MINI-HA</span>
           <span class="brand-subtitle">LOCAL HUB</span>
         </div>
+        <div class="user-identity" style="display:flex; align-items:center; gap:6px; margin-left:14px; padding-left:14px; border-left:1px solid var(--card-border);">
+          <svg class="icon" style="width:13px; height:13px; color:var(--text-dim);" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span style="font-size:11px; color:var(--text-dim);">User:</span>
+          <span class="badge" id="roleBadge" style="margin:0;">ADMIN</span>
+        </div>
       </div>
       <div class="nav-actions">
-        <span class="badge" id="roleBadge">ROLE</span>
         <button class="btn btn-secondary btn-sm" onclick="showTab('nodes')">Overview</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('rules')">Rules</button>
         <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('users')">Users</button>
@@ -1259,11 +1377,16 @@ inline void setupWebEndpoints() {
       <!-- TAB: AUTOMATION RULES & NOTIFICATIONS (ADMIN ONLY) -->
       <div id="tabRules" style="display:none;">
         <div class="card">
-          <div class="card-title">
-            <span>Automation Rules & Notifications</span>
+          <div class="card-title" style="flex-wrap:wrap; gap:10px;">
+            <div>
+              <div style="font-size:15px; font-weight:700;">Automation Rules Engine</div>
+              <div style="font-size:11px; color:var(--text-muted); font-weight:normal; margin-top:3px;">
+                Event-driven logic evaluated locally by Master. When sensor criteria are met, Master triggers target actuators & push alerts.
+              </div>
+            </div>
             <div style="display:flex; gap:8px;">
-              <button class="btn btn-secondary btn-sm" onclick="addNewRule()">+ Add Rule</button>
-              <button class="btn btn-sm" onclick="saveRulesConfig()">Save Rules</button>
+              <button class="btn btn-sm" onclick="openAddRuleModal()">+ Add Rule</button>
+              <button class="btn btn-secondary btn-sm" onclick="clearAllRules()">Clear All Rules</button>
             </div>
           </div>
           <div id="rulesList"><div style="color:var(--text-muted);">Loading rules...</div></div>
@@ -1443,6 +1566,114 @@ inline void setupWebEndpoints() {
     </div>
   </div>
 
+  <!-- MODAL: CONFIGURE HARDWARE GPIO SLOTS -->
+  <div id="gpioModal" class="modal-overlay">
+    <div class="modal" style="max-width:640px; width:95%;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-size:15px; font-weight:700;" id="gpioModalTitle">Configure Hardware GPIOs</div>
+        <button onclick="closeModal('gpioModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
+        <strong>Hardware GPIO Mapping</strong>: Assign the physical pins on this slave board to relays, switches, or sensors. When saved, these pin settings are pushed over the wire and committed directly into the slave's EEPROM.
+      </div>
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;" id="gpioSafeHint">Safe GPIO Pins: --</div>
+      <div id="gpioSlotsList" style="max-height:280px; overflow-y:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:8px;"></div>
+      <button class="btn btn-secondary btn-sm" onclick="addGpioSlotRow()" style="margin-bottom:14px;">+ Add GPIO Slot</button>
+      <div class="modal-actions">
+        <button class="btn btn-secondary btn-sm" onclick="closeModal('gpioModal')">Cancel</button>
+        <button class="btn btn-sm" onclick="saveGpioSlots()">Save & Push to Node</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: AUTOMATION RULE BUILDER -->
+  <div id="ruleModal" class="modal-overlay">
+    <div class="modal" style="max-width:580px; width:95%;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-size:15px; font-weight:700;" id="ruleModalTitle">Add Automation Rule</div>
+        <button onclick="closeModal('ruleModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
+        <strong>Automation Rule</strong>: When a sensor meets your condition (e.g. Tank Level &ge; 140cm), Master automatically triggers an action on a target node (e.g. Turn OFF Pump) and optionally sends a push alert.
+      </div>
+
+      <label>Rule Name</label>
+      <input type="text" id="ruleModalName" placeholder="e.g. Auto Pump Shutoff" required>
+
+      <div style="margin-top:10px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
+        <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Condition (When)</div>
+        <div style="display:grid; grid-template-columns: 2fr 1.5fr 1fr 1fr; gap:8px;">
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Source Node</label>
+            <select id="ruleModalCondNode"></select>
+          </div>
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Sensor / Key</label>
+            <input type="text" id="ruleModalCondKey" value="LVL" placeholder="LVL, TMP, HUM">
+          </div>
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Op</label>
+            <select id="ruleModalCondOp">
+              <option value=">=">&gt;=</option>
+              <option value="<=">&lt;=</option>
+              <option value="==">==</option>
+              <option value=">">&gt;</option>
+              <option value="<">&lt;</option>
+              <option value="!=">!=</option>
+            </select>
+          </div>
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Threshold</label>
+            <input type="number" id="ruleModalCondVal" value="100">
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
+        <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Action (Then)</div>
+        <div style="display:grid; grid-template-columns: 2fr 1fr 1.5fr; gap:8px;">
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Target Node</label>
+            <select id="ruleModalActTarget"></select>
+          </div>
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Slot #</label>
+            <input type="number" id="ruleModalActSlot" value="1" min="0" max="15">
+          </div>
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Command</label>
+            <select id="ruleModalActVal">
+              <option value="1">Turn ON</option>
+              <option value="0">Turn OFF</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:10px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
+        <label class="checkbox-line" style="margin:0 0 6px 0;">
+          <input type="checkbox" id="ruleModalNotif" checked>
+          <span style="font-weight:700; font-size:12px;">Send Rule-Based Push Notification Alert</span>
+        </label>
+        <div style="display:grid; grid-template-columns: 1fr 2fr; gap:8px;">
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Alert Title</label>
+            <input type="text" id="ruleModalTitleText" placeholder="e.g. Tank Full">
+          </div>
+          <div>
+            <label style="margin:0 0 4px; font-size:11px;">Alert Message</label>
+            <input type="text" id="ruleModalMsgText" placeholder="e.g. Tank reached 100%">
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-actions" style="margin-top:14px;">
+        <button class="btn btn-secondary btn-sm" onclick="closeModal('ruleModal')">Cancel</button>
+        <button class="btn btn-sm" onclick="saveRuleFromModal()">Save Rule</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast Element -->
   <div id="toast">Notification</div>
 
@@ -1531,6 +1762,10 @@ inline void setupWebEndpoints() {
 
     async function handleLogout() {
       await fetch('/api/logout', { method: 'POST' });
+      const u = document.getElementById('loginUser');
+      const p = document.getElementById('loginPass');
+      if (u) u.value = '';
+      if (p) p.value = '';
       showToast('Signed out');
       checkSession();
     }
@@ -1564,39 +1799,56 @@ inline void setupWebEndpoints() {
     function renderEntities() {
       const c = document.getElementById('entitiesGrid');
       if (configuredNodes.length === 0) {
-        c.innerHTML = '<div style="color:var(--text-dim); padding:12px 0;">No nodes configured yet. Connect a slave node to the RS-422 bus or Wi-Fi to bind it.</div>';
+        c.innerHTML = '<div style="color:var(--text-dim); padding:16px 0; font-size:13px;">No hardware nodes configured yet. Connect a slave node to the RS-422 bus or Wi-Fi to bind it.</div>';
         return;
       }
 
       let html = '';
       configuredNodes.forEach(node => {
         const state = liveStates[node.id] || { relays: [], dist: -1, temp: 0, hum: 0, lastSeen: 999 };
-        const seen = state.lastSeen < 10 ? '<span style="color:var(--success);">online</span>' : `${state.lastSeen}s ago`;
+        
+        let statusBadge = '<span style="color:var(--text-dim); display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot"></span>Offline</span>';
+        if (state.lastSeen <= 10) {
+          statusBadge = '<span style="color:var(--success); font-weight:600; display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot online"></span>Online</span>';
+        } else if (state.lastSeen <= 60) {
+          statusBadge = `<span style="color:var(--warning); display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot warning"></span>${state.lastSeen}s ago</span>`;
+        }
 
-        html += `<div class="node-box">
-          <div class="node-header">
+        const slotCount = (node.slots && node.slots.length) ? node.slots.length : 0;
+
+        html += `<div class="node-box" style="margin-bottom:14px;">
+          <div class="node-header" style="flex-wrap:wrap; gap:8px;">
             <div>
-              <strong style="font-size:13px;">${node.name || node.id}</strong>
+              <strong style="font-size:14px;">${node.name || node.id}</strong>
               <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-left:6px;">(${node.id})</span>
             </div>
-            <span style="font-size:11px; color:var(--text-dim);">${seen}</span>
+            <div style="display:flex; align-items:center; gap:10px;">
+              ${statusBadge}
+              <button class="btn btn-secondary btn-sm admin-only" onclick="openGpioModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Configure GPIOs</button>
+              <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Delete</button>
+            </div>
+          </div>
+          <div style="display:flex; gap:12px; font-size:11px; color:var(--text-dim); font-family:var(--font-mono); margin:4px 0 10px; border-bottom:1px solid var(--card-border-subtle); padding-bottom:6px;">
+            <span>MAC: ${node.mac || '--'}</span>
+            <span>Chip: ${node.chip || 'ESP32/ESP8266'}</span>
+            <span>Slots: ${slotCount} active</span>
           </div>`;
 
-        if (node.slots && node.slots.length > 0) {
+        if (slotCount > 0) {
           node.slots.forEach(slot => {
             const slotName = slot.name || `Slot ${slot.slot}`;
             if (slot.type === 1) { // Relay
               const isRelayOn = (state.relays && state.relays[slot.slot] === 1);
               const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
               html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName}</span>
+                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(GPIO ${slot.gpio})</small></span>
                 <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleRelay('${node.id}', ${slot.slot}, ${isRelayOn})">
                   <span class="toggle-slider"></span>
                 </button>
               </div>`;
             } else if (slot.type === 6 || slot.type === 7) { // DHT
               html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName}</span>
+                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(GPIO ${slot.gpio})</small></span>
                 <div class="sensor-readings">
                   <div class="sensor-pill">
                     <span class="pill-label">TEMP</span>
@@ -1616,16 +1868,18 @@ inline void setupWebEndpoints() {
                 const pct = state.dist >= 0 ? Math.max(0, Math.min(100, Math.round(((200 - state.dist) / 200) * 100))) : 0;
                 html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
                   <div class="tank-header">
-                    <span style="font-weight:600;">${slotName}</span>
+                    <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Trig ${slot.gpio})</small></span>
                     <span style="font-family:var(--font-mono); font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
                   </div>
                   <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
                 </div>`;
               }
+            } else {
+              html += `<div class="slot-row"><span style="font-weight:600;">${slotName}</span><span style="font-size:11px; color:var(--text-dim);">GPIO ${slot.gpio} (Active)</span></div>`;
             }
           });
         } else {
-          html += '<div style="color:var(--text-dim); font-size:12px;">No slots configured.</div>';
+          html += '<div style="color:var(--text-dim); font-size:12px; padding:6px 0;">No hardware GPIO pins configured yet. Click <strong>Configure GPIOs</strong> above to assign physical pins to relays, switches, or sensors.</div>';
         }
         html += `</div>`;
       });
@@ -1647,7 +1901,146 @@ inline void setupWebEndpoints() {
       setTimeout(refreshData, 300);
     }
 
+    // =========================================================================
+    // HARDWARE GPIO SLOTS CONFIGURATION
+    // =========================================================================
+    let activeGpioNodeId = null;
+    let currentGpioSlots = [];
+
+    function openGpioModal(nodeId) {
+      activeGpioNodeId = nodeId;
+      const node = configuredNodes.find(n => n.id === nodeId);
+      if (!node) return;
+
+      document.getElementById('gpioModalTitle').innerText = `Configure Hardware GPIOs: ${node.name || nodeId} (${nodeId})`;
+      const pendingMatch = (typeof pendingNodesCache !== 'undefined' ? pendingNodesCache : []).find(p => p.mac === node.mac);
+      const safeGpios = (pendingMatch && pendingMatch.gpios) ? pendingMatch.gpios : '0, 1, 3, 4, 5, 6, 7, 10';
+      document.getElementById('gpioSafeHint').innerText = `Safe GPIO Pins on this chip (${node.chip || 'Board'}): ${safeGpios}`;
+
+      currentGpioSlots = JSON.parse(JSON.stringify(node.slots || []));
+      renderGpioSlotRows();
+      document.getElementById('gpioModal').style.display = 'flex';
+    }
+
+    function renderGpioSlotRows() {
+      const list = document.getElementById('gpioSlotsList');
+      if (currentGpioSlots.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-dim); padding:10px; font-size:12px;">No slots configured. Click <strong>+ Add GPIO Slot</strong> below.</div>';
+        return;
+      }
+
+      let html = '';
+      currentGpioSlots.forEach((slot, idx) => {
+        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:8px 10px; display:grid; grid-template-columns: 50px 2fr 1fr 2fr 75px 36px; gap:8px; align-items:center;">
+          <div>
+            <label style="font-size:10px; margin:0 0 2px;">Slot</label>
+            <input type="number" id="slotNum_${idx}" value="${slot.slot !== undefined ? slot.slot : idx}" min="0" max="15" style="margin:0; padding:5px;">
+          </div>
+          <div>
+            <label style="font-size:10px; margin:0 0 2px;">Friendly Name</label>
+            <input type="text" id="slotName_${idx}" value="${slot.name || ('Slot ' + idx)}" placeholder="e.g. Pump Relay" style="margin:0; padding:5px;">
+          </div>
+          <div>
+            <label style="font-size:10px; margin:0 0 2px;">GPIO</label>
+            <input type="number" id="slotGpio_${idx}" value="${slot.gpio !== undefined ? slot.gpio : 4}" min="0" max="48" style="margin:0; padding:5px;">
+          </div>
+          <div>
+            <label style="font-size:10px; margin:0 0 2px;">Hardware Type</label>
+            <select id="slotType_${idx}" style="margin:0; padding:5px;">
+              <option value="1" ${slot.type === 1 ? 'selected' : ''}>Relay / Switch (Output)</option>
+              <option value="2" ${slot.type === 2 ? 'selected' : ''}>Wall Switch / Touch (Input)</option>
+              <option value="3" ${slot.type === 3 ? 'selected' : ''}>Push Button (Input Pullup)</option>
+              <option value="4" ${slot.type === 4 ? 'selected' : ''}>Ultrasonic Trig (Output)</option>
+              <option value="5" ${slot.type === 5 ? 'selected' : ''}>Ultrasonic Echo (Input)</option>
+              <option value="6" ${slot.type === 6 ? 'selected' : ''}>DHT11 Temp/Humidity</option>
+              <option value="7" ${slot.type === 7 ? 'selected' : ''}>DHT22 Temp/Humidity</option>
+            </select>
+          </div>
+          <div style="text-align:center;">
+            <label style="font-size:10px; margin:0 0 2px; white-space:nowrap;">Active Low</label>
+            <input type="checkbox" id="slotInv_${idx}" ${slot.activeLow ? 'checked' : ''} style="width:auto; margin:4px auto 0; display:block;">
+          </div>
+          <div style="text-align:right;">
+            <button class="btn btn-danger btn-sm" onclick="removeGpioSlotRow(${idx})" style="padding:4px 6px; font-size:11px; margin-top:14px;">&times;</button>
+          </div>
+        </div>`;
+      });
+      list.innerHTML = html;
+    }
+
+    function addGpioSlotRow() {
+      syncCurrentSlotInputs();
+      currentGpioSlots.push({
+        slot: currentGpioSlots.length,
+        name: 'Slot ' + currentGpioSlots.length,
+        gpio: 8,
+        type: 1,
+        activeLow: 1
+      });
+      renderGpioSlotRows();
+    }
+
+    function removeGpioSlotRow(idx) {
+      syncCurrentSlotInputs();
+      currentGpioSlots.splice(idx, 1);
+      renderGpioSlotRows();
+    }
+
+    function syncCurrentSlotInputs() {
+      currentGpioSlots.forEach((slot, idx) => {
+        const numEl = document.getElementById('slotNum_' + idx);
+        const nameEl = document.getElementById('slotName_' + idx);
+        const gpioEl = document.getElementById('slotGpio_' + idx);
+        const typeEl = document.getElementById('slotType_' + idx);
+        const invEl = document.getElementById('slotInv_' + idx);
+        if (numEl) slot.slot = parseInt(numEl.value) || 0;
+        if (nameEl) slot.name = nameEl.value.trim();
+        if (gpioEl) slot.gpio = parseInt(gpioEl.value) || 0;
+        if (typeEl) slot.type = parseInt(typeEl.value) || 1;
+        if (invEl) slot.activeLow = invEl.checked ? 1 : 0;
+      });
+    }
+
+    async function saveGpioSlots() {
+      syncCurrentSlotInputs();
+      if (!activeGpioNodeId) return;
+
+      const res = await fetch('/api/nodes/slots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: activeGpioNodeId, slots: currentGpioSlots })
+      });
+
+      if (res.ok) {
+        closeModal('gpioModal');
+        showToast('GPIO slots saved and pushed to node!', 'success');
+        refreshData();
+      } else {
+        showToast('Failed to save GPIO slots', 'error');
+      }
+    }
+
+    async function deleteNode(nodeId) {
+      if (!confirm(`Are you sure you want to delete and unbind node '${nodeId}'?`)) return;
+      const res = await fetch('/api/nodes/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: nodeId })
+      });
+      if (res.ok) {
+        showToast('Node deleted', 'success');
+        refreshData();
+      } else {
+        showToast('Failed to delete node', 'error');
+      }
+    }
+
+    // =========================================================================
+    // DISCOVERY & BINDING
+    // =========================================================================
+    let pendingNodesCache = [];
     function renderPending(pending) {
+      pendingNodesCache = pending || [];
       const c = document.getElementById('pendingTable');
       if (pending.length === 0) {
         c.innerHTML = '<div style="color:var(--text-muted); padding:6px 0;">No unconfigured devices detected on bus.</div>';
@@ -1686,6 +2079,203 @@ inline void setupWebEndpoints() {
       refreshData();
     }
 
+    // =========================================================================
+    // AUTOMATION RULES ENGINE (MODAL-BASED)
+    // =========================================================================
+    let currentRules = [];
+
+    async function loadRules() {
+      try {
+        const res = await fetch('/api/rules');
+        const data = await res.json();
+        currentRules = data.rules || [];
+        renderRules();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderRules() {
+      const container = document.getElementById('rulesList');
+      if (!container) return;
+      if (currentRules.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-muted); padding:30px 10px; text-align:center;">No automation rules configured. Click <strong>+ Add Rule</strong> above to create event-driven automations.</div>';
+        return;
+      }
+
+      let html = '';
+      currentRules.forEach((rule, idx) => {
+        const isEnabled = rule.enabled;
+        const cond = (rule.conditions && rule.conditions[0]) ? rule.conditions[0] : { node: '--', key: 'LVL', op: '>=', val: 0 };
+        const act = (rule.actions && rule.actions[0]) ? rule.actions[0] : { target: 'LOCAL', slot: 1, val: 1 };
+        const nTitle = rule.notify_title || '';
+
+        html += `<div class="node-box" style="margin-bottom:12px; border:1px solid var(--card-border);">
+          <div class="node-header" style="flex-wrap:wrap; gap:8px;">
+            <div>
+              <strong style="font-size:14px;">${rule.name || ('Rule #' + (idx + 1))}</strong>
+              <span class="badge" style="margin-left:8px; font-size:10px; background:${isEnabled ? 'var(--success-subtle)' : 'var(--card-elevated)'}; color:${isEnabled ? 'var(--success)' : 'var(--text-dim)'};">${isEnabled ? 'ENABLED' : 'DISABLED'}</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-secondary btn-sm" onclick="toggleRuleEnable(${idx})" style="padding:3px 8px; font-size:11px;">${isEnabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-secondary btn-sm" onclick="openAddRuleModal(${idx})" style="padding:3px 8px; font-size:11px;">Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteRule(${idx})" style="padding:3px 8px; font-size:11px;">Delete</button>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; font-size:12px;">
+            <div style="background:var(--card-elevated); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+              <span style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">When (Condition)</span>
+              <strong>${cond.node}</strong> &bull; <code>${cond.key}</code> <strong>${cond.op}</strong> ${cond.val}
+            </div>
+            <div style="background:var(--card-elevated); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+              <span style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">Then (Action)</span>
+              Target <strong>${act.target}</strong> &bull; Slot ${act.slot} &rarr; <strong style="color:${act.val === 1 ? 'var(--success)' : 'var(--text-dim)'}">${act.val === 1 ? 'TURN ON' : 'TURN OFF'}</strong>
+            </div>
+          </div>
+
+          ${rule.notify ? `<div style="margin-top:8px; font-size:11px; color:var(--text-muted); background:rgba(16, 185, 129, 0.05); padding:6px 10px; border-radius:var(--radius-sm); border:1px solid rgba(16, 185, 129, 0.15);">
+            <strong style="color:var(--success);">Push Alert:</strong> "${nTitle || 'Automation Alert'}" &mdash; ${rule.notify_msg || 'Condition triggered'}
+          </div>` : ''}
+        </div>`;
+      });
+      container.innerHTML = html;
+    }
+
+    let activeEditRuleIdx = -1;
+
+    function openAddRuleModal(editIdx = -1) {
+      activeEditRuleIdx = editIdx;
+      document.getElementById('ruleModalTitle').innerText = (editIdx >= 0) ? 'Edit Automation Rule' : 'Add Automation Rule';
+
+      // Populate Node Dropdowns
+      const condSelect = document.getElementById('ruleModalCondNode');
+      const actSelect = document.getElementById('ruleModalActTarget');
+      let optionsHtml = '<option value="LOCAL">LOCAL (Master Hub)</option>';
+      configuredNodes.forEach(n => {
+        optionsHtml += `<option value="${n.id}">${n.name || n.id} (${n.id})</option>`;
+      });
+      condSelect.innerHTML = optionsHtml;
+      actSelect.innerHTML = optionsHtml;
+
+      if (editIdx >= 0 && currentRules[editIdx]) {
+        const r = currentRules[editIdx];
+        document.getElementById('ruleModalName').value = r.name || '';
+        const c = (r.conditions && r.conditions[0]) ? r.conditions[0] : {};
+        condSelect.value = c.node || 'LOCAL';
+        document.getElementById('ruleModalCondKey').value = c.key || 'LVL';
+        document.getElementById('ruleModalCondOp').value = c.op || '>=';
+        document.getElementById('ruleModalCondVal').value = (c.val !== undefined) ? c.val : 100;
+
+        const a = (r.actions && r.actions[0]) ? r.actions[0] : {};
+        actSelect.value = a.target || 'LOCAL';
+        document.getElementById('ruleModalActSlot').value = a.slot || 1;
+        document.getElementById('ruleModalActVal').value = (a.val !== undefined) ? a.val : 1;
+
+        document.getElementById('ruleModalNotif').checked = !!r.notify;
+        document.getElementById('ruleModalTitleText').value = r.notify_title || '';
+        document.getElementById('ruleModalMsgText').value = r.notify_msg || '';
+      } else {
+        document.getElementById('ruleModalName').value = 'Rule #' + (currentRules.length + 1);
+        if (configuredNodes.length > 0) condSelect.value = configuredNodes[0].id;
+        document.getElementById('ruleModalCondKey').value = 'LVL';
+        document.getElementById('ruleModalCondOp').value = '>=';
+        document.getElementById('ruleModalCondVal').value = 140;
+
+        actSelect.value = 'LOCAL';
+        document.getElementById('ruleModalActSlot').value = 1;
+        document.getElementById('ruleModalActVal').value = 1;
+
+        document.getElementById('ruleModalNotif').checked = true;
+        document.getElementById('ruleModalTitleText').value = 'Automation Alert';
+        document.getElementById('ruleModalMsgText').value = 'Rule condition triggered';
+      }
+
+      document.getElementById('ruleModal').style.display = 'flex';
+    }
+
+    async function saveRuleFromModal() {
+      const name = document.getElementById('ruleModalName').value.trim();
+      if (!name) return showToast('Please enter a rule name', 'error');
+
+      const cNode = document.getElementById('ruleModalCondNode').value;
+      const cKey = document.getElementById('ruleModalCondKey').value.trim() || 'LVL';
+      const cOp = document.getElementById('ruleModalCondOp').value;
+      const cVal = parseFloat(document.getElementById('ruleModalCondVal').value) || 0;
+
+      const aTarget = document.getElementById('ruleModalActTarget').value;
+      const aSlot = parseInt(document.getElementById('ruleModalActSlot').value) || 1;
+      const aVal = parseInt(document.getElementById('ruleModalActVal').value) || 1;
+
+      const isNotif = document.getElementById('ruleModalNotif').checked;
+      const nTitle = document.getElementById('ruleModalTitleText').value.trim();
+      const nMsg = document.getElementById('ruleModalMsgText').value.trim();
+
+      const ruleObj = {
+        name: name,
+        enabled: true,
+        conditions: [{ node: cNode, key: cKey, op: cOp, val: cVal }],
+        actions: [{ target: aTarget, slot: aSlot, val: aVal, reason: name }],
+        notify: isNotif,
+        notify_title: nTitle,
+        notify_msg: nMsg
+      };
+
+      if (activeEditRuleIdx >= 0) {
+        currentRules[activeEditRuleIdx] = ruleObj;
+      } else {
+        currentRules.push(ruleObj);
+      }
+
+      const res = await fetch('/api/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: currentRules })
+      });
+
+      if (res.ok) {
+        closeModal('ruleModal');
+        showToast('Rule saved successfully!', 'success');
+        renderRules();
+      } else {
+        showToast('Failed to save rule', 'error');
+      }
+    }
+
+    async function toggleRuleEnable(idx) {
+      if (!currentRules[idx]) return;
+      currentRules[idx].enabled = !currentRules[idx].enabled;
+      await fetch('/api/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: currentRules })
+      });
+      renderRules();
+    }
+
+    async function deleteRule(idx) {
+      if (!confirm('Delete this automation rule?')) return;
+      currentRules.splice(idx, 1);
+      await fetch('/api/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: currentRules })
+      });
+      showToast('Rule deleted', 'success');
+      renderRules();
+    }
+
+    async function clearAllRules() {
+      if (!confirm('Are you sure you want to delete ALL automation rules?')) return;
+      await fetch('/api/rules/clear', { method: 'POST' });
+      currentRules = [];
+      showToast('All rules cleared', 'success');
+      renderRules();
+    }
+
+    // =========================================================================
+    // USERS, SETTINGS & ACCOUNT
+    // =========================================================================
     async function loadUsers() {
       try {
         const res = await fetch('/api/users');
@@ -1706,8 +2296,6 @@ inline void setupWebEndpoints() {
         document.getElementById('usersTable').innerHTML = html + '</table>';
       } catch (e) {
         console.error(e);
-        document.getElementById('loginView').style.display = 'flex';
-        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -1782,168 +2370,6 @@ inline void setupWebEndpoints() {
       }
     }
 
-    let currentRules = [];
-
-    async function loadRules() {
-      try {
-        const res = await fetch('/api/rules');
-        const data = await res.json();
-        currentRules = data.rules || [];
-        renderRules();
-      } catch (e) {
-        console.error(e);
-        document.getElementById('loginView').style.display = 'flex';
-        document.getElementById('hubView').style.display = 'none';
-      }
-    }
-
-    function renderRules() {
-      const container = document.getElementById('rulesList');
-      if (!container) return;
-      if (currentRules.length === 0) {
-        container.innerHTML = '<div style="color:var(--text-muted); padding:30px 10px; text-align:center;">No automation rules configured yet. Click <strong>+ Add Rule</strong> above to create event-driven automations.</div>';
-        return;
-      }
-
-      let html = '';
-      currentRules.forEach((rule, idx) => {
-        const isEnabled = rule.enabled ? 'checked' : '';
-        const isNotify = rule.notify ? 'checked' : '';
-        const nTitle = rule.notify_title || rule.name || '';
-        const nMsg = rule.notify_msg || 'Automation alert triggered!';
-        const cond = (rule.conditions && rule.conditions[0]) ? rule.conditions[0] : { node: 'N01', key: 'LVL', op: '>=', val: 100 };
-        const act = (rule.actions && rule.actions[0]) ? rule.actions[0] : { target: 'LOCAL', slot: 1, val: 1 };
-
-        html += `<div class="node-box" style="margin-bottom:14px; border: 1px solid var(--card-border);">
-          <div class="node-header" style="display:flex; justify-content:space-between; align-items:center;">
-            <input type="text" id="ruleName_${idx}" value="${rule.name || ('Rule #' + (idx + 1))}" style="font-weight:700; font-size:13px; max-width:280px; margin:0; padding:4px 8px;" placeholder="Rule Name">
-            <div style="display:flex; align-items:center; gap:12px;">
-              <label class="checkbox-line" style="margin:0;">
-                <input type="checkbox" id="ruleEn_${idx}" ${isEnabled}>
-                <span>Enabled</span>
-              </label>
-              <button class="btn btn-danger btn-sm" onclick="deleteRule(${idx})" style="padding:4px 8px; font-size:11px;">Delete</button>
-            </div>
-          </div>
-
-          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-top:10px;">
-            <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
-              <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Condition (When)</div>
-              <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                <input type="text" id="ruleCondNode_${idx}" value="${cond.node || 'N01'}" style="width:70px; margin:0;" placeholder="Node">
-                <input type="text" id="ruleCondKey_${idx}" value="${cond.key || 'LVL'}" style="width:75px; margin:0;" placeholder="Key (e.g. LVL)">
-                <select id="ruleCondOp_${idx}" style="width:65px; margin:0;">
-                  <option value=">=" ${cond.op === '>=' ? 'selected' : ''}>&gt;=</option>
-                  <option value="<=" ${cond.op === '<=' ? 'selected' : ''}>&lt;=</option>
-                  <option value="==" ${cond.op === '==' ? 'selected' : ''}>==</option>
-                  <option value=">" ${cond.op === '>' ? 'selected' : ''}>&gt;</option>
-                  <option value="<" ${cond.op === '<' ? 'selected' : ''}>&lt;</option>
-                  <option value="!=" ${cond.op === '!=' ? 'selected' : ''}>!=</option>
-                </select>
-                <input type="number" id="ruleCondVal_${idx}" value="${cond.val !== undefined ? cond.val : 100}" style="width:70px; margin:0;" placeholder="Val">
-              </div>
-            </div>
-
-            <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
-              <div style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Action (Then)</div>
-              <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                <input type="text" id="ruleActTarget_${idx}" value="${act.target || 'LOCAL'}" style="width:80px; margin:0;" placeholder="Target">
-                <input type="number" id="ruleActSlot_${idx}" value="${act.slot || 1}" style="width:60px; margin:0;" placeholder="Slot">
-                <select id="ruleActVal_${idx}" style="width:110px; margin:0;">
-                  <option value="1" ${act.val === 1 ? 'selected' : ''}>Turn ON</option>
-                  <option value="0" ${act.val === 0 ? 'selected' : ''}>Turn OFF</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          <div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px; margin-top:10px;">
-            <label class="checkbox-line" style="margin:0 0 8px 0;">
-              <input type="checkbox" id="ruleNotif_${idx}" ${isNotify}>
-              <span style="font-weight:700;">Send Rule-Based Push Notification Alert</span>
-            </label>
-            <div style="display:grid; grid-template-columns: 1fr 2fr; gap:10px;">
-              <div>
-                <label>Alert Title</label>
-                <input type="text" id="ruleTitle_${idx}" value="${nTitle}" style="margin:4px 0 0;" placeholder="e.g. Tank Full Alert">
-              </div>
-              <div>
-                <label>Alert Message</label>
-                <input type="text" id="ruleMsg_${idx}" value="${nMsg}" style="margin:4px 0 0;" placeholder="e.g. Overhead tank is at 100%">
-              </div>
-            </div>
-          </div>
-        </div>`;
-      });
-      container.innerHTML = html;
-    }
-
-    function addNewRule() {
-      currentRules.push({
-        name: "Automation Rule #" + (currentRules.length + 1),
-        enabled: true,
-        conditions: [{ node: "N01", key: "LVL", op: ">=", val: 100 }],
-        actions: [{ target: "LOCAL", slot: 1, val: 1, reason: "Rule Triggered" }],
-        notify: true,
-        notify_title: "Automation Alert",
-        notify_msg: "Automation rule condition reached"
-      });
-      renderRules();
-    }
-
-    function deleteRule(idx) {
-      currentRules.splice(idx, 1);
-      renderRules();
-    }
-
-    async function saveRulesConfig() {
-      currentRules.forEach((rule, idx) => {
-        const nameEl = document.getElementById('ruleName_' + idx);
-        const enEl = document.getElementById('ruleEn_' + idx);
-        const notifEl = document.getElementById('ruleNotif_' + idx);
-        const titleEl = document.getElementById('ruleTitle_' + idx);
-        const msgEl = document.getElementById('ruleMsg_' + idx);
-        const cNode = document.getElementById('ruleCondNode_' + idx);
-        const cKey = document.getElementById('ruleCondKey_' + idx);
-        const cOp = document.getElementById('ruleCondOp_' + idx);
-        const cVal = document.getElementById('ruleCondVal_' + idx);
-        const aTgt = document.getElementById('ruleActTarget_' + idx);
-        const aSlot = document.getElementById('ruleActSlot_' + idx);
-        const aVal = document.getElementById('ruleActVal_' + idx);
-
-        if (nameEl) rule.name = nameEl.value.trim();
-        if (enEl) rule.enabled = enEl.checked;
-        if (notifEl) rule.notify = notifEl.checked;
-        if (titleEl) rule.notify_title = titleEl.value.trim();
-        if (msgEl) rule.notify_msg = msgEl.value.trim();
-
-        rule.conditions = [{
-          node: cNode ? cNode.value.trim() : 'N01',
-          key: cKey ? cKey.value.trim() : 'LVL',
-          op: cOp ? cOp.value : '>=',
-          val: cVal ? parseFloat(cVal.value) : 0
-        }];
-
-        rule.actions = [{
-          target: aTgt ? aTgt.value.trim() : 'LOCAL',
-          slot: aSlot ? parseInt(aSlot.value) : 1,
-          val: aVal ? parseInt(aVal.value) : 1,
-          reason: rule.name
-        }];
-      });
-
-      const res = await fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: currentRules })
-      });
-      if (res.ok) {
-        showToast('Rules & Notification settings saved!', 'success');
-      } else {
-        showToast('Failed to save rules', 'error');
-      }
-    }
-
     async function loadAccountDiagnostics() {
       try {
         const u = localStorage.getItem('miniha_user') || 'admin';
@@ -1973,8 +2399,6 @@ inline void setupWebEndpoints() {
         }
       } catch (e) {
         console.error(e);
-        document.getElementById('loginView').style.display = 'flex';
-        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -2015,8 +2439,6 @@ inline void setupWebEndpoints() {
         document.getElementById('cfgMqttPass').value = '';
       } catch (e) {
         console.error(e);
-        document.getElementById('loginView').style.display = 'flex';
-        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -2040,7 +2462,7 @@ inline void setupWebEndpoints() {
       showToast('Settings saved. Hub is rebooting...', 'success');
     }
 
-    checkSession();
+        checkSession();
     setInterval(refreshData, 3000);
   </script>
 </body>

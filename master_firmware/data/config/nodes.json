@@ -1,38 +1,3 @@
 {
-  "nodes": [
-    {
-      "id": "N01",
-      "name": "Rooftop Tank",
-      "mac": "EC626089AA01",
-      "chip": "ESP8266",
-      "slots": [
-        { "slot": 0, "gpio": 5, "type": 4, "activeLow": 0, "name": "Ultrasonic Trig" },
-        { "slot": 1, "gpio": 4, "type": 5, "activeLow": 0, "name": "Ultrasonic Echo" },
-        { "slot": 2, "gpio": 2, "type": 6, "activeLow": 0, "name": "DHT11 Weather" }
-      ],
-      "links": []
-    },
-    {
-      "id": "N02",
-      "name": "Switch Board",
-      "mac": "EC626089AA02",
-      "chip": "ESP8266",
-      "slots": [
-        { "slot": 0, "gpio": 5, "type": 1, "activeLow": 1, "name": "Relay 1" },
-        { "slot": 1, "gpio": 4, "type": 1, "activeLow": 1, "name": "Relay 2" },
-        { "slot": 2, "gpio": 0, "type": 1, "activeLow": 1, "name": "Relay 3" },
-        { "slot": 3, "gpio": 2, "type": 1, "activeLow": 1, "name": "Relay 4" },
-        { "slot": 4, "gpio": 14, "type": 2, "activeLow": 0, "name": "Touch 1" },
-        { "slot": 5, "gpio": 12, "type": 2, "activeLow": 0, "name": "Touch 2" },
-        { "slot": 6, "gpio": 13, "type": 2, "activeLow": 0, "name": "Touch 3" },
-        { "slot": 7, "gpio": 15, "type": 2, "activeLow": 0, "name": "Touch 4" }
-      ],
-      "links": [
-        { "idx": 0, "trig": 4, "tgt": 0, "act": 1 },
-        { "idx": 1, "trig": 5, "tgt": 1, "act": 1 },
-        { "idx": 2, "trig": 6, "tgt": 2, "act": 1 },
-        { "idx": 3, "trig": 7, "tgt": 3, "act": 1 }
-      ]
-    }
-  ]
+  "nodes": []
 }

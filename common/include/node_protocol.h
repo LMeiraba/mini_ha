@@ -16,7 +16,7 @@
 #define MAX_GPIO_SLOTS          16    // Max virtual slots per node
 #define MAX_LINKS               16    // Max local sensor-actuator link rules per node
 #define MAX_SCHEDULES           8     // Max standalone local schedule slots per node
-#define PROTOCOL_SCHEMA_VERSION 0x0004
+#define PROTOCOL_SCHEMA_VERSION 0x0005
 #define SCHEMA_MAGIC            (0xAA550000 | PROTOCOL_SCHEMA_VERSION)
 #define DEFAULT_MESH_PORT       8266
 
@@ -91,7 +91,7 @@ struct LocalScheduleDef {
 // Complete Persistent Storage Layout (Stored in Slave EEPROM / Flash Sector)
 struct NodeStorageConfig {
   uint32_t magic;             // SCHEMA_MAGIC (0xAA550004)
-  char nodeId[8];             // Assigned Node ID (e.g. "N01", "N02") or "UNBOUND"
+  char nodeId[16];            // Assigned Node ID (e.g. "N01", "N01-esp32c3") or "UNBOUND"
   
   uint8_t transportMode;      // 0 = MODE_WIRED, 1 = MODE_WIRELESS
   char wifiSsid[33];          // Target Parent AP SSID (Master AP, Wired Slave AP, or Home Wi-Fi)

@@ -669,43 +669,15 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Rules updated\"}");
   });
 
-  // 16. Captive Portal Detection Handlers (Dynamic Subnet / mDNS Aware)
-  auto handleCaptiveRedirect = []() {
-    String host = webServer.hostHeader();
-    if (host.indexOf("miniha.local") != -1) {
-      webServer.sendHeader("Location", "http://miniha.local/", true);
-    } else if (WiFi.status() == WL_CONNECTED && host.indexOf(WiFi.localIP().toString()) != -1) {
-      webServer.sendHeader("Location", "http://" + WiFi.localIP().toString() + "/", true);
-    } else {
-      webServer.sendHeader("Location", "http://192.168.4.1/", true);
-    }
-    webServer.send(302, "text/plain", "");
-  };
-  // Windows NCSI probes: respond 200 OK to eliminate "Action needed"
-  webServer.on("/connecttest.txt", HTTP_GET, []() {
-    webServer.send(200, "text/plain", "Microsoft Connect Test");
-  });
-  webServer.on("/ncsi.txt", HTTP_GET, []() {
-    webServer.send(200, "text/plain", "Microsoft NCSI");
-  });
+  // 16. OS Network Probes & Offline Handlers (No 302 Redirects, No Spoofing)
+  // Respond with standard status codes without redirecting so OS knows it's a local network without internet
+  webServer.on("/generate_204", HTTP_GET, []() { webServer.send(204, "text/plain", ""); });
+  webServer.on("/gen_204", HTTP_GET, []() { webServer.send(204, "text/plain", ""); });
+  webServer.on("/connecttest.txt", HTTP_GET, []() { webServer.send(404, "text/plain", "No Internet"); });
+  webServer.on("/ncsi.txt", HTTP_GET, []() { webServer.send(404, "text/plain", "No Internet"); });
+  webServer.on("/hotspot-detect.html", HTTP_GET, []() { webServer.send(404, "text/plain", "Not Found"); });
 
-  webServer.on("/generate_204", handleCaptiveRedirect);
-  webServer.on("/gen_204", handleCaptiveRedirect);
-  webServer.on("/hotspot-detect.html", handleCaptiveRedirect);
   webServer.onNotFound([]() {
-    String host = webServer.hostHeader();
-    bool isKnownHost = (host.indexOf("192.168.4.1") != -1) ||
-                       (host.indexOf("miniha.local") != -1) ||
-                       (WiFi.status() == WL_CONNECTED && host.indexOf(WiFi.localIP().toString()) != -1);
-    if (!isKnownHost) {
-      if (WiFi.status() == WL_CONNECTED && (WiFi.getMode() & WIFI_STA)) {
-        webServer.sendHeader("Location", "http://miniha.local/", true);
-      } else {
-        webServer.sendHeader("Location", "http://192.168.4.1/", true);
-      }
-      webServer.send(302, "text/plain", "");
-      return;
-    }
     webServer.send(404, "text/plain", "Not Found");
   });
 
@@ -718,9 +690,6 @@ inline void setupWebEndpoints() {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mini-HA Supervisor</title>
   
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 
   <style>
     :root {
@@ -729,7 +698,9 @@ inline void setupWebEndpoints() {
       --card-elevated: #18181b;
       --card-border: #27272a;
       --card-border-subtle: #1f1f23;
-      --card-border-focus: #52525b;
+      --card-border-focus: #52525b;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       
       --text: #fafafa;
       --text-muted: #a1a1aa;
@@ -764,7 +735,7 @@ inline void setupWebEndpoints() {
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family: var(--font-sans);
       background: var(--bg);
       color: var(--text);
       min-height: 100vh;
@@ -835,7 +806,7 @@ inline void setupWebEndpoints() {
       text-transform: uppercase;
       letter-spacing: 0.6px;
       color: var(--text-dim);
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-mono);
     }
 
     .status-dot {
@@ -855,7 +826,7 @@ inline void setupWebEndpoints() {
 
     /* Buttons & Badges */
     .badge {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-mono);
       font-size: 11px;
       font-weight: 600;
       text-transform: uppercase;
@@ -929,7 +900,7 @@ inline void setupWebEndpoints() {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-mono);
     }
 
     .grid {
@@ -1019,10 +990,10 @@ inline void setupWebEndpoints() {
       font-weight: 700;
       color: var(--text-dim);
       text-transform: uppercase;
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-mono);
     }
     .pill-val {
-      font-family: 'JetBrains Mono', monospace;
+      font-family: var(--font-mono);
       font-size: 13px;
       font-weight: 700;
       color: var(--text);
@@ -1064,7 +1035,7 @@ inline void setupWebEndpoints() {
     /* Tables & Inputs */
     table { width: 100%; border-collapse: collapse; font-size: 12px; }
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--card-border); }
-    th { color: var(--text-dim); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-family: 'JetBrains Mono', monospace; }
+    th { color: var(--text-dim); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--font-mono); }
     
     input, select {
       background: var(--input-bg);
@@ -1180,7 +1151,7 @@ inline void setupWebEndpoints() {
 <body>
 
   <!-- 1. LOGIN SCREEN -->
-  <div id="loginView" class="login-container" style="display:none;">
+  <div id="loginView" class="login-container">
     <div class="login-card">
       <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
         <div class="brand-badge">
@@ -1193,7 +1164,7 @@ inline void setupWebEndpoints() {
         </div>
         <div>
           <div style="font-size:15px; font-weight:700;">Mini-HA Supervisor</div>
-          <div style="font-size:10px; font-weight:600; text-transform:uppercase; color:var(--text-dim); font-family:'JetBrains Mono', monospace;">Hardware Console</div>
+          <div style="font-size:10px; font-weight:600; text-transform:uppercase; color:var(--text-dim); font-family:var(--font-mono);">Hardware Console</div>
         </div>
       </div>
 
@@ -1216,7 +1187,7 @@ inline void setupWebEndpoints() {
         <button type="submit" class="btn" style="width:100%; margin-top:6px;">Sign In</button>
       </form>
 
-      <div style="margin-top:18px; padding-top:12px; border-top:1px solid var(--card-border-subtle); display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-dim); font-family:'JetBrains Mono', monospace;">
+      <div style="margin-top:18px; padding-top:12px; border-top:1px solid var(--card-border-subtle); display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">
         <span>miniha.local</span>
         <span>v2.4</span>
       </div>
@@ -1451,7 +1422,7 @@ inline void setupWebEndpoints() {
   <div id="bindModal" class="modal-overlay">
     <div class="modal">
       <div style="font-size:14px; font-weight:700; margin-bottom:12px;">Bind Mesh Slave</div>
-      <div style="font-size:11px; color:var(--text-muted); margin-bottom:10px; font-family:'JetBrains Mono', monospace;" id="bindMacLabel">MAC: --</div>
+      <div style="font-size:11px; color:var(--text-muted); margin-bottom:10px; font-family:var(--font-mono);" id="bindMacLabel">MAC: --</div>
       <label>Assign Node ID</label>
       <input type="text" id="bindNodeId" value="N01" required>
       <label>Friendly Name</label>
@@ -1522,6 +1493,8 @@ inline void setupWebEndpoints() {
         }
       } catch (e) {
         console.error(e);
+        document.getElementById('loginView').style.display = 'flex';
+        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -1574,6 +1547,8 @@ inline void setupWebEndpoints() {
         }
       } catch (e) {
         console.error(e);
+        document.getElementById('loginView').style.display = 'flex';
+        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -1593,7 +1568,7 @@ inline void setupWebEndpoints() {
           <div class="node-header">
             <div>
               <strong style="font-size:13px;">${node.name || node.id}</strong>
-              <span style="font-family:\'JetBrains Mono\', monospace; font-size:11px; color:var(--text-dim); margin-left:6px;">(${node.id})</span>
+              <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-left:6px;">(${node.id})</span>
             </div>
             <span style="font-size:11px; color:var(--text-dim);">${seen}</span>
           </div>`;
@@ -1633,7 +1608,7 @@ inline void setupWebEndpoints() {
                 html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
                   <div class="tank-header">
                     <span style="font-weight:600;">${slotName}</span>
-                    <span style="font-family:\'JetBrains Mono\', monospace; font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
+                    <span style="font-family:var(--font-mono); font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
                   </div>
                   <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
                 </div>`;
@@ -1722,6 +1697,8 @@ inline void setupWebEndpoints() {
         document.getElementById('usersTable').innerHTML = html + '</table>';
       } catch (e) {
         console.error(e);
+        document.getElementById('loginView').style.display = 'flex';
+        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -1806,6 +1783,8 @@ inline void setupWebEndpoints() {
         renderRules();
       } catch (e) {
         console.error(e);
+        document.getElementById('loginView').style.display = 'flex';
+        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -1985,6 +1964,8 @@ inline void setupWebEndpoints() {
         }
       } catch (e) {
         console.error(e);
+        document.getElementById('loginView').style.display = 'flex';
+        document.getElementById('hubView').style.display = 'none';
       }
     }
 
@@ -2011,7 +1992,7 @@ inline void setupWebEndpoints() {
       }
     }
 
-    async function loadSettings()async function loadSettings() {
+    async function loadSettings() {
       try {
         const res = await fetch('/api/system');
         const data = await res.json();
@@ -2025,6 +2006,8 @@ inline void setupWebEndpoints() {
         document.getElementById('cfgMqttPass').value = '';
       } catch (e) {
         console.error(e);
+        document.getElementById('loginView').style.display = 'flex';
+        document.getElementById('hubView').style.display = 'none';
       }
     }
 

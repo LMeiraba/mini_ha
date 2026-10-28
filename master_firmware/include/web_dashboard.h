@@ -678,6 +678,13 @@ inline void setupWebEndpoints() {
   webServer.on("/hotspot-detect.html", HTTP_GET, []() { webServer.send(404, "text/plain", "Not Found"); });
 
   webServer.onNotFound([]() {
+    if (webServer.method() == HTTP_OPTIONS) {
+      webServer.sendHeader("Access-Control-Allow-Origin", "*");
+      webServer.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD");
+      webServer.sendHeader("Access-Control-Allow-Headers", "*");
+      webServer.send(204);
+      return;
+    }
     webServer.send(404, "text/plain", "Not Found");
   });
 
@@ -698,8 +705,10 @@ inline void setupWebEndpoints() {
       --card-elevated: #18181b;
       --card-border: #27272a;
       --card-border-subtle: #1f1f23;
-      --card-border-focus: #52525b;
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --card-border-focus: #52525b;
+
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+
       --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       
       --text: #fafafa;

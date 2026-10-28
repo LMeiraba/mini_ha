@@ -482,8 +482,8 @@ void setup() {
   WiFi.softAPConfig(apIP, apGW, apMask);
   bool apStarted = WiFi.softAP(sysSecurity.apSsid.c_str(), sysSecurity.apPass.c_str());
   if (apStarted) {
-    dnsServer.start(53, "*", apIP);
-    Serial.printf("[AP] Isolated Star-Mesh SoftAP '%s' active with Captive DNS at http://%s\n", 
+    dnsServer.start(53, "miniha.local", apIP);
+    Serial.printf("[AP] Isolated Star-Mesh SoftAP '%s' active at http://%s\n", 
                   sysSecurity.apSsid.c_str(), WiFi.softAPIP().toString().c_str());
   } else {
     Serial.printf("[AP] ERROR: Failed to start SoftAP '%s'!\n", sysSecurity.apSsid.c_str());

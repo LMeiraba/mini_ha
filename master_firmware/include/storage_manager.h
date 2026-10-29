@@ -98,9 +98,65 @@ inline bool initLittleFSStorage() {
   return true;
 }
 
-inline void registerPendingDevice(const String& mac, const String& chip, const String& gpios, uint8_t slots) {
+inline void removePendingDevice(const String& mac) {
   for (uint8_t i = 0; i < numPendingNodes; i++) {
     if (pendingNodes[i].mac == mac) {
+      for (uint8_t j = i; j + 1 < numPendingNodes; j++) {
+        pendingNodes[j] = pendingNodes[j + 1];
+      }
+      numPendingNodes--;
+      return;
+    }
+  }
+}
+
+inline void prunePendingDevices() {
+  unsigned long now = millis();
+  for (int i = 0; i < (int)numPendingNodes; ) {
+    if (now - pendingNodes[i].lastSeen > 12000) {
+      for (uint8_t j = i; j + 1 < numPendingNodes; j++) {
+        pendingNodes[j] = pendingNodes[j + 1];
+      }
+      numPendingNodes--;
+    } else {
+      i++;
+    }
+  }
+
+  File f = LittleFS.open(NODES_CONFIG_PATH, "r");
+  if (f) {
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (!err && doc.containsKey("nodes")) {
+      for (JsonObject node : doc["nodes"].as<JsonArray>()) {
+        String boundMac = node["mac"].as<String>();
+        if (boundMac.length() > 0) {
+          removePendingDevice(boundMac);
+        }
+      }
+    }
+  }
+}
+
+inline void registerPendingDevice(const String& mac, const String& chip, const String& gpios, uint8_t slots) {
+  File f = LittleFS.open(NODES_CONFIG_PATH, "r");
+  if (f) {
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (!err && doc.containsKey("nodes")) {
+      for (JsonObject node : doc["nodes"].as<JsonArray>()) {
+        if (node["mac"].as<String>() == mac) return; // Already bound to a node!
+      }
+    }
+  }
+
+  for (uint8_t i = 0; i < numPendingNodes; i++) {
+    if (pendingNodes[i].mac == mac) {
+      pendingNodes[i].chip = chip;
+      pendingNodes[i].gpios = gpios;
+      pendingNodes[i].slots = slots;
       pendingNodes[i].lastSeen = millis();
       return; // Already registered
     }

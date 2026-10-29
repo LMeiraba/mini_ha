@@ -327,13 +327,13 @@ void maintainMqtt() {
 }
 
 // Bind & Provision Discovered Slaves
-void triggerProvisionNode(const String& mac, const String& newId, const String& name, bool apEnabled, const String& apSsid, const String& apPass) {
+void triggerProvisionNode(const String& mac, const String& newId, const String& name, bool apEnabled, const String& apSsid, const String& apPass, bool apHidden) {
   String bindPayload = "MAC:" + mac + ":SET_ID:" + newId;
   if (apEnabled) {
-    bindPayload += ":AP:1:AP_SSID:" + apSsid + ":AP_PASS:" + apPass;
+    bindPayload += ":AP:1:AP_SSID:" + apSsid + ":AP_PASS:" + apPass + ":AP_HIDDEN:" + String(apHidden ? 1 : 0);
   }
-  Serial.printf("[PROV] Dispatching BIND packet: MAC=%s -> ID=%s (%s) | AP: %s\n",
-                mac.c_str(), newId.c_str(), name.c_str(), apEnabled ? apSsid.c_str() : "OFF");
+  Serial.printf("[PROV] Dispatching BIND packet: MAC=%s -> ID=%s (%s) | AP: %s (Hidden: %d)\n",
+                mac.c_str(), newId.c_str(), name.c_str(), apEnabled ? apSsid.c_str() : "OFF", apHidden ? 1 : 0);
   broadcastBusPacket(buildPacket("NEW", "M", "BIND", bindPayload));
 
   File file = LittleFS.open(NODES_CONFIG_PATH, "r");
@@ -352,6 +352,7 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
       node["name"] = name;
       if (apEnabled) {
         node["ap_enabled"] = true;
+        node["ap_hidden"] = apHidden;
         node["ap_ssid"] = apSsid;
         node["ap_pass"] = apPass;
       }
@@ -359,7 +360,8 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
         delay(40);
         String apS = node.containsKey("ap_ssid") ? node["ap_ssid"].as<String>() : ("MiniHA_" + newId);
         String apP = node.containsKey("ap_pass") ? node["ap_pass"].as<String>() : "";
-        broadcastBusPacket(buildPacket(newId, "M", "CFG", "AP:1:" + apS + ":" + apP));
+        int apH = (node.containsKey("ap_hidden") && node["ap_hidden"].as<bool>()) ? 1 : 0;
+        broadcastBusPacket(buildPacket(newId, "M", "CFG", "AP:1:" + apS + ":" + apP + ":" + String(apH)));
       }
       if (node.containsKey("components")) {
         int idx = 0;
@@ -396,6 +398,7 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
     n["name"] = name;
     n["mac"] = mac;
     n["ap_enabled"] = apEnabled;
+    n["ap_hidden"] = apHidden;
     n["ap_ssid"] = apSsid;
     n["ap_pass"] = apPass;
     n.createNestedArray("components");
@@ -409,6 +412,7 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
     serializeJson(doc, outF);
     outF.close();
   }
+  removePendingDevice(mac);
   mqttSchemaNeedsPublish = true;
 }
 
@@ -461,7 +465,9 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
             ns->setComponentData(key, v1, v2);
 
             // Backward compatibility shortcuts
-            if (key.indexOf("tank") != -1 || key.indexOf("dist") != -1) {
+            if (key == "heap") {
+              ns->freeHeap = (uint32_t)v1;
+            } else if (key.indexOf("tank") != -1 || key.indexOf("dist") != -1) {
               ns->distance = (int)v1;
             } else if (key.indexOf("climate") != -1 || key.indexOf("dht") != -1) {
               ns->temp = v1;

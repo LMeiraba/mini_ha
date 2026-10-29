@@ -11,7 +11,7 @@
 // =========================================================================
 
 extern WebServer webServer;
-void triggerProvisionNode(const String& mac, const String& newId, const String& name, bool apEnabled = false, const String& apSsid = "", const String& apPass = "");
+void triggerProvisionNode(const String& mac, const String& newId, const String& name, bool apEnabled = false, const String& apSsid = "", const String& apPass = "", bool apHidden = false);
 
 #ifndef SYSTEM_CONFIG_PATH
   #define SYSTEM_CONFIG_PATH "/config/system.json"
@@ -476,6 +476,7 @@ inline void setupWebEndpoints() {
   // 8. Pending Discovered Nodes API (Admin only)
   webServer.on("/api/pending", HTTP_GET, []() {
     if (!requireRole(ROLE_ADMIN)) return;
+    prunePendingDevices();
     DynamicJsonDocument doc(1024);
     JsonArray arr = doc.createNestedArray("pending");
     for (uint8_t i = 0; i < numPendingNodes; i++) {
@@ -513,7 +514,9 @@ inline void setupWebEndpoints() {
       n["dist"] = nodeStates[i].distance;
       n["temp"] = nodeStates[i].temp;
       n["hum"] = nodeStates[i].hum;
-      n["lastSeen"] = (millis() - nodeStates[i].lastSeen) / 1000;
+      n["freeHeap"] = nodeStates[i].freeHeap;
+      n["hasSeen"] = (nodeStates[i].lastSeen != 0);
+      n["lastSeen"] = (nodeStates[i].lastSeen == 0) ? 999999 : ((millis() - nodeStates[i].lastSeen) / 1000);
       JsonArray relays = n.createNestedArray("relays");
       for (int s = 0; s < MAX_COMPONENTS; s++) {
         relays.add(nodeStates[i].relayStates[s] ? 1 : 0);
@@ -651,9 +654,10 @@ inline void setupWebEndpoints() {
     String newId = doc["id"].as<String>();
     String name = doc.containsKey("name") ? doc["name"].as<String>() : newId;
     bool apEn = doc.containsKey("ap_enabled") ? doc["ap_enabled"].as<bool>() : false;
+    bool apHidden = doc.containsKey("ap_hidden") ? doc["ap_hidden"].as<bool>() : false;
     String apSsid = doc.containsKey("ap_ssid") ? doc["ap_ssid"].as<String>() : ("MiniHA_" + newId);
     String apPass = doc.containsKey("ap_pass") ? doc["ap_pass"].as<String>() : "";
-    triggerProvisionNode(mac, newId, name, apEn, apSsid, apPass);
+    triggerProvisionNode(mac, newId, name, apEn, apSsid, apPass, apHidden);
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Provisioning triggered\"}");
   });
 
@@ -668,6 +672,7 @@ inline void setupWebEndpoints() {
     deserializeJson(doc, webServer.arg("plain"));
     String targetId = doc["id"].as<String>();
     bool apEn = doc["ap_enabled"].as<bool>();
+    bool apHidden = doc.containsKey("ap_hidden") ? doc["ap_hidden"].as<bool>() : false;
     String apSsid = doc.containsKey("ap_ssid") ? doc["ap_ssid"].as<String>() : ("MiniHA_" + targetId);
     String apPass = doc.containsKey("ap_pass") ? doc["ap_pass"].as<String>() : "";
 
@@ -683,6 +688,7 @@ inline void setupWebEndpoints() {
       if (node["id"].as<String>() == targetId) {
         nodeFound = true;
         node["ap_enabled"] = apEn;
+        node["ap_hidden"] = apHidden;
         node["ap_ssid"] = apSsid;
         node["ap_pass"] = apPass;
         break;
@@ -699,7 +705,7 @@ inline void setupWebEndpoints() {
     }
 
     extern void broadcastBusPacket(const String& pkt);
-    String p = "AP:" + String(apEn ? 1 : 0) + ":" + apSsid + ":" + apPass;
+    String p = "AP:" + String(apEn ? 1 : 0) + ":" + apSsid + ":" + apPass + ":" + String(apHidden ? 1 : 0);
     broadcastBusPacket(buildPacket(targetId, "M", "CFG", p));
 
     mqttSchemaNeedsPublish = true;
@@ -958,6 +964,13 @@ inline void setupWebEndpoints() {
         serializeJson(nodesDoc, outF);
         outF.close();
       }
+      for (uint8_t i = 0; i < numTrackedNodes; i++) {
+        if (nodeStates[i].nodeId == targetId) {
+          nodeStates[i].lastSeen = 0;
+          nodeStates[i].nodeId = "";
+          break;
+        }
+      }
       mqttSchemaNeedsPublish = true;
       webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Node deleted\"}");
     } else {
@@ -1039,929 +1052,1353 @@ inline void setupWebEndpoints() {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Mini-HA Supervisor</title>
   
+  <script>
+    if (localStorage.getItem('miniha_logged_in') === '1') {
+      document.documentElement.classList.add('is-auth');
+    }
+  </script>
 
   <style>
     :root {
-      --bg: #09090b;
-      --card-bg: #121215;
-      --card-elevated: #18181b;
-      --card-border: #27272a;
-      --card-border-subtle: #1f1f23;
-      --card-border-focus: #52525b;
-
-      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-
-      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --bg: #0b0f19;
+      --sidebar-bg: #0f172a;
+      --sidebar-border: rgba(255, 255, 255, 0.07);
+      --card-bg: #141e33;
+      --card-elevated: #1a2642;
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-border-focus: rgba(96, 165, 250, 0.6);
       
-      --text: #fafafa;
-      --text-muted: #a1a1aa;
-      --text-dim: #71717a;
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
 
-      --btn-primary-bg: #fafafa;
-      --btn-primary-text: #09090b;
-      --btn-primary-hover: #e4e4e7;
-
-      --btn-secondary-bg: #18181b;
-      --btn-secondary-border: #27272a;
-      --btn-secondary-text: #fafafa;
-      --btn-secondary-hover: #27272a;
-
-      --input-bg: #141417;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --primary-subtle: rgba(59, 130, 246, 0.15);
 
       --success: #10b981;
-      --success-subtle: rgba(16, 185, 129, 0.12);
-      --success-border: rgba(16, 185, 129, 0.25);
+      --success-subtle: rgba(16, 185, 129, 0.15);
+      --success-border: rgba(16, 185, 129, 0.3);
 
       --warning: #f59e0b;
-      --warning-subtle: rgba(245, 158, 11, 0.12);
-      --warning-border: rgba(245, 158, 11, 0.25);
+      --warning-subtle: rgba(245, 158, 11, 0.15);
+      --warning-border: rgba(245, 158, 11, 0.3);
 
       --danger: #ef4444;
-      --danger-subtle: rgba(239, 68, 68, 0.12);
-      --danger-border: rgba(239, 68, 68, 0.25);
+      --danger-subtle: rgba(239, 68, 68, 0.15);
+      --danger-border: rgba(239, 68, 68, 0.3);
 
       --radius-sm: 6px;
       --radius-md: 10px;
       --radius-lg: 14px;
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: var(--font-sans);
       background: var(--bg);
       color: var(--text);
-      min-height: 100vh;
-      padding: 0;
+      font-family: var(--font-sans);
       font-size: 13px;
+      line-height: 1.5;
       -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
     }
 
+    /* Flash Prevention */
+    html.is-auth #loginView { display: none !important; }
+    html.is-auth #hubApp { display: flex !important; }
+    html:not(.is-auth) #loginView { display: flex !important; }
+    html:not(.is-auth) #hubApp { display: none !important; }
+
+    /* Icons */
     .icon {
-      display: inline-block;
-      width: 15px;
-      height: 15px;
-      stroke-width: 2;
+      width: 16px;
+      height: 16px;
       stroke: currentColor;
-      fill: none;
+      stroke-width: 2;
       stroke-linecap: round;
       stroke-linejoin: round;
-      vertical-align: middle;
+      fill: none;
       flex-shrink: 0;
     }
 
-    /* Top Bar */
-    .topbar {
-      background: rgba(9, 9, 11, 0.95);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      padding: 12px 20px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--card-border);
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .brand-badge {
-      width: 32px;
-      height: 32px;
-      border-radius: var(--radius-sm);
-      background: var(--card-elevated);
-      border: 1px solid var(--card-border);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--text);
-    }
-    .brand-title-wrap {
-      display: flex;
-      flex-direction: column;
-    }
-    .brand-title {
-      font-size: 15px;
-      font-weight: 700;
-      letter-spacing: -0.2px;
-      color: var(--text);
-      line-height: 1.2;
-    }
-    .brand-subtitle {
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
-      color: var(--text-dim);
-      font-family: var(--font-mono);
-    }
-
-    .status-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--success);
-      display: inline-block;
-    }
-
-    .nav-actions {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
-
-    /* Buttons & Badges */
-    .badge {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      padding: 4px 8px;
-      border-radius: 4px;
-      background: var(--card-elevated);
-      color: var(--text);
-      border: 1px solid var(--card-border);
-    }
+    /* Buttons */
     .btn {
-      background: var(--btn-primary-bg);
-      color: var(--btn-primary-text);
-      border: none;
-      padding: 8px 14px;
-      border-radius: var(--radius-sm);
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
-      transition: background 0.15s;
+      padding: 7px 14px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      cursor: pointer;
+      background: var(--primary);
+      color: #fff;
+      transition: all 0.15s ease;
+      text-decoration: none;
     }
-    .btn:hover {
-      background: var(--btn-primary-hover);
-    }
-    .btn:active { transform: scale(0.98); }
+    .btn:hover { background: var(--primary-hover); }
     .btn-secondary {
-      background: var(--btn-secondary-bg);
-      border: 1px solid var(--btn-secondary-border);
-      color: var(--btn-secondary-text);
+      background: rgba(255, 255, 255, 0.05);
+      border-color: var(--card-border);
+      color: var(--text);
     }
     .btn-secondary:hover {
-      background: #222227;
-      border-color: #3f3f46;
+      background: rgba(255, 255, 255, 0.1);
+      border-color: var(--text-dim);
     }
     .btn-danger {
       background: var(--danger-subtle);
+      border-color: var(--danger-border);
       color: #fca5a5;
-      border: 1px solid var(--danger-border);
     }
     .btn-danger:hover {
-      background: rgba(239, 68, 68, 0.2);
+      background: var(--danger);
+      color: #fff;
     }
-    .btn-sm { padding: 5px 10px; font-size: 11px; }
+    .btn-sm { padding: 4px 10px; font-size: 11px; }
 
-    /* App Shell Container */
-    .app-container {
-      max-width: 1300px;
-      margin: 0 auto;
-      padding: 20px 16px 40px;
+    /* Form Inputs */
+    input[type="text"], input[type="password"], input[type="number"], select {
       width: 100%;
+      padding: 8px 12px;
+      background: #090d17;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.15s ease;
+      font-family: inherit;
+    }
+    input:focus, select:focus { border-color: var(--card-border-focus); }
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
 
-    /* Cards & Grid */
+    /* Badges & Status */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 2px 8px;
+      border-radius: 9999px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-muted);
+      border: 1px solid var(--card-border);
+    }
+    .badge-primary { background: var(--primary-subtle); color: #93c5fd; border-color: rgba(59, 130, 246, 0.3); }
+    .badge-success { background: var(--success-subtle); color: #6ee7b7; border-color: var(--success-border); }
+    .badge-warning { background: var(--warning-subtle); color: #fcd34d; border-color: var(--warning-border); }
+    .badge-danger  { background: var(--danger-subtle); color: #fca5a5; border-color: var(--danger-border); }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-dim);
+      display: inline-block;
+    }
+    .status-dot.online {
+      background: var(--success);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
+    }
+    .status-dot.warning {
+      background: var(--warning);
+      box-shadow: 0 0 6px rgba(245, 158, 11, 0.6);
+    }
+    .status-dot.offline {
+      background: var(--danger);
+    }
+
+    /* Card Layouts */
     .card {
       background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: var(--radius-md);
-      padding: 20px;
+      border-radius: var(--radius-lg);
+      padding: 18px 22px;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     }
     .card-title {
-      font-size: 12px;
+      font-size: 14px;
       font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.6px;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .card-desc {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* App Shell Layout */
+    #hubApp {
+      display: none;
+      min-height: 100vh;
+    }
+
+    /* Sidebar Navigation */
+    .sidebar {
+      width: 250px;
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--sidebar-border);
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 100;
+    }
+    .sidebar-brand {
+      padding: 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--sidebar-border);
+    }
+    .brand-icon-box {
+      width: 36px;
+      height: 36px;
+      border-radius: 9px;
+      background: linear-gradient(135deg, #2563eb, #10b981);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      box-shadow: 0 0 16px rgba(37, 99, 235, 0.4);
+    }
+    .brand-text h1 {
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      line-height: 1.1;
+    }
+    .brand-text span {
+      font-size: 9px;
+      font-family: var(--font-mono);
+      color: var(--success);
+      font-weight: 600;
+      letter-spacing: 1px;
+    }
+
+    .user-profile-strip {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--sidebar-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: rgba(0, 0, 0, 0.15);
+    }
+    .user-info-text {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .user-info-text strong {
+      color: var(--text);
+    }
+
+    .sidebar-nav {
+      flex: 1;
+      padding: 14px 10px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 9px 14px;
+      color: var(--text-muted);
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      border-left: 3px solid transparent;
+      user-select: none;
+    }
+    .nav-item:hover {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text);
+    }
+    .nav-item.active {
+      background: var(--primary-subtle);
+      color: #60a5fa;
+      border-left-color: var(--primary);
+      font-weight: 600;
+    }
+    .nav-item .icon {
+      color: inherit;
+    }
+
+    .sidebar-footer {
+      padding: 16px;
+      border-top: 1px solid var(--sidebar-border);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.15);
+    }
+    .hub-status-pill {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10px;
+      font-family: var(--font-mono);
       color: var(--text-dim);
-      margin-bottom: 14px;
+    }
+
+    /* Main Content Area */
+    .main-wrap {
+      margin-left: 250px;
+      flex: 1;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .main-header {
+      padding: 16px 28px;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--sidebar-border);
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-family: var(--font-mono);
+      position: sticky;
+      top: 0;
+      z-index: 90;
+    }
+    .page-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .main-body {
+      padding: 24px 28px;
+      flex: 1;
     }
 
-    .grid {
+    /* Dashboard KPI Banner */
+    .kpi-grid {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    .kpi-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
       gap: 14px;
     }
-    @media (min-width: 680px) {
-      .grid { grid-template-columns: repeat(2, 1fr); gap: 16px; }
-    }
-    @media (min-width: 1080px) {
-      .grid { grid-template-columns: repeat(3, 1fr); }
-    }
-
-    .node-box {
-      background: var(--input-bg);
-      border: 1px solid var(--card-border);
+    .kpi-icon-wrap {
+      width: 40px;
+      height: 40px;
       border-radius: var(--radius-sm);
-      padding: 14px;
-    }
-    .node-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 10px;
-      border-bottom: 1px solid var(--card-border-subtle);
-      margin-bottom: 10px;
-    }
-    .slot-row {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 6px 0;
-      font-size: 13px;
-    }
-
-    /* Tactile Toggle Switch */
-    .toggle-btn {
-      position: relative;
-      width: 50px;
-      height: 28px;
-      background: #27272a;
-      border-radius: 14px;
-      border: none;
-      cursor: pointer;
-      transition: background 0.2s ease;
-      flex-shrink: 0;
-      outline: none;
-    }
-    .toggle-slider {
-      position: absolute;
-      top: 3px;
-      left: 3px;
-      width: 22px;
-      height: 22px;
-      background: #fafafa;
-      border-radius: 50%;
-      transition: transform 0.2s ease;
       display: flex;
       align-items: center;
       justify-content: center;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--primary);
     }
-    .toggle-btn.active {
-      background: var(--success);
+    .kpi-data .kpi-label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
     }
-    .toggle-btn.active .toggle-slider {
-      transform: translateX(22px);
-    }
-    .toggle-btn:disabled {
-      opacity: 0.4;
-      cursor: not-allowed;
+    .kpi-data .kpi-val {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.2;
     }
 
-    /* Sensor Pills */
-    .sensor-readings { display: flex; gap: 8px; }
-    .sensor-pill {
-      background: var(--card-elevated);
+    /* Unified Control Cards (Dashboard Tab) */
+    .controls-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .control-card {
+      background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: var(--radius-sm);
-      padding: 6px 10px;
+      border-radius: var(--radius-md);
+      padding: 16px;
+      transition: border-color 0.15s ease;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+    .control-card:hover {
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+    .control-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+    .control-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .control-sub {
+      font-size: 10px;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      margin-top: 2px;
+    }
+
+    /* Modern Toggle Switch */
+    .toggle-switch-wrap {
       display: flex;
       align-items: center;
-      gap: 6px;
+      justify-content: space-between;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
     }
-    .pill-label {
-      font-size: 9px;
+    .toggle-status-text {
+      font-size: 11px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+    }
+    .toggle-status-text.on { color: var(--success); }
+    .toggle-status-text.off { color: var(--text-dim); }
+
+    .switch-btn {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      background: #1e293b;
+      border-radius: 9999px;
+      border: 1px solid var(--card-border);
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
+      padding: 0;
+      outline: none;
+    }
+    .switch-btn.active {
+      background: var(--success);
+      border-color: var(--success);
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.4);
+    }
+    .switch-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .switch-thumb {
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s ease;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+    }
+    .switch-btn.active .switch-thumb {
+      transform: translateX(20px);
+    }
+
+    /* Ultrasonic Tank Graphic */
+    .tank-visual-wrap {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 8px;
+    }
+    .tank-pillar {
+      width: 32px;
+      height: 72px;
+      background: #090d17;
+      border: 1px solid var(--card-border);
+      border-radius: 6px;
+      position: relative;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .tank-fluid {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      background: linear-gradient(to top, #2563eb, #38bdf8);
+      transition: height 0.4s ease;
+      box-shadow: 0 0 10px rgba(56, 189, 248, 0.4);
+    }
+    .tank-metrics {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .tank-percent {
+      font-size: 20px;
+      font-weight: 800;
+      color: #38bdf8;
+      line-height: 1;
+    }
+    .tank-dist {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+    }
+
+    /* Climate Graphic */
+    .climate-visual-wrap {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-top: 8px;
+    }
+    .climate-box {
+      flex: 1;
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.03);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--card-border);
+    }
+    .climate-val {
+      font-size: 18px;
       font-weight: 700;
+      line-height: 1.1;
+    }
+    .climate-val.temp { color: #f97316; }
+    .climate-val.hum { color: #38bdf8; }
+    .climate-lbl {
+      font-size: 10px;
       color: var(--text-dim);
       text-transform: uppercase;
       font-family: var(--font-mono);
+      margin-top: 2px;
     }
-    .pill-val {
-      font-family: var(--font-mono);
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text);
-    }
-    .pill-unit { font-size: 10px; color: var(--text-dim); }
 
-    /* Tank Bar */
-    .tank-header { display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 6px; }
-    .tank-bar-container {
-      width: 100%;
-      height: 8px;
-      background: var(--card-elevated);
+    /* Hardware Node Card (Nodes Tab) */
+    .node-card {
+      background: var(--card-bg);
       border: 1px solid var(--card-border);
-      border-radius: 4px;
-      overflow: hidden;
+      border-radius: var(--radius-lg);
+      padding: 20px;
+      margin-bottom: 18px;
+      transition: border-color 0.15s ease;
     }
-    .tank-bar-fill {
-      height: 100%;
-      background: var(--text);
-      border-radius: 4px;
-      transition: width 0.4s ease;
+    .node-card:hover {
+      border-color: rgba(255, 255, 255, 0.15);
     }
-
-    /* Alert Banner */
-    .alert-banner {
-      background: var(--warning-subtle);
-      border: 1px solid var(--warning-border);
-      color: #fde68a;
-      padding: 12px 16px;
-      border-radius: var(--radius-sm);
-      margin-bottom: 16px;
+    .node-card-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      font-size: 12px;
+      flex-wrap: wrap;
       gap: 12px;
+      margin-bottom: 14px;
     }
-
-    /* Tables & Inputs */
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--card-border); }
-    th { color: var(--text-dim); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-family: var(--font-mono); }
-    
-    input, select {
-      background: var(--input-bg);
-      border: 1px solid var(--card-border);
-      color: var(--text);
-      padding: 8px 12px;
-      border-radius: var(--radius-sm);
-      width: 100%;
-      font-size: 12px;
-      font-family: inherit;
-      margin: 4px 0 12px 0;
-      outline: none;
-      transition: border-color 0.15s;
-    }
-    input:focus, select:focus {
-      border-color: var(--card-border-focus);
-    }
-    label { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.3px; }
-    .checkbox-line { display: flex; align-items: center; gap: 8px; margin: 8px 0 12px 0; }
-    input[type="checkbox"] {
-      appearance: none;
-      -webkit-appearance: none;
-      width: 18px;
-      height: 18px;
-      background: var(--card-elevated);
-      border: 1px solid var(--card-border);
-      border-radius: 4px;
-      cursor: pointer;
-      display: inline-grid;
-      place-content: center;
-      transition: background 0.15s, border-color 0.15s;
-      vertical-align: middle;
-      flex-shrink: 0;
-      margin: 0;
-    }
-    input[type="checkbox"]:hover {
-      border-color: #52525b;
-    }
-    input[type="checkbox"]:checked {
-      background: var(--success);
-      border-color: var(--success);
-    }
-    input[type="checkbox"]:checked::before {
-      content: "";
-      width: 9px;
-      height: 5px;
-      border-left: 2px solid #000;
-      border-bottom: 2px solid #000;
-      transform: rotate(-45deg) translate(1px, -1px);
-    }
-    .checkbox-line { display: flex; align-items: center; gap: 10px; margin: 8px 0 12px 0; font-size: 13px; font-weight: 500; cursor: pointer; }
-
-    /* Modal */
-    .modal-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0, 0, 0, 0.75);
-      display: none;
+    .node-meta-badges {
+      display: flex;
       align-items: center;
-      justify-content: center;
-      z-index: 100;
-      padding: 16px;
+      gap: 8px;
+      flex-wrap: wrap;
     }
-    .modal {
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      border-radius: var(--radius-md);
-      width: 100%;
-      max-width: 420px;
-      padding: 20px;
+    .node-actions-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
     }
-    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
-    /* Hardware Supervisor Login Screen */
-    .login-container {
-      min-height: 80vh;
+    .node-hardware-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 10px;
+      padding: 12px 14px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      border-radius: var(--radius-md);
+      margin-bottom: 14px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+    }
+    .hw-prop {
+      display: flex;
+      flex-direction: column;
+    }
+    .hw-lbl {
+      color: var(--text-dim);
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .hw-val {
+      color: var(--text);
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    /* Table Styles */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    th {
+      text-align: left;
+      padding: 10px 14px;
+      color: var(--text-dim);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--card-border);
+      font-weight: 600;
+    }
+    td {
+      padding: 12px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text);
+    }
+    tr:last-child td { border-bottom: none; }
+
+    /* Modals */
+    .modal-backdrop {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 1000;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 16px;
     }
-    .login-card {
-      background: var(--card-bg);
+    .modal-card {
+      background: var(--card-elevated);
       border: 1px solid var(--card-border);
-      border-radius: var(--radius-md);
+      border-radius: var(--radius-lg);
       width: 100%;
-      max-width: 400px;
-      padding: 24px;
+      max-width: 540px;
+      padding: 22px 24px;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+    .modal-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 16px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .modal-title {
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 20px;
+      padding-top: 14px;
+      border-top: 1px solid var(--card-border);
     }
 
     /* Toast */
     #toast {
       position: fixed;
-      bottom: 20px;
-      right: 20px;
+      bottom: 24px;
+      right: 24px;
+      padding: 10px 18px;
       background: var(--card-elevated);
       border: 1px solid var(--card-border);
-      color: var(--text);
-      padding: 10px 16px;
       border-radius: var(--radius-sm);
+      color: var(--text);
       font-size: 12px;
-      font-weight: 600;
-      transform: translateY(100px);
-      opacity: 0;
-      transition: 0.25s;
-      z-index: 200;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+      z-index: 2000;
+      display: none;
+      animation: fadeIn 0.2s ease;
     }
-    #toast.show { transform: translateY(0); opacity: 1; }
-    #toast.success { border-color: var(--success-border); color: #6ee7b7; }
-    #toast.error { border-color: var(--danger-border); color: #fca5a5; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
+    /* Admin role guards */
     .admin-only { display: none !important; }
     body.role-admin .admin-only { display: inline-flex !important; }
     body.role-admin div.admin-only, body.role-admin .card.admin-only { display: block !important; }
+    body.role-admin .nav-item.admin-only { display: flex !important; }
+
+    /* Login View */
+    .login-wrapper {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: radial-gradient(circle at 50% 20%, #1e293b 0%, #0b0f19 80%);
+    }
+    .login-card {
+      width: 100%;
+      max-width: 380px;
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-lg);
+      padding: 28px 24px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    }
   </style>
 </head>
 <body>
 
+  <!-- ========================================================================= -->
   <!-- 1. LOGIN SCREEN -->
-  <div id="loginView" class="login-container">
+  <!-- ========================================================================= -->
+  <div id="loginView" class="login-wrapper">
     <div class="login-card">
-      <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
-        <div class="brand-badge">
-          <svg class="icon" style="width:18px; height:18px;" viewBox="0 0 24 24">
-            <rect x="4" y="4" width="16" height="16" rx="2"/>
-            <rect x="9" y="9" width="6" height="6"/>
-            <line x1="9" y1="1" x2="9" y2="4"/>
-            <line x1="15" y1="1" x2="15" y2="4"/>
-          </svg>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:18px;">
+        <div class="brand-icon-box">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
         </div>
         <div>
-          <div style="font-size:15px; font-weight:700;">Mini-HA Supervisor</div>
-          <div style="font-size:10px; font-weight:600; text-transform:uppercase; color:var(--text-dim); font-family:var(--font-mono);">Hardware Console</div>
+          <div style="font-size:16px; font-weight:800; letter-spacing:0.5px;">MINI-HA</div>
+          <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono); text-transform:uppercase;">Hardware Supervisor</div>
         </div>
       </div>
 
       <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:18px;">
-        Sign in to manage RS-422 bus nodes, wireless star-mesh slaves, and cloud bridge routing.
+        Sign in to manage RS-422 star nodes, wireless child slaves, and automation telemetry.
       </div>
 
       <form onsubmit="handleLogin(event); return false;">
-        <label>Username</label>
-        <input type="text" id="loginUser" required autocomplete="username" autofocus placeholder="admin">
-
-        <label>Password</label>
-        <div style="position:relative; display:flex; align-items:center;">
-          <input type="password" id="loginPass" required autocomplete="current-password" placeholder="Password">
-          <button type="button" onclick="togglePassVisibilityLocal()" style="position:absolute; right:10px; top:8px; background:none; border:none; color:var(--text-dim); cursor:pointer;">
-            <svg class="icon" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
-          </button>
+        <div style="margin-bottom:12px;">
+          <label>Username</label>
+          <input type="text" id="loginUser" required autocomplete="username" autofocus placeholder="admin">
         </div>
 
-        <button type="submit" class="btn" style="width:100%; margin-top:6px;">Sign In</button>
+        <div style="margin-bottom:16px;">
+          <label>Password</label>
+          <div style="position:relative; display:flex; align-items:center;">
+            <input type="password" id="loginPass" required autocomplete="current-password" placeholder="Password">
+            <button type="button" onclick="togglePassVisibilityLocal()" style="position:absolute; right:10px; background:none; border:none; color:var(--text-dim); cursor:pointer;">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn" style="width:100%; padding:9px;">Sign In</button>
       </form>
 
-      <div style="margin-top:18px; padding-top:12px; border-top:1px solid var(--card-border-subtle); display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">
+      <div style="margin-top:18px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.05); display:flex; justify-content:space-between; font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">
         <span>miniha.local</span>
         <span>v0.1.0-beta</span>
       </div>
     </div>
   </div>
 
-  <!-- 2. MAIN HUB INTERFACE -->
-  <div id="hubView" style="display:none;">
-    <!-- Topbar Navigation -->
-    <div class="topbar">
-      <div class="brand" style="display:flex; align-items:center;">
-        <div class="brand-badge">
-          <svg class="icon" style="width:16px; height:16px;" viewBox="0 0 24 24">
-            <rect x="4" y="4" width="16" height="16" rx="2"/>
-            <rect x="9" y="9" width="6" height="6"/>
-          </svg>
+  <!-- ========================================================================= -->
+  <!-- 2. MAIN APPLICATION SHELL -->
+  <!-- ========================================================================= -->
+  <div id="hubApp">
+    
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-icon-box">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
         </div>
-        <div class="brand-title-wrap">
-          <span class="brand-title">MINI-HA</span>
-          <span class="brand-subtitle">LOCAL HUB</span>
-        </div>
-        <div class="user-identity" style="display:flex; align-items:center; gap:6px; margin-left:14px; padding-left:14px; border-left:1px solid var(--card-border);">
-          <svg class="icon" style="width:13px; height:13px; color:var(--text-dim);" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-          <span style="font-size:11px; color:var(--text-dim);">User:</span>
-          <span class="badge" id="roleBadge" style="margin:0;">ADMIN</span>
+        <div class="brand-text">
+          <h1>MINI-HA</h1>
+          <span>LOCAL HUB</span>
         </div>
       </div>
-      <div class="nav-actions">
-        <button class="btn btn-secondary btn-sm" onclick="showTab('nodes')">Overview</button>
-        <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('rules')">Rules</button>
-        <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('schedules')">Schedules</button>
-        <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('users')">Users</button>
-        <button class="btn btn-secondary btn-sm admin-only" onclick="showTab('settings')">Settings</button>
-        <button class="btn btn-secondary btn-sm" onclick="showTab('account')">Account</button>
-        <button class="btn btn-secondary btn-sm" onclick="handleLogout()">Sign Out</button>
-      </div>
-    </div>
 
-    <div class="app-container">
-      <!-- Default Password Warning Banner -->
-      <div id="defaultPassBanner" class="alert-banner" style="display:none;">
+      <div class="user-profile-strip">
+        <div class="user-info-text">
+          <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <strong id="sidebarUsername">admin</strong>
+        </div>
+        <span class="badge badge-success" id="sidebarRoleBadge">ADMIN</span>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-item active" id="nav-dashboard" onclick="switchNavTab('dashboard')">
+          <svg class="icon" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/></svg>
+          <span>Dashboard</span>
+        </div>
+
+        <div class="nav-item" id="nav-nodes" onclick="switchNavTab('nodes')">
+          <svg class="icon" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+          <span>Hardware Nodes</span>
+        </div>
+
+        <div class="nav-item admin-only" id="nav-rules" onclick="switchNavTab('rules')">
+          <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <span>Automations</span>
+        </div>
+
+        <div class="nav-item admin-only" id="nav-schedules" onclick="switchNavTab('schedules')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M12 14v4l2 2"/></svg>
+          <span>Schedules</span>
+        </div>
+
+        <div class="nav-item admin-only" id="nav-users" onclick="switchNavTab('users')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Users</span>
+        </div>
+
+        <div class="nav-item admin-only" id="nav-settings" onclick="switchNavTab('settings')">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="4" x2="20" y1="21" y2="21"/><line x1="4" x2="20" y1="3" y2="3"/><line x1="12" x2="20" y1="12" y2="12"/><line x1="4" x2="8" y1="12" y2="12"/><circle cx="10" cy="12" r="2"/></svg>
+          <span>Settings</span>
+        </div>
+
+        <div class="nav-item" id="nav-account" onclick="switchNavTab('account')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <span>Account</span>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="hub-status-pill">
+          <span style="display:flex; align-items:center; gap:6px;">
+            <span class="status-dot online"></span>
+            <span>RS-422 STAR BUS</span>
+          </span>
+          <span id="sidebarUptime">0h</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="handleLogout()" style="width:100%; justify-content:center;">
+          <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
+          <span>Sign Out</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- RIGHT MAIN WRAPPER -->
+    <div class="main-wrap">
+      
+      <!-- Top Header Strip -->
+      <header class="main-header">
         <div>
-          <strong>Security Notice:</strong> Using factory default credentials (<code>admin / admin123</code>). Change password immediately.
+          <h2 class="page-title" id="pageTitle">Home Dashboard</h2>
+          <div style="font-size:11px; color:var(--text-dim);" id="pageSub">Unified controls, sensors & mesh telemetry</div>
         </div>
-        <button class="btn btn-sm" onclick="openPassModal()">Change Password</button>
-      </div>
-
-      <!-- TAB 1: OVERVIEW & ENTITIES -->
-      <div id="tabNodes">
-        <div class="card">
-          <div class="card-title">Live Hardware Nodes & Actuators</div>
-          <div id="entitiesGrid" class="grid">
-            <div style="color:var(--text-muted);">Loading mesh entities...</div>
-          </div>
+        <div style="display:flex; align-items:center; gap:12px;">
+          <span class="badge" id="hubRtcClock" style="font-family:var(--font-mono); font-size:11px;">--:--:--</span>
+          <span class="badge badge-primary">192.168.4.1</span>
         </div>
+      </header>
 
-        <div class="card admin-only" id="discoveryCard">
-          <div class="card-title">Discovered Unbound Slaves</div>
-          <div id="pendingTable">
-            <div style="color:var(--text-muted);">No unconfigured devices detected on bus.</div>
-          </div>
-        </div>
-      </div>
+      <!-- Main Body Views -->
+      <main class="main-body">
 
-      <!-- TAB: AUTOMATION RULES & NOTIFICATIONS (ADMIN ONLY) -->
-      <div id="tabRules" style="display:none;">
-        <div class="card">
-          <div class="card-title" style="flex-wrap:wrap; gap:10px;">
-            <div>
-              <div style="font-size:15px; font-weight:700;">Automation Rules Engine</div>
-              <div style="font-size:11px; color:var(--text-muted); font-weight:normal; margin-top:3px;">
-                Event-driven logic evaluated locally by Master. When sensor criteria are met, Master triggers target actuators & push alerts.
-              </div>
-            </div>
-            <div style="display:flex; gap:8px;">
-              <button class="btn btn-sm" onclick="openAddRuleModal()">+ Add Rule</button>
-              <button class="btn btn-secondary btn-sm" onclick="clearAllRules()">Clear All Rules</button>
-            </div>
-          </div>
-          <div id="rulesList"><div style="color:var(--text-muted);">Loading rules...</div></div>
-        </div>
-      </div>
-
-      <!-- TAB: DOWNTIME-SAFE STANDALONE SCHEDULES (ADMIN ONLY) -->
-      <div id="tabSchedules" style="display:none;">
-        <div class="card">
-          <div class="card-title" style="flex-wrap:wrap; gap:10px;">
-            <div>
-              <div style="font-size:15px; font-weight:700;">Downtime-Safe Standalone Schedules</div>
-              <div style="font-size:11px; color:var(--text-muted); font-weight:normal; margin-top:3px;">
-                Schedules run directly inside each slave microcontroller's on-chip EEPROM. If the Master hub is powered off or disconnected, all scheduled lights, pumps, and valves continue operating automatically.
-              </div>
-            </div>
+        <!-- Default Password Alert Banner -->
+        <div id="defaultPassBanner" class="card" style="display:none; background:var(--warning-subtle); border-color:var(--warning-border); padding:12px 18px; margin-bottom:18px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
             <div style="display:flex; align-items:center; gap:8px;">
-              <label style="margin:0; font-size:12px; color:var(--text-muted);">Target Node:</label>
-              <select id="schedTabNodeSelect" onchange="onSchedNodeChange()" style="margin:0; padding:6px 10px; width:auto; font-size:12px;"></select>
+              <svg class="icon" style="color:var(--warning);" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+              <span><strong>Security Notice:</strong> Using default password (<code>admin / admin123</code>). Change password immediately.</span>
             </div>
-          </div>
-
-          <div id="schedTabList" style="margin-top:14px; display:flex; flex-direction:column; gap:10px;"></div>
-
-          <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; border-top:1px solid var(--card-border-subtle); padding-top:14px;">
-            <button class="btn btn-secondary btn-sm" onclick="addScheduleToActiveNode()">+ Add Daily Schedule</button>
-            <button class="btn btn-sm" onclick="saveActiveNodeSchedules()">Save &amp; Push to Slave EEPROM</button>
+            <button class="btn btn-sm btn-secondary" onclick="openPassModal()">Change Password</button>
           </div>
         </div>
-      </div>
 
-      <!-- TAB 2: USER MANAGEMENT (ADMIN ONLY) -->
-      <div id="tabUsers" style="display:none;">
-        <div class="card">
-          <div class="card-title">
-            <span>User Accounts</span>
-            <button class="btn btn-sm" onclick="openAddUserModal()">+ Add User</button>
-          </div>
-          <div id="usersTable">Loading users...</div>
-        </div>
-      </div>
-
-      <!-- TAB 3: NETWORK & CLOUD SETTINGS (ADMIN ONLY) -->
-      <div id="tabSettings" style="display:none;">
-        <div class="card">
-          <div class="card-title">Home Wi-Fi (Station Connection)</div>
-          <label>Wi-Fi Network Name (SSID)</label>
-          <input type="text" id="cfgStaSSID" placeholder="e.g. MyHomeNetwork">
-          <label>Wi-Fi Password</label>
-          <input type="password" id="cfgStaPass" placeholder="Leave blank to keep existing">
-        </div>
-
-        <div class="card">
-          <div class="card-title">Cloud MQTT Bridge (EMQX / Custom Broker)</div>
-          <div class="checkbox-line">
-            <input type="checkbox" id="cfgMqttEn">
-            <label for="cfgMqttEn" style="cursor:pointer; color:var(--text);">Enable Cloud MQTT Integration (for PWA / Remote Access)</label>
-          </div>
-          <div style="font-size:12px; color:var(--text-muted); line-height:1.4; margin-bottom:12px;">
-            Connects to your free EMQX Serverless broker (Port 8883 TLS). Allows PWA remote access with automatic LAN fallback.
-          </div>
-          <label>Broker Host (TLS)</label>
-          <input type="text" id="cfgMqttBroker" placeholder="e.g. xxxxxx.emqx.cloud">
-          <div style="display:flex; gap:10px;">
-            <div style="flex:1;">
-              <label>Port</label>
-              <input type="number" id="cfgMqttPort" placeholder="8883" value="8883">
+        <!-- ========================================================================= -->
+        <!-- TAB 1: DASHBOARD (UNIFIED CONTROLS & SENSOR TELEMETRY) -->
+        <!-- ========================================================================= -->
+        <section id="viewDashboard">
+          <!-- KPI Summary Strip -->
+          <div class="kpi-grid">
+            <div class="kpi-card">
+              <div class="kpi-icon-wrap" style="color:#60a5fa;">
+                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/></svg>
+              </div>
+              <div class="kpi-data">
+                <div class="kpi-label">Nodes Connected</div>
+                <div class="kpi-val" id="kpiNodesOnline">0 / 0 Online</div>
+              </div>
             </div>
-            <div style="flex:2;">
-              <label>Home ID</label>
-              <input type="text" id="cfgMqttHomeId" placeholder="e.g. home_1">
+
+            <div class="kpi-card">
+              <div class="kpi-icon-wrap" style="color:#10b981;">
+                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
+              </div>
+              <div class="kpi-data">
+                <div class="kpi-label">Active Switches</div>
+                <div class="kpi-val" id="kpiActiveRelays">0 ON</div>
+              </div>
             </div>
-          </div>
-          <label>Broker Username</label>
-          <input type="text" id="cfgMqttUser" placeholder="Client Username">
-          <label>Broker Password</label>
-          <input type="password" id="cfgMqttPass" placeholder="Leave empty to keep existing password">
-        </div>
 
-        <button class="btn" onclick="saveSystemSettings()">Save Settings & Restart</button>
-      </div>
-
-
-      <!-- TAB 4: ACCOUNT PROFILE & HARDWARE DIAGNOSTICS -->
-      <div id="tabAccount" style="display:none;">
-        <div class="card">
-          <div class="card-title">
-            <span>User Identity & Security</span>
-            <span class="badge" id="accountRoleBadge" style="background:var(--success); color:#000;">ADMIN</span>
-          </div>
-          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px;">
-            <div class="node-box">
-              <label>Current Username</label>
-              <div style="font-size:15px; font-weight:700; margin-top:4px;" id="accountUserDisplay">admin</div>
+            <div class="kpi-card">
+              <div class="kpi-icon-wrap" style="color:#38bdf8;">
+                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
+              </div>
+              <div class="kpi-data">
+                <div class="kpi-label">Water Tank</div>
+                <div class="kpi-val" id="kpiTankLevel">-- %</div>
+              </div>
             </div>
-            <div class="node-box">
-              <label>Authorization & Scope</label>
-              <div style="font-size:13px; font-weight:600; margin-top:4px; color:var(--success);">Permanent Session (No Expiry)</div>
+
+            <div class="kpi-card">
+              <div class="kpi-icon-wrap" style="color:#f59e0b;">
+                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
+              </div>
+              <div class="kpi-data">
+                <div class="kpi-label">Environment</div>
+                <div class="kpi-val" id="kpiClimate">-- &deg;C</div>
+              </div>
             </div>
           </div>
-          <div class="node-box">
-            <strong style="display:block; margin-bottom:10px; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:var(--text-dim);">Update Password</strong>
-            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:12px;">
+
+          <!-- Live Actuators & Switches Section -->
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">
+                  <svg class="icon" style="color:var(--primary);" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+                  <span>Actuators & Relays</span>
+                </h3>
+                <p class="card-desc">Instant sub-millisecond local switching over isolated RS-422 bus</p>
+              </div>
+            </div>
+            <div id="dashboardRelaysGrid" class="controls-grid">
+              <div style="color:var(--text-dim); padding:10px 0;">No actuators configured. Add relays in Hardware Nodes tab.</div>
+            </div>
+          </div>
+
+          <!-- Live Sensors & Gauges Section -->
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">
+                  <svg class="icon" style="color:var(--success);" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
+                  <span>Sensors & Telemetry Feeds</span>
+                </h3>
+                <p class="card-desc">Real-time water levels, temperature dials, and hardware bus feeds</p>
+              </div>
+            </div>
+            <div id="dashboardSensorsGrid" class="controls-grid">
+              <div style="color:var(--text-dim); padding:10px 0;">No sensors active.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 2: HARDWARE NODES & PROVISIONING -->
+        <!-- ========================================================================= -->
+        <section id="viewNodes" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Configured Slave Microcontrollers</h3>
+                <p class="card-desc">Isolated RS-422 hardware star ports & downstream Wi-Fi mesh nodes</p>
+              </div>
+            </div>
+            <div id="nodesCardsContainer">
+              <div style="color:var(--text-dim);">Loading nodes...</div>
+            </div>
+          </div>
+
+          <!-- Discovered Unbound Slaves Card -->
+          <div class="card admin-only" id="discoveryCard">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">
+                  <span class="status-dot warning"></span>
+                  <span>Discovered Unbound Slaves (Live Bus Listener)</span>
+                </h3>
+                <p class="card-desc">Microcontrollers announcing factory ANN packets on RS-422 serial or Wi-Fi mesh</p>
+              </div>
+              <button class="btn btn-secondary btn-sm" onclick="fetchPendingNodes()">Refresh Bus</button>
+            </div>
+            <div id="pendingTable">
+              <div style="color:var(--text-dim); font-size:12px; padding:10px 0;">No unprovisioned devices detected on bus.</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 3: AUTOMATIONS (RULES ENGINE) -->
+        <!-- ========================================================================= -->
+        <section id="viewRules" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Automation Rules Engine</h3>
+                <p class="card-desc">Event-driven logic evaluated locally by Master supervisor. Triggers target actuators upon threshold breach.</p>
+              </div>
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn-sm" onclick="openAddRuleModal()">+ Add Rule</button>
+                <button class="btn btn-secondary btn-sm" onclick="clearAllRules()">Clear All Rules</button>
+              </div>
+            </div>
+            <div id="rulesList"><div style="color:var(--text-dim);">Loading automation rules...</div></div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 4: SCHEDULES (EEPROM STANDALONE) -->
+        <!-- ========================================================================= -->
+        <section id="viewSchedules" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Downtime-Safe Standalone Schedules</h3>
+                <p class="card-desc">Schedules run directly inside slave microcontroller on-chip EEPROM. Operates autonomously even if Master hub is disconnected.</p>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <label style="margin:0; font-size:11px;">Target Node:</label>
+                <select id="schedNodeSelect" onchange="loadNodeSchedules(this.value)" style="width:160px; padding:4px 8px; font-size:11px;"></select>
+              </div>
+            </div>
+
+            <div id="schedulesContainer" style="margin-bottom:16px;">
+              <div style="color:var(--text-dim);">Select a node to inspect EEPROM standalone schedules.</div>
+            </div>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; padding-top:14px; border-top:1px solid rgba(255,255,255,0.06);">
+              <button class="btn btn-secondary btn-sm" onclick="addScheduleRow()">+ Add Daily Schedule</button>
+              <button class="btn btn-sm" onclick="saveActiveNodeSchedules()">Save &amp; Push to Slave EEPROM</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 5: USERS & RBAC -->
+        <!-- ========================================================================= -->
+        <section id="viewUsers" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">User Accounts & Access Control (RBAC)</h3>
+                <p class="card-desc">Manage accounts, member switches, and guest dashboards with SHA-256 tokens</p>
+              </div>
+              <button class="btn btn-sm" onclick="openAddUserModal()">+ Add User</button>
+            </div>
+            <div id="usersList"><div style="color:var(--text-dim);">Loading users...</div></div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 6: SETTINGS (WIFI STA & CLOUD BROKER) -->
+        <!-- ========================================================================= -->
+        <section id="viewSettings" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Home Wi-Fi Network (Client STA Mode)</h3>
+                <p class="card-desc">Connect Master Hub to your home router for local LAN web access</p>
+              </div>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px;">
+              <div>
+                <label>Home Wi-Fi SSID</label>
+                <input type="text" id="cfgStaSSID" placeholder="Home Wi-Fi Name">
+              </div>
+              <div>
+                <label>Wi-Fi Password</label>
+                <input type="password" id="cfgStaPass" placeholder="Leave unchanged or enter new">
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">Cloud MQTT Bridge</h3>
+                <p class="card-desc">Optional TLS MQTT bridge for mobile app remote access beyond local LAN</p>
+              </div>
+              <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+                <input type="checkbox" id="cfgMqttEn" style="width:auto;">
+                <span style="font-size:11px; font-weight:600;">Enable Cloud Bridge</span>
+              </label>
+            </div>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:14px;">
+              <div>
+                <label>MQTT Broker Host</label>
+                <input type="text" id="cfgMqttBroker" placeholder="e.g. broker.emqx.io">
+              </div>
+              <div>
+                <label>Broker Port</label>
+                <input type="number" id="cfgMqttPort" value="8883">
+              </div>
+              <div>
+                <label>Home Mesh ID</label>
+                <input type="text" id="cfgMqttHomeId" placeholder="home_1">
+              </div>
+              <div>
+                <label>Broker Username</label>
+                <input type="text" id="cfgMqttUser" placeholder="Optional">
+              </div>
+              <div>
+                <label>Broker Password</label>
+                <input type="password" id="cfgMqttPass" placeholder="Optional">
+              </div>
+            </div>
+            <div style="margin-top:18px; text-align:right;">
+              <button class="btn" onclick="saveSystemSettings()">Save System Settings</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB 7: ACCOUNT & DIAGNOSTICS -->
+        <!-- ========================================================================= -->
+        <section id="viewAccount" style="display:none;">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">User Profile & Password</h3>
+                <p class="card-desc">Signed-in account credentials & roles</p>
+              </div>
+              <span class="badge badge-success" id="accountRoleBadge">ADMIN</span>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:12px; max-width:320px;">
+              <div>
+                <label>Account Username</label>
+                <div style="font-size:14px; font-weight:700;" id="accountUserDisplay">admin</div>
+              </div>
               <div>
                 <label>New Password</label>
                 <input type="password" id="accountNewPass" placeholder="Enter new password">
               </div>
+              <button class="btn btn-sm" onclick="submitAccountPassChange()">Update Password</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
               <div>
-                <label>Confirm Password</label>
-                <input type="password" id="accountConfirmPass" placeholder="Confirm new password">
+                <h3 class="card-title">Master Supervisor Hardware Diagnostics</h3>
+                <p class="card-desc">System health, Flash partition layout, and memory status</p>
               </div>
             </div>
-            <button class="btn btn-sm" onclick="submitAccountPassChange()">Update Password</button>
+            <div class="node-hardware-strip" style="grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));">
+              <div class="hw-prop"><span class="hw-lbl">Hardware Chip</span><span class="hw-val" id="diagChip">ESP32 Supervisor</span></div>
+              <div class="hw-prop"><span class="hw-lbl">RAM Usage</span><span class="hw-val" id="diagHeap">-- KB Free</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Flash Storage</span><span class="hw-val" id="diagLittleFS">-- KB (LittleFS)</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Uptime</span><span class="hw-val" id="diagUptime">-- s</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Firmware Spec</span><span class="hw-val" id="diagFirmware">v3.2.0 Decoupled</span></div>
+            </div>
           </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <!-- ========================================================================= -->
+  <!-- MODALS -->
+  <!-- ========================================================================= -->
+
+  <!-- BIND MODAL -->
+  <div id="bindModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h4 class="modal-title">Provision &amp; Bind Unbound Slave</h4>
+        <button class="btn btn-secondary btn-sm" onclick="closeBindModal()">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px;">
+        Assign a persistent Node ID to hardware MAC: <code id="bindMacDisplay" style="color:var(--text); font-family:var(--font-mono);"></code>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div>
+          <label>Assigned Node ID</label>
+          <input type="text" id="bindNodeId" placeholder="e.g. N01 or N01-esp32c3">
+        </div>
+        <div>
+          <label>Friendly Name</label>
+          <input type="text" id="bindNodeName" placeholder="e.g. Living Room Node">
         </div>
 
-        <div class="card">
-          <div class="card-title">
-            <span>Master Hub Hardware & Star Ports Diagnostics</span>
-            <span style="font-size:11px; color:var(--text-dim); font-family:monospace;" id="diagUptime">Uptime: --</span>
-          </div>
-          <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px;">
-            <div class="node-box">
-              <label>Processor</label>
-              <div style="font-size:13px; font-weight:700; margin-top:4px;" id="diagCpu">ESP32 Dual-Core @ 240MHz</div>
+        <div style="padding:12px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm); margin-top:4px;">
+          <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+            <input type="checkbox" id="bindApEnable" onchange="toggleBindApFields()" style="width:auto;">
+            <span style="font-size:11px; font-weight:600;">Enable Downstream SoftAP Bridge</span>
+          </label>
+          <div id="bindApFields" style="display:none; margin-top:10px; display:flex; flex-direction:column; gap:8px;">
+            <div>
+              <label>Downstream SSID</label>
+              <input type="text" id="bindApSsid" placeholder="e.g. MiniHA_N01">
             </div>
-            <div class="node-box">
-              <label>RAM (Free Heap)</label>
-              <div style="font-size:13px; font-weight:700; margin-top:4px; color:var(--success);" id="diagHeap">--</div>
+            <div>
+              <label>Downstream Password</label>
+              <input type="password" id="bindApPass" placeholder="Min 8 chars (or leave empty for open)">
             </div>
-            <div class="node-box">
-              <label>Storage (LittleFS)</label>
-              <div style="font-size:13px; font-weight:700; margin-top:4px;" id="diagStorage">--</div>
-            </div>
-            <div class="node-box">
-              <label>Star Port 1</label>
-              <div style="font-size:12px; font-weight:600; margin-top:4px; color:var(--text-dim);" id="diagPort1">D4/D5 (UART1 Full-Duplex)</div>
-            </div>
-            <div class="node-box">
-              <label>Star Port 2</label>
-              <div style="font-size:12px; font-weight:600; margin-top:4px; color:var(--text-dim);" id="diagPort2">D16/D17 (UART2 Full-Duplex)</div>
-            </div>
-            <div class="node-box">
-              <label>Local AP Gateway</label>
-              <div style="font-size:13px; font-weight:700; margin-top:4px; font-family:monospace;">192.168.4.1</div>
-            </div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:4px; font-size:11px; cursor:pointer;">
+              <input type="checkbox" id="bindApHidden" style="width:auto;">
+              <span>Hide Network (Hidden SSID)</span>
+            </label>
           </div>
         </div>
       </div>
-    </div>
-  </div>
 
-  <!-- MODAL: CHANGE PASSWORD -->
-  <div id="passModal" class="modal-overlay">
-    <div class="modal">
-      <div style="font-size:14px; font-weight:700; margin-bottom:12px;" id="passModalTitle">Change Password</div>
-      <label>New Password</label>
-      <input type="password" id="modalNewPass" required>
-      <label>Confirm Password</label>
-      <input type="password" id="modalConfirmPass" required>
       <div class="modal-actions">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('passModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="submitPassChange()">Save</button>
+        <button class="btn btn-secondary" onclick="closeBindModal()">Cancel</button>
+        <button class="btn" onclick="submitBindNode()">Bind Device</button>
       </div>
     </div>
   </div>
 
-  <!-- MODAL: ADD USER -->
-  <div id="addUserModal" class="modal-overlay">
-    <div class="modal">
-      <div style="font-size:14px; font-weight:700; margin-bottom:12px;">Add User Account</div>
-      <label>Username</label>
-      <input type="text" id="addUserName" required>
-      <label>Password</label>
-      <input type="password" id="addUserPass" required>
-      <label>Role</label>
-      <select id="addUserRole">
-        <option value="guest">Guest (View only)</option>
-        <option value="member">Member (Controls allowed)</option>
-        <option value="admin">Admin (Full settings & users)</option>
-      </select>
-      <div class="modal-actions">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('addUserModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="submitAddUser()">Create User</button>
+  <!-- CONFIGURE WI-FI AP BRIDGE MODAL -->
+  <div id="apModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h4 class="modal-title" id="apModalTitle">Configure Wi-Fi AP Bridge</h4>
+        <button class="btn btn-secondary btn-sm" onclick="closeApModal()">&times;</button>
       </div>
-    </div>
-  </div>
+      <div style="font-size:12px; color:var(--text-muted); margin-bottom:14px; line-height:1.4;">
+        When enabled, this wired slave broadcasts a local Wi-Fi Access Point so nearby wireless slaves can route transparently over RS-422.
+      </div>
 
-  <!-- MODAL: BIND NODE -->
-  <div id="bindModal" class="modal-overlay">
-    <div class="modal" style="max-width:480px; width:95%;">
-      <div style="font-size:14px; font-weight:700; margin-bottom:12px;">Bind Mesh Slave</div>
-      <div style="font-size:11px; color:var(--text-muted); margin-bottom:10px; font-family:var(--font-mono);" id="bindMacLabel">MAC: --</div>
-      <label>Assign Node ID</label>
-      <input type="text" id="bindNodeId" value="N01" required>
-      <label>Friendly Name</label>
-      <input type="text" id="bindNodeName" placeholder="e.g. Living Room, Tank" required>
-
-      <div style="margin:12px 0 8px; padding:10px 12px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
-        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:0; font-weight:600; font-size:12px;">
-          <input type="checkbox" id="bindApEn" onchange="toggleBindApFields()" style="width:auto; margin:0;">
-          <span>Provision as Wi-Fi AP Bridge (Allows wireless slaves to connect)</span>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+          <input type="checkbox" id="apModalEnable" onchange="toggleApModalFields()" style="width:auto;">
+          <span style="font-size:12px; font-weight:600;">ENABLE DOWNSTREAM SOFTAP BRIDGE</span>
         </label>
-        <div id="bindApFields" style="display:none; margin-top:8px;">
-          <label style="font-size:11px; margin:4px 0 2px;">Downstream Wi-Fi SSID</label>
-          <input type="text" id="bindApSsid" placeholder="e.g. MiniHA-Repeater-01" style="margin:0 0 6px; padding:6px;">
-          <label style="font-size:11px; margin:4px 0 2px;">Wi-Fi Password (leave empty for open)</label>
-          <input type="password" id="bindApPass" placeholder="Min 8 characters (or blank for open)" style="margin:0; padding:6px;">
+
+        <div id="apModalFieldsWrap" style="display:flex; flex-direction:column; gap:10px;">
+          <div>
+            <label>Downstream Wi-Fi SSID</label>
+            <input type="text" id="apModalSsid" placeholder="e.g. MiniHA_AP_N01">
+          </div>
+          <div>
+            <label>Downstream Password</label>
+            <input type="text" id="apModalPass" placeholder="Min 8 characters (or leave empty for open)">
+          </div>
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+            <input type="checkbox" id="apModalHidden" style="width:auto;">
+            <span style="font-size:11px; color:var(--text-muted);">Hide Network (Do not broadcast SSID)</span>
+          </label>
         </div>
       </div>
 
       <div class="modal-actions">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('bindModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="submitBindNode()">Bind Node</button>
+        <button class="btn btn-secondary" onclick="closeApModal()">Cancel</button>
+        <button class="btn" onclick="submitApModal()">Save &amp; Push to Slave</button>
       </div>
     </div>
   </div>
 
-  <!-- MODAL: CONFIGURE DOWNSTREAM WI-FI AP BRIDGE -->
-  <div id="apModal" class="modal-overlay">
-    <div class="modal" style="max-width:480px; width:95%;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <div style="font-size:15px; font-weight:700;" id="apModalTitle">Configure Downstream Wi-Fi AP Bridge</div>
-        <button onclick="closeModal('apModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
-      </div>
-      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
-        <strong>Wi-Fi Repeater / AP Bridge</strong>: When enabled, this wired slave broadcasts a local Wi-Fi Access Point. Nearby wireless slaves that cannot reach the Master hub directly can connect to this node's Wi-Fi network and communicate seamlessly with the Master over RS-422.
-      </div>
-      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:8px 0 12px; font-weight:600; font-size:13px;">
-        <input type="checkbox" id="apModalEn" onchange="toggleApModalFields()" style="width:auto; margin:0;">
-        <span>Enable Downstream SoftAP Bridge</span>
-      </label>
-      <div id="apModalFields">
-        <label>Downstream Wi-Fi SSID</label>
-        <input type="text" id="apModalSsid" placeholder="e.g. MiniHA-Repeater-N01">
-        <label>Downstream Password</label>
-        <input type="password" id="apModalPass" placeholder="Min 8 characters (or leave empty for open)">
-      </div>
-      <div class="modal-actions" style="margin-top:16px;">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('apModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="saveNodeApConfig()">Save &amp; Push to Slave</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- MODAL: CONFIGURE PERIPHERAL HARDWARE COMPONENTS -->
-  <div id="componentModal" class="modal-overlay">
-    <div class="modal" style="max-width:700px; width:95%;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <div style="font-size:15px; font-weight:700;" id="compModalTitle">Configure Peripheral Components</div>
-        <button onclick="closeModal('componentModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
-      </div>
-      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
-        <strong>Peripheral Hardware Components</strong>: Map real physical devices (Relays, Ultrasonic sensors, DHT temperature/humidity sensors, buttons, ADC) to MCU pins. Each peripheral driver runs locally in silicon and generates friendly named metrics.
-      </div>
-      <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;" id="compSafeHint">Safe GPIO Pins: --</div>
-      <div id="componentsList" style="max-height:340px; overflow-y:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:10px;"></div>
-      <button class="btn btn-secondary btn-sm" onclick="addComponentRow()" style="margin-bottom:14px;">+ Add Peripheral Component</button>
-      <div class="modal-actions">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('componentModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="saveComponents()">Save & Push to Node</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- MODAL: CONFIGURE HARDWARE GPIO SLOTS (LEGACY COMPAT) -->
-  <div id="gpioModal" class="modal-overlay">
-    <div class="modal" style="max-width:640px; width:95%;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <div style="font-size:15px; font-weight:700;" id="gpioModalTitle">Configure Hardware GPIOs</div>
-        <button onclick="closeModal('gpioModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
-      </div>
-      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
-        <strong>Hardware GPIO Mapping</strong>: Assign the physical pins on this slave board to relays, switches, or sensors. When saved, these pin settings are pushed over the wire and committed directly into the slave's EEPROM.
-      </div>
-      <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;" id="gpioSafeHint">Safe GPIO Pins: --</div>
-      <div id="gpioSlotsList" style="max-height:280px; overflow-y:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:8px;"></div>
-      <button class="btn btn-secondary btn-sm" onclick="addGpioSlotRow()" style="margin-bottom:14px;">+ Add GPIO Slot</button>
-      <div class="modal-actions">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('gpioModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="saveGpioSlots()">Save & Push to Node</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- MODAL: AUTOMATION RULE BUILDER -->
-  <div id="ruleModal" class="modal-overlay">
-    <div class="modal" style="max-width:580px; width:95%;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <div style="font-size:15px; font-weight:700;" id="ruleModalTitle">Add Automation Rule</div>
-        <button onclick="closeModal('ruleModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
-      </div>
-      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
-        <strong>Automation Rule</strong>: When a sensor meets your condition (e.g. Tank Level &ge; 140cm), Master automatically triggers an action on a target node (e.g. Turn OFF Pump) and optionally sends a push alert.
+  <!-- CONFIGURE COMPONENTS MODAL -->
+  <div id="compModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card" style="max-width:700px;">
+      <div class="modal-head">
+        <div>
+          <h4 class="modal-title" id="compModalTitle">Configure Peripherals</h4>
+          <div style="font-size:11px; color:var(--text-muted); font-family:var(--font-mono);" id="compModalChip">Chip: ESP32-C3</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="closeComponentModal()">&times;</button>
       </div>
 
-      <label>Rule Name</label>
-      <input type="text" id="ruleModalName" placeholder="e.g. Auto Pump Shutoff" required>
+      <div id="compRowsContainer" style="display:flex; flex-direction:column; gap:10px; margin-bottom:14px;">
+        <!-- Dynamic Component Rows -->
+      </div>
 
-      <div style="margin-top:10px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
-        <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Condition (When)</div>
-        <div style="display:grid; grid-template-columns: 2fr 1.5fr 1fr 1fr; gap:8px;">
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Source Node</label>
-            <select id="ruleModalCondNode" onchange="onRuleCondNodeChange()"></select>
-          </div>
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Sensor / Metric</label>
-            <select id="ruleModalCondKey" style="margin:0;"></select>
-          </div>
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Op</label>
-            <select id="ruleModalCondOp">
-              <option value=">=">&gt;=</option>
-              <option value="<=">&lt;=</option>
-              <option value="==">==</option>
-              <option value=">">&gt;</option>
-              <option value="<">&lt;</option>
-              <option value="!=">!=</option>
-            </select>
-          </div>
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Threshold</label>
-            <input type="number" id="ruleModalCondVal" value="100">
-          </div>
+      <div style="display:flex; justify-content:space-between; align-items:center; padding-top:10px; border-top:1px solid var(--card-border);">
+        <button class="btn btn-secondary btn-sm" onclick="addNewComponentRow()">+ Add Peripheral Component</button>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-secondary" onclick="closeComponentModal()">Cancel</button>
+          <button class="btn" onclick="saveComponentModal()">Save &amp; Push to Slave</button>
         </div>
       </div>
+    </div>
+  </div>
 
-      <div style="margin-top:10px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
-        <div style="font-size:11px; font-weight:700; text-transform:uppercase; color:var(--text-dim); margin-bottom:6px;">Action (Then)</div>
-        <div style="display:grid; grid-template-columns: 2fr 1.5fr 1.5fr; gap:8px;">
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Target Node</label>
-            <select id="ruleModalActTarget" onchange="onRuleActTargetChange()"></select>
+  <!-- ADD RULE MODAL -->
+  <div id="ruleModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h4 class="modal-title" id="ruleModalTitle">Add Automation Rule</h4>
+        <button class="btn btn-secondary btn-sm" onclick="closeRuleModal()">&times;</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div>
+          <label>Rule Name</label>
+          <input type="text" id="ruleNameInput" placeholder="e.g. Tank Overflow Auto-Off">
+        </div>
+
+        <div style="padding:10px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+          <strong style="font-size:11px; text-transform:uppercase; color:var(--primary); display:block; margin-bottom:8px;">IF Condition</strong>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
+            <div>
+              <label>Node</label>
+              <select id="ruleCondNode" onchange="updateRuleCondKeys(this.value)"></select>
+            </div>
+            <div>
+              <label>Variable / Key</label>
+              <select id="ruleCondKey"></select>
+            </div>
+          </div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+            <div>
+              <label>Operator</label>
+              <select id="ruleCondOp">
+                <option value=">">&gt; (Greater than)</option>
+                <option value="<">&lt; (Less than)</option>
+                <option value="==">== (Equal to)</option>
+                <option value="!=">!= (Not equal)</option>
+              </select>
+            </div>
+            <div>
+              <label>Threshold Value</label>
+              <input type="number" id="ruleCondVal" step="any" value="85">
+            </div>
+          </div>
+        </div>
+
+        <div style="padding:10px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+          <strong style="font-size:11px; text-transform:uppercase; color:var(--success); display:block; margin-bottom:8px;">THEN Action</strong>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
+            <div>
+              <label>Target Node</label>
+              <select id="ruleActTarget" onchange="updateRuleActSlots(this.value)"></select>
+            </div>
+            <div>
+              <label>Actuator / Peripheral</label>
+              <select id="ruleActSlot"></select>
+            </div>
           </div>
           <div>
-            <label style="margin:0 0 4px; font-size:11px;">Actuator Slot</label>
-            <select id="ruleModalActSlot" style="margin:0;"></select>
-          </div>
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Command</label>
-            <select id="ruleModalActVal">
+            <label>Action Command</label>
+            <select id="ruleActState">
               <option value="1">Turn ON</option>
               <option value="0">Turn OFF</option>
             </select>
@@ -1969,82 +2406,109 @@ inline void setupWebEndpoints() {
         </div>
       </div>
 
-      <div style="margin-top:10px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px;">
-        <label class="checkbox-line" style="margin:0 0 6px 0;">
-          <input type="checkbox" id="ruleModalNotif" checked>
-          <span style="font-weight:700; font-size:12px;">Send Rule-Based Push Notification Alert</span>
-        </label>
-        <div style="display:grid; grid-template-columns: 1fr 2fr; gap:8px;">
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Alert Title</label>
-            <input type="text" id="ruleModalTitleText" placeholder="e.g. Tank Full">
-          </div>
-          <div>
-            <label style="margin:0 0 4px; font-size:11px;">Alert Message</label>
-            <input type="text" id="ruleModalMsgText" placeholder="e.g. Tank reached 100%">
-          </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeRuleModal()">Cancel</button>
+        <button class="btn" onclick="saveRuleFromModal()">Save Rule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CHANGE PASSWORD MODAL -->
+  <div id="passModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card" style="max-width:380px;">
+      <div class="modal-head">
+        <h4 class="modal-title">Change Password</h4>
+        <button class="btn btn-secondary btn-sm" onclick="closePassModal()">&times;</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <div>
+          <label>New Password</label>
+          <input type="password" id="modalNewPass" placeholder="Enter new password">
         </div>
       </div>
-
-      <div class="modal-actions" style="margin-top:14px;">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('ruleModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="saveRuleFromModal()">Save Rule</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- MODAL: DOWNTIME-SAFE STANDALONE SCHEDULES -->
-  <div id="scheduleModal" class="modal-overlay">
-    <div class="modal" style="max-width:620px; width:95%;">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-        <div style="font-size:15px; font-weight:700;" id="schedModalTitle">Standalone Node Schedules</div>
-        <button onclick="closeModal('scheduleModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
-      </div>
-      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
-        <strong>Downtime-Safe Silicon Execution</strong>: These schedules are programmed directly into the slave's on-chip EEPROM. The slave executes them on its own internal clock even if the RS-422 bus is severed or the Master hub is powered off.
-      </div>
-      <div id="schedList" style="max-height:280px; overflow-y:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:8px;"></div>
-      <button class="btn btn-secondary btn-sm" onclick="addScheduleRow()" style="margin-bottom:14px;">+ Add Daily Schedule</button>
       <div class="modal-actions">
-        <button class="btn btn-secondary btn-sm" onclick="closeModal('scheduleModal')">Cancel</button>
-        <button class="btn btn-sm" onclick="saveNodeSchedules()">Save & Push to Slave EEPROM</button>
+        <button class="btn btn-secondary" onclick="closePassModal()">Cancel</button>
+        <button class="btn" onclick="submitModalPassChange()">Update Password</button>
       </div>
     </div>
   </div>
 
-  <!-- Toast Element -->
-  <div id="toast">Notification</div>
+  <!-- ADD USER MODAL -->
+  <div id="addUserModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card" style="max-width:380px;">
+      <div class="modal-head">
+        <h4 class="modal-title">Add User Account</h4>
+        <button class="btn btn-secondary btn-sm" onclick="closeAddUserModal()">&times;</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <div>
+          <label>Username</label>
+          <input type="text" id="addUserName" placeholder="Username">
+        </div>
+        <div>
+          <label>Password</label>
+          <input type="password" id="addUserPass" placeholder="Password">
+        </div>
+        <div>
+          <label>Role</label>
+          <select id="addUserRole">
+            <option value="member">Member (Can control switches)</option>
+            <option value="guest">Guest (Read-only)</option>
+            <option value="admin">Admin (Full access)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeAddUserModal()">Cancel</button>
+        <button class="btn" onclick="submitAddUser()">Create Account</button>
+      </div>
+    </div>
+  </div>
 
+  <!-- TOAST NOTIFICATION -->
+  <div id="toast"></div>
+
+  <!-- ========================================================================= -->
+  <!-- JAVASCRIPT APPLICATION CORE -->
+  <!-- ========================================================================= -->
   <script>
-    let currentSession = { loggedIn: false, user: '', role: 'guest', isDefault: false };
-    let configuredNodes = [];
+    let currentSession = { loggedIn: false, role: 'none' };
+    let nodesCache = [];
     let liveStates = {};
-    let activeBindMac = '';
+    let pendingNodesCache = [];
+    let currentSchedules = [];
+    let activeSchedNodeId = '';
+    let editingRuleIdx = -1;
 
-    function showToast(msg, type = 'normal') {
-      const t = document.getElementById('toast');
-      t.innerText = msg;
-      t.className = type + ' show';
-      setTimeout(() => { t.className = ''; }, 3200);
-    }
+    // Navigation Switcher
+    function switchNavTab(tab) {
+      const tabs = ['dashboard', 'nodes', 'rules', 'schedules', 'users', 'settings', 'account'];
+      tabs.forEach(t => {
+        const navEl = document.getElementById('nav-' + t);
+        const viewEl = document.getElementById('view' + t.charAt(0).toUpperCase() + t.slice(1));
+        if (navEl) {
+          if (t === tab) navEl.classList.add('active');
+          else navEl.classList.remove('active');
+        }
+        if (viewEl) {
+          viewEl.style.display = (t === tab) ? 'block' : 'none';
+        }
+      });
 
-    function closeModal(id) {
-      document.getElementById(id).style.display = 'none';
-    }
+      const titles = {
+        dashboard: ['Home Dashboard', 'Unified controls, sensors & mesh telemetry'],
+        nodes: ['Hardware Nodes & Provisioning', 'Configured slaves, peripherals & real-time discovery'],
+        rules: ['Automations Engine', 'Local event-driven logic evaluated by Master hub'],
+        schedules: ['Downtime-Safe Schedules', 'Autonomous EEPROM daily schedules per slave'],
+        users: ['User Accounts & RBAC', 'Manage accounts, member switches & guest dashboards'],
+        settings: ['System Settings', 'Home Wi-Fi STA client & optional Cloud MQTT bridge'],
+        account: ['Account & Diagnostics', 'User security, Flash partition health & heap diagnostics']
+      };
+      if (titles[tab]) {
+        document.getElementById('pageTitle').innerText = titles[tab][0];
+        document.getElementById('pageSub').innerText = titles[tab][1];
+      }
 
-    function togglePassVisibilityLocal() {
-      const p = document.getElementById('loginPass');
-      if (p) p.type = (p.type === 'password') ? 'text' : 'password';
-    }
-
-    function showTab(tab) {
-      document.getElementById('tabNodes').style.display = (tab === 'nodes') ? 'block' : 'none';
-      document.getElementById('tabRules').style.display = (tab === 'rules') ? 'block' : 'none';
-      document.getElementById('tabSchedules').style.display = (tab === 'schedules') ? 'block' : 'none';
-      document.getElementById('tabUsers').style.display = (tab === 'users') ? 'block' : 'none';
-      document.getElementById('tabSettings').style.display = (tab === 'settings') ? 'block' : 'none';
-      const tabAcc = document.getElementById('tabAccount');
-      if (tabAcc) tabAcc.style.display = (tab === 'account') ? 'block' : 'none';
       if (tab === 'account') loadAccountDiagnostics();
       if (tab === 'rules') loadRules();
       if (tab === 'schedules') loadSchedulesTab();
@@ -2052,15 +2516,21 @@ inline void setupWebEndpoints() {
       if (tab === 'settings') loadSettings();
     }
 
+    // Authentication & Session
     async function checkSession() {
       try {
         const res = await fetch('/api/session');
         const data = await res.json();
         currentSession = data;
         if (data.loggedIn) {
+          localStorage.setItem('miniha_logged_in', '1');
+          document.documentElement.classList.remove('not-auth');
+          document.documentElement.classList.add('is-auth');
           document.getElementById('loginView').style.display = 'none';
-          document.getElementById('hubView').style.display = 'block';
-          document.getElementById('roleBadge').innerText = data.user + ' (' + data.role.toUpperCase() + ')';
+          document.getElementById('hubApp').style.display = 'flex';
+
+          document.getElementById('sidebarUsername').innerText = data.user || 'admin';
+          document.getElementById('sidebarRoleBadge').innerText = (data.role || 'ADMIN').toUpperCase();
           
           const isAdmin = (data.role === 'admin');
           if (isAdmin) {
@@ -2069,25 +2539,31 @@ inline void setupWebEndpoints() {
             document.body.classList.remove('role-admin');
           }
           document.querySelectorAll('.admin-only').forEach(el => el.style.display = isAdmin ? '' : 'none');
-          document.getElementById('defaultPassBanner').style.display = (isAdmin && data.isDefault) ? 'flex' : 'none';
+          document.getElementById('defaultPassBanner').style.display = (isAdmin && data.isDefault) ? 'block' : 'none';
 
           // Sync browser real-world time to Master & Slaves (downtime-safe local RTC)
           fetch('/api/time', { method: 'POST', body: String(Math.floor(Date.now() / 1000)) }).catch(()=>{});
 
           refreshData();
         } else {
+          localStorage.removeItem('miniha_logged_in');
+          document.documentElement.classList.remove('is-auth');
+          document.documentElement.classList.add('not-auth');
           document.getElementById('loginView').style.display = 'flex';
-          document.getElementById('hubView').style.display = 'none';
+          document.getElementById('hubApp').style.display = 'none';
         }
       } catch (e) {
         console.error(e);
+        localStorage.removeItem('miniha_logged_in');
+        document.documentElement.classList.remove('is-auth');
+        document.documentElement.classList.add('not-auth');
         document.getElementById('loginView').style.display = 'flex';
-        document.getElementById('hubView').style.display = 'none';
+        document.getElementById('hubApp').style.display = 'none';
       }
     }
 
     async function handleLogin(e) {
-      e.preventDefault();
+      if (e) e.preventDefault();
       const u = document.getElementById('loginUser').value.trim();
       const p = document.getElementById('loginPass').value;
       try {
@@ -2098,479 +2574,458 @@ inline void setupWebEndpoints() {
         });
         const data = await res.json();
         if (res.ok) {
+          localStorage.setItem('miniha_logged_in', '1');
           showToast('Signed in successfully', 'success');
           checkSession();
         } else {
           showToast(data.error || 'Login failed', 'error');
         }
-      } catch (e) {
+      } catch (err) {
         showToast('Connection failed', 'error');
       }
     }
 
     async function handleLogout() {
       await fetch('/api/logout', { method: 'POST' });
-      const u = document.getElementById('loginUser');
-      const p = document.getElementById('loginPass');
-      if (u) u.value = '';
-      if (p) p.value = '';
-      showToast('Signed out');
+      localStorage.removeItem('miniha_logged_in');
+      document.getElementById('loginUser').value = '';
+      document.getElementById('loginPass').value = '';
       checkSession();
     }
 
+    function togglePassVisibilityLocal() {
+      const p = document.getElementById('loginPass');
+      if (p) p.type = (p.type === 'password') ? 'text' : 'password';
+    }
+
+    // Real-Time Telemetry & Data Polling
     async function refreshData() {
-      if (!currentSession.loggedIn) return;
       try {
         const [nRes, sRes] = await Promise.all([fetch('/api/nodes'), fetch('/api/state')]);
-        const nData = await nRes.json();
-        const sData = await sRes.json();
-
-        configuredNodes = nData.nodes || [];
-        liveStates = {};
-        if (sData.nodes) {
-          sData.nodes.forEach(n => { liveStates[n.id] = n; });
+        if (nRes.ok) {
+          const nData = await nRes.json();
+          nodesCache = nData.nodes || [];
         }
-        renderEntities();
-
-        if (currentSession.role === 'admin') {
-          const pRes = await fetch('/api/pending');
-          const pData = await pRes.json();
-          renderPending(pData.pending || []);
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          liveStates = {};
+          (sData.nodes || []).forEach(n => {
+            liveStates[n.id] = n;
+          });
         }
+
+        renderDashboard();
+        renderNodesCards();
+        fetchPendingNodes();
+        updateRtcClock();
       } catch (e) {
-        console.error(e);
-        document.getElementById('loginView').style.display = 'flex';
-        document.getElementById('hubView').style.display = 'none';
+        console.warn('Refresh error:', e);
       }
     }
 
-    function renderEntities() {
-      const c = document.getElementById('entitiesGrid');
-      if (configuredNodes.length === 0) {
-        c.innerHTML = '<div style="color:var(--text-dim); padding:16px 0; font-size:13px;">No hardware nodes configured yet. Connect a slave node to the RS-422 bus or Wi-Fi to bind it.</div>';
+    function updateRtcClock() {
+      const d = new Date();
+      document.getElementById('hubRtcClock').textContent = d.toLocaleTimeString();
+    }
+
+    // =========================================================================
+    // TAB 1: RENDER UNIFIED DASHBOARD
+    // =========================================================================
+    function renderDashboard() {
+      let totalNodes = nodesCache.length;
+      let onlineNodes = 0;
+      let activeRelays = 0;
+      let latestTankLevel = null;
+      let latestTemp = null;
+      let latestHum = null;
+
+      let relaysHtml = '';
+      let sensorsHtml = '';
+
+      nodesCache.forEach(node => {
+        const state = liveStates[node.id] || { components: {}, relays: [], lastSeen: 999999, hasSeen: false };
+        const isOnline = (state.hasSeen && state.lastSeen <= 8);
+        if (isOnline) onlineNodes++;
+
+        const comps = node.components || [];
+        comps.forEach((c, idx) => {
+          const compId = c.id || ('comp' + idx);
+          const compName = c.name || compId;
+          const cType = parseInt(c.type) || 1;
+          const compState = (state.components && state.components[compId]) ? state.components[compId] : null;
+
+          if (cType === 1) { // Relay Actuator
+            let isOn = false;
+            if (compState && compState.v1 !== undefined) {
+              isOn = (compState.v1 == 1);
+            } else if (state.relays && state.relays[idx] !== undefined) {
+              isOn = (state.relays[idx] == 1);
+            }
+            if (isOn && isOnline) activeRelays++;
+
+            const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
+            relaysHtml += `
+              <div class="control-card">
+                <div class="control-card-header">
+                  <div>
+                    <div class="control-name">${escapeHtml(compName)}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; GPIO ${c.pin1}</div>
+                  </div>
+                  <span class="badge ${isOn ? 'badge-success' : ''}">${isOn ? 'ON' : 'OFF'}</span>
+                </div>
+                <div class="toggle-switch-wrap">
+                  <span class="toggle-status-text ${isOn ? 'on' : 'off'}">${isOn ? 'ENERGIZED' : 'STANDBY'}</span>
+                  <button class="switch-btn ${isOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleComponent('${node.id}', '${compId}', ${isOn})" title="Toggle ${escapeHtml(compName)}">
+                    <span class="switch-thumb"></span>
+                  </button>
+                </div>
+              </div>`;
+          } else if (cType === 2) { // Ultrasonic Sensor
+            let dist = (compState && compState.v1 !== undefined) ? compState.v1 : state.dist;
+            let level = (compState && compState.v2 !== undefined) ? compState.v2 : -1;
+            if (level === -1 && dist >= 0) {
+              level = Math.max(0, Math.min(100, Math.round((1 - (dist / 200)) * 100)));
+            }
+            if (level >= 0) latestTankLevel = level;
+
+            sensorsHtml += `
+              <div class="control-card">
+                <div class="control-card-header">
+                  <div>
+                    <div class="control-name">${escapeHtml(compName)}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; Ultrasonic (Trig ${c.pin1}, Echo ${c.pin2})</div>
+                  </div>
+                  <span class="badge badge-primary">Liquid Gauge</span>
+                </div>
+                <div class="tank-visual-wrap">
+                  <div class="tank-pillar">
+                    <div class="tank-fluid" style="height:${level >= 0 ? level : 0}%;"></div>
+                  </div>
+                  <div class="tank-metrics">
+                    <div class="tank-percent">${level >= 0 ? level : '--'}%</div>
+                    <div class="tank-dist">${dist >= 0 ? dist + ' cm distance' : 'Sensor idle'}</div>
+                    <div style="font-size:10px; color:var(--text-dim); margin-top:2px;">Target: [${compId}.level]</div>
+                  </div>
+                </div>
+              </div>`;
+          } else if (cType === 3) { // DHT Sensor
+            let t = (compState && compState.v1 !== undefined) ? compState.v1 : state.temp;
+            let h = (compState && compState.v2 !== undefined) ? compState.v2 : state.hum;
+            if (t > 0) latestTemp = t;
+            if (h > 0) latestHum = h;
+
+            sensorsHtml += `
+              <div class="control-card">
+                <div class="control-card-header">
+                  <div>
+                    <div class="control-name">${escapeHtml(compName)}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; DHT Sensor (GPIO ${c.pin1})</div>
+                  </div>
+                  <span class="badge badge-warning">Climate</span>
+                </div>
+                <div class="climate-visual-wrap">
+                  <div class="climate-box">
+                    <div class="climate-val temp">${t > 0 ? t.toFixed(1) : '--'}&deg;C</div>
+                    <div class="climate-lbl">Temperature</div>
+                  </div>
+                  <div class="climate-box">
+                    <div class="climate-val hum">${h > 0 ? Math.round(h) : '--'}%</div>
+                    <div class="climate-lbl">Humidity</div>
+                  </div>
+                </div>
+              </div>`;
+          } else if (cType === 4 || cType === 5) { // Button / Touch
+            let bVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
+            sensorsHtml += `
+              <div class="control-card">
+                <div class="control-card-header">
+                  <div>
+                    <div class="control-name">${escapeHtml(compName)}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; ${cType === 5 ? 'Touch Pin' : 'Digital Button'} (GPIO ${c.pin1})</div>
+                  </div>
+                  <span class="badge">${cType === 5 ? 'Touch' : 'Button'}</span>
+                </div>
+                <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
+                  <span class="status-dot ${bVal == 1 ? 'online' : ''}"></span>
+                  <span style="font-size:12px; font-weight:600; font-family:var(--font-mono);">${bVal == 1 ? 'PRESSED / ACTIVE' : 'RELEASED'}</span>
+                </div>
+              </div>`;
+          } else if (cType === 6) { // Analog ADC
+            let aVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
+            sensorsHtml += `
+              <div class="control-card">
+                <div class="control-card-header">
+                  <div>
+                    <div class="control-name">${escapeHtml(compName)}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; Analog ADC (GPIO ${c.pin1})</div>
+                  </div>
+                  <span class="badge badge-primary">ADC</span>
+                </div>
+                <div style="margin-top:8px;">
+                  <div style="font-size:18px; font-weight:700; color:#38bdf8; font-family:var(--font-mono);">${Math.round(aVal)}</div>
+                  <div style="font-size:10px; color:var(--text-dim); margin-top:2px;">Raw 12-bit ADC reading [${compId}.val]</div>
+                </div>
+              </div>`;
+          }
+        });
+      });
+
+      // Update KPI Banner
+      document.getElementById('kpiNodesOnline').textContent = `${onlineNodes} / ${totalNodes} Online`;
+      document.getElementById('kpiActiveRelays').textContent = `${activeRelays} ON`;
+      document.getElementById('kpiTankLevel').textContent = (latestTankLevel !== null) ? `${latestTankLevel}%` : '-- %';
+      document.getElementById('kpiClimate').textContent = (latestTemp !== null) ? `${latestTemp.toFixed(1)}°C` : '-- °C';
+
+      const relaysGrid = document.getElementById('dashboardRelaysGrid');
+      if (relaysGrid) {
+        relaysGrid.innerHTML = relaysHtml || '<div style="color:var(--text-dim); padding:10px 0;">No actuators configured yet. Use Hardware Nodes tab to configure peripherals.</div>';
+      }
+
+      const sensorsGrid = document.getElementById('dashboardSensorsGrid');
+      if (sensorsGrid) {
+        sensorsGrid.innerHTML = sensorsHtml || '<div style="color:var(--text-dim); padding:10px 0;">No sensors active.</div>';
+      }
+    }
+
+    // Toggle Component Action
+    async function toggleComponent(nodeId, compId, currentState) {
+      const targetState = currentState ? 0 : 1;
+      try {
+        await fetch('/api/control', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target: nodeId, comp: compId, val: targetState })
+        });
+        showToast('Command dispatched', 'info');
+        refreshData();
+      } catch (e) {
+        showToast('Control dispatch failed', 'error');
+      }
+    }
+
+    // =========================================================================
+    // TAB 2: RENDER HARDWARE NODES CARDS & REAL-TIME DISCOVERY
+    // =========================================================================
+    function renderNodesCards() {
+      const container = document.getElementById('nodesCardsContainer');
+      if (!container) return;
+
+      if (!nodesCache || nodesCache.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-dim); padding:16px 0;">No slave hardware nodes bound yet. Bind discovered devices below.</div>';
         return;
       }
 
       let html = '';
-      configuredNodes.forEach(node => {
-        const state = liveStates[node.id] || { relays: [], dist: -1, temp: 0, hum: 0, components: {}, lastSeen: 999 };
+      nodesCache.forEach(node => {
+        const state = liveStates[node.id] || { relays: [], components: {}, lastSeen: 999999, hasSeen: false, freeHeap: 0 };
         
-        let statusBadge = '<span style="color:var(--text-dim); display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot"></span>Offline</span>';
-        if (state.lastSeen <= 10) {
-          statusBadge = '<span style="color:var(--success); font-weight:600; display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot online"></span>Online</span>';
-        } else if (state.lastSeen <= 60) {
-          statusBadge = `<span style="color:var(--warning); display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot warning"></span>${state.lastSeen}s ago</span>`;
+        let statusBadge = '';
+        if (state.hasSeen && state.lastSeen <= 8) {
+          statusBadge = '<span class="badge badge-success"><span class="status-dot online"></span>Online</span>';
+        } else if (state.hasSeen && state.lastSeen <= 30) {
+          statusBadge = `<span class="badge badge-warning"><span class="status-dot warning"></span>${state.lastSeen}s ago</span>`;
+        } else {
+          statusBadge = '<span class="badge badge-danger"><span class="status-dot offline"></span>Offline</span>';
         }
 
         const compCount = (node.components && node.components.length) ? node.components.length : 0;
-        const slotCount = (node.slots && node.slots.length) ? node.slots.length : 0;
-        const totalItems = compCount > 0 ? compCount : slotCount;
+        const ramDisplay = state.freeHeap ? (Math.round(state.freeHeap / 1024) + ' KB Free') : 'ESP Active';
+        const apStatus = node.ap_enabled ? (node.ap_ssid + (node.ap_hidden ? ' (Hidden)' : '')) : 'Disabled';
 
-        html += `<div class="node-box" style="margin-bottom:14px;">
-          <div class="node-header" style="flex-wrap:wrap; gap:8px;">
-            <div>
-              <strong style="font-size:14px;">${node.name || node.id}</strong>
-              <span style="font-family:var(--font-mono); font-size:11px; color:var(--text-dim); margin-left:6px;">(${node.id})</span>
+        html += `
+          <div class="node-card">
+            <div class="node-card-head">
+              <div>
+                <div class="node-meta-badges">
+                  <strong style="font-size:15px; color:var(--text);">${escapeHtml(node.name || node.id)}</strong>
+                  <span class="badge" style="font-family:var(--font-mono);">${escapeHtml(node.id)}</span>
+                  ${statusBadge}
+                </div>
+              </div>
+              <div class="node-actions-bar">
+                <button class="btn btn-secondary btn-sm admin-only" onclick="openComponentModal('${node.id}')">Configure Components</button>
+                <button class="btn btn-secondary btn-sm admin-only" onclick="openApModal('${node.id}')">Wi-Fi AP Bridge</button>
+                <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleTabForNode('${node.id}')">Schedules</button>
+                <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')">Delete</button>
+              </div>
             </div>
-            <div style="display:flex; align-items:center; gap:10px;">
-              ${statusBadge}
-              <button class="btn btn-secondary btn-sm admin-only" onclick="openComponentModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Configure Components</button>
-              <button class="btn btn-secondary btn-sm admin-only" onclick="openApModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Wi-Fi AP Bridge</button>
-              <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleTabForNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Schedules</button>
-              <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Delete</button>
+
+            <div class="node-hardware-strip">
+              <div class="hw-prop"><span class="hw-lbl">Hardware Chip</span><span class="hw-val">${escapeHtml(node.chip || 'ESP32/ESP8266')}</span></div>
+              <div class="hw-prop"><span class="hw-lbl">RAM Usage</span><span class="hw-val">${ramDisplay}</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Flash / Storage</span><span class="hw-val">EEPROM Protected</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Hardware MAC</span><span class="hw-val">${escapeHtml(node.mac || '--')}</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Peripherals</span><span class="hw-val">${compCount} active</span></div>
+              <div class="hw-prop"><span class="hw-lbl">AP Bridge</span><span class="hw-val">${escapeHtml(apStatus)}</span></div>
             </div>
-          </div>
-          <div style="display:flex; gap:12px; font-size:11px; color:var(--text-dim); font-family:var(--font-mono); margin:4px 0 10px; border-bottom:1px solid var(--card-border-subtle); padding-bottom:6px;">
-            <span>MAC: ${node.mac || '--'}</span>
-            <span>Chip: ${node.chip || 'ESP32/ESP8266'}</span>
-            <span>Peripherals: ${totalItems} active</span>
-            <span>AP Bridge: ${node.ap_enabled ? ('<strong style="color:var(--success);">' + (node.ap_ssid || 'Active') + '</strong>') : 'Off'}</span>
           </div>`;
+      });
 
-        if (compCount > 0) {
-          node.components.forEach((c, idx) => {
-            const compId = c.id || ('comp' + idx);
-            const compName = c.name || compId;
-            const cType = parseInt(c.type) || 1;
-            const compState = (state.components && state.components[compId]) ? state.components[compId] : null;
+      container.innerHTML = html;
+    }
 
-            if (cType === 1) { // Relay Actuator
-              let isRelayOn = false;
-              if (compState && compState.v1 !== undefined) {
-                isRelayOn = (compState.v1 == 1);
-              } else if (state.relays && state.relays[idx] !== undefined) {
-                isRelayOn = (state.relays[idx] == 1);
-              }
-              const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Relay GPIO ${c.pin1}) [${compId}.state]</small></span>
-                <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleComponent('${node.id}', '${compId}', ${isRelayOn})">
-                  <span class="toggle-slider"></span>
-                </button>
-              </div>`;
-            } else if (cType === 4) { // Ultrasonic Sensor (HC-SR04)
-              let dist = -1;
-              let pct = 0;
-              const depth = (c.param1 > 0) ? c.param1 : 200;
-              if (compState && compState.v1 !== undefined) {
-                dist = compState.v1;
-                pct = compState.v2 !== undefined ? compState.v2 : ((dist >= 0) ? Math.max(0, Math.min(100, Math.round(((depth - dist) / depth) * 100))) : 0);
-              } else if (state.dist !== undefined) {
-                dist = state.dist;
-                pct = (dist >= 0) ? Math.max(0, Math.min(100, Math.round(((depth - dist) / depth) * 100))) : 0;
-              }
-              const distText = dist >= 0 ? `${Math.round(dist)} cm` : '--';
-              html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
-                <div class="tank-header">
-                  <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(HC-SR04 Trig:${c.pin1} Echo:${c.pin2}) [${compId}.dist]</small></span>
-                  <span style="font-family:var(--font-mono); font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
-                </div>
-                <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
-              </div>`;
-            } else if (cType === 5) { // DHT Sensor
-              let curT = 0.0;
-              let curH = 0.0;
-              if (compState && compState.v1 !== undefined) {
-                curT = compState.v1;
-                curH = compState.v2 !== undefined ? compState.v2 : 0.0;
-              } else {
-                curT = state.temp || 0.0;
-                curH = state.hum || 0.0;
-              }
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(DHT on GPIO ${c.pin1}) [${compId}.temp / .hum]</small></span>
-                <div class="sensor-readings">
-                  <div class="sensor-pill">
-                    <span class="pill-label">TEMP</span>
-                    <span class="pill-val">${curT.toFixed(1)}</span>
-                    <span class="pill-unit">&deg;C</span>
-                  </div>
-                  <div class="sensor-pill">
-                    <span class="pill-label">HUM</span>
-                    <span class="pill-val">${curH.toFixed(0)}</span>
-                    <span class="pill-unit">%</span>
-                  </div>
-                </div>
-              </div>`;
-            } else if (cType === 2 || cType === 3) { // Wall Switch / Button
-              const isInputActive = compState ? (compState.v1 == 1) : false;
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(${cType === 2 ? 'Touch' : 'Button'} GPIO ${c.pin1}) [${compId}.state]</small></span>
-                <span class="badge" style="background:${isInputActive ? 'var(--success)' : 'var(--card-elevated)'}; color:${isInputActive ? '#000' : 'var(--text-dim)'}; font-size:10px; font-weight:700;">
-                  ${isInputActive ? 'ACTIVE / PRESSED' : 'IDLE / OPEN'}
-                </span>
-              </div>`;
-            } else if (cType === 7) { // ADC Sensor
-              const adcVal = compState ? compState.v1 : 0;
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(ADC GPIO ${c.pin1}) [${compId}.raw]</small></span>
-                <span style="font-family:var(--font-mono); font-size:12px; font-weight:700;">${adcVal}</span>
-              </div>`;
-            } else {
-              html += `<div class="slot-row"><span style="font-weight:600;">${compName}</span><span style="font-size:11px; color:var(--text-dim);">GPIO ${c.pin1}</span></div>`;
-            }
-          });
-        } else if (slotCount > 0) {
-          node.slots.forEach(slot => {
-            const slotName = slot.name || `Slot ${slot.slot}`;
-            if (slot.type === 1) { // Relay
-              const isRelayOn = (state.relays && state.relays[slot.slot] === 1);
-              const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Relay GPIO ${slot.gpio})</small></span>
-                <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleRelay('${node.id}', ${slot.slot}, ${isRelayOn})">
-                  <span class="toggle-slider"></span>
-                </button>
-              </div>`;
-            } else if (slot.type === 6 || slot.type === 7) { // DHT
-              const curT = (state.slotVals && state.slotVals[slot.slot] !== undefined && state.slotVals[slot.slot] > 0) ? state.slotVals[slot.slot] : state.temp;
-              const curH = (state.slotSec && state.slotSec[slot.slot] !== undefined && state.slotSec[slot.slot] > 0) ? state.slotSec[slot.slot] : state.hum;
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(DHT GPIO ${slot.gpio})</small></span>
-                <div class="sensor-readings">
-                  <div class="sensor-pill">
-                    <span class="pill-label">TEMP</span>
-                    <span class="pill-val">${curT.toFixed(1)}</span>
-                    <span class="pill-unit">&deg;C</span>
-                  </div>
-                  <div class="sensor-pill">
-                    <span class="pill-label">HUM</span>
-                    <span class="pill-val">${curH.toFixed(0)}</span>
-                    <span class="pill-unit">%</span>
-                  </div>
-                </div>
-              </div>`;
-            } else if (slot.type === 4) { // Ultrasonic Trig
-              const slotDist = (state.slotVals && state.slotVals[slot.slot] !== undefined && state.slotVals[slot.slot] >= 0) ? state.slotVals[slot.slot] : state.dist;
-              const distText = slotDist >= 0 ? `${Math.round(slotDist)} cm` : '--';
-              const pct = slotDist >= 0 ? Math.max(0, Math.min(100, Math.round(((200 - slotDist) / 200) * 100))) : 0;
-              html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
-                <div class="tank-header">
-                  <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Trig GPIO ${slot.gpio})</small></span>
-                  <span style="font-family:var(--font-mono); font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
-                </div>
-                <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
-              </div>`;
-            } else {
-              html += `<div class="slot-row"><span style="font-weight:600;">${slotName}</span><span style="font-size:11px; color:var(--text-dim);">GPIO ${slot.gpio} (Active)</span></div>`;
-            }
-          });
-        } else {
-          html += '<div style="color:var(--text-dim); font-size:12px; padding:6px 0;">No peripheral components configured yet. Click <strong>Configure Components</strong> above to assign relays, sensors, and inputs.</div>';
+    // Real-Time Discovery Polling
+    async function fetchPendingNodes() {
+      if (currentSession.role !== 'admin') return;
+      try {
+        const res = await fetch('/api/pending');
+        if (res.ok) {
+          const data = await res.json();
+          pendingNodesCache = data.pending || [];
+          renderPendingTable();
         }
-        html += `</div>`;
-      });
-      c.innerHTML = html;
+      } catch (e) {}
     }
 
-    async function toggleComponent(nodeId, compId, curState) {
-      const val = curState ? 0 : 1;
-      if (!liveStates[nodeId]) liveStates[nodeId] = { components: {} };
-      if (!liveStates[nodeId].components) liveStates[nodeId].components = {};
-      liveStates[nodeId].components[compId] = { v1: val, v2: 0 };
-      renderEntities();
+    function renderPendingTable() {
+      const container = document.getElementById('pendingTable');
+      if (!container) return;
 
-      await fetch('/api/control', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: nodeId, comp: compId, val: val })
-      });
-      setTimeout(refreshData, 300);
-    }
+      // Filter out any devices that are already bound
+      const boundMacs = new Set((nodesCache || []).map(n => n.mac));
+      const unassigned = (pendingNodesCache || []).filter(p => !boundMacs.has(p.mac));
 
-    async function toggleRelay(nodeId, slot, curState) {
-      const val = curState ? 0 : 1;
-      if (!liveStates[nodeId]) liveStates[nodeId] = { relays: [] };
-      if (!liveStates[nodeId].relays) liveStates[nodeId].relays = [];
-      liveStates[nodeId].relays[slot] = val;
-      renderEntities();
-
-      await fetch('/api/control', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target: nodeId, slot: slot, val: val })
-      });
-      setTimeout(refreshData, 300);
-    }
-
-    // =========================================================================
-    // PERIPHERAL HARDWARE COMPONENTS CONFIGURATION (DECOUPLED SCHEMA)
-    // =========================================================================
-    let activeCompNodeId = null;
-    let currentComponents = [];
-
-    function openComponentModal(nodeId) {
-      activeCompNodeId = nodeId;
-      const node = configuredNodes.find(n => n.id === nodeId);
-      if (!node) return;
-
-      document.getElementById('compModalTitle').innerText = `Configure Peripherals: ${node.name || nodeId} (${nodeId})`;
-      const pendingMatch = (typeof pendingNodesCache !== 'undefined' ? pendingNodesCache : []).find(p => p.mac === node.mac);
-      const safeGpios = (pendingMatch && pendingMatch.gpios) ? pendingMatch.gpios : '0, 1, 3, 4, 5, 6, 7, 8, 10, 20, 21';
-      document.getElementById('compSafeHint').innerText = `Safe GPIO Pins on this chip (${node.chip || 'MCU'}): ${safeGpios}`;
-
-      if (node.components && node.components.length > 0) {
-        currentComponents = JSON.parse(JSON.stringify(node.components));
-      } else if (node.slots && node.slots.length > 0) {
-        currentComponents = node.slots.map((s, idx) => {
-          let cType = s.type;
-          if (cType === 6 || cType === 7) cType = 5;
-          return {
-            id: s.name ? s.name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) : ('comp' + idx),
-            name: s.name || ('Slot ' + s.slot),
-            type: cType,
-            pin1: s.gpio,
-            pin2: 255,
-            flags: s.activeLow ? 1 : 0,
-            param1: (s.type === 7 ? 22 : 11)
-          };
-        });
-      } else {
-        currentComponents = [];
-      }
-
-      renderComponentRows();
-      document.getElementById('componentModal').style.display = 'flex';
-    }
-
-    function openGpioModal(nodeId) {
-      openComponentModal(nodeId);
-    }
-
-    function renderComponentRows() {
-      const list = document.getElementById('componentsList');
-      if (currentComponents.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding:10px; font-size:12px;">No components configured. Click <strong>+ Add Peripheral Component</strong> below.</div>';
+      if (unassigned.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-dim); font-size:12px; padding:10px 0;">No unprovisioned devices detected on bus. (Unplugged devices auto-prune in 12s)</div>';
         return;
       }
 
-      let html = '';
-      currentComponents.forEach((c, idx) => {
-        const type = parseInt(c.type) || 1;
-        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
-          <div style="display:grid; grid-template-columns: 1.2fr 2fr 2fr 36px; gap:8px; align-items:center;">
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Component ID</label>
-              <input type="text" id="compCid_${idx}" value="${c.id || ('comp' + idx)}" maxlength="11" placeholder="e.g. pump" style="margin:0; padding:5px; font-family:var(--font-mono);">
-            </div>
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Friendly Name</label>
-              <input type="text" id="compName_${idx}" value="${c.name || ('Component ' + (idx + 1))}" placeholder="e.g. Water Pump" style="margin:0; padding:5px;">
-            </div>
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Peripheral Device Type</label>
-              <select id="compType_${idx}" onchange="onComponentTypeChange(${idx})" style="margin:0; padding:5px;">
-                <option value="1" ${type === 1 ? 'selected' : ''}>Relay / Actuator (Output)</option>
-                <option value="4" ${type === 4 ? 'selected' : ''}>Ultrasonic HC-SR04 (Trig+Echo)</option>
-                <option value="5" ${type === 5 ? 'selected' : ''}>DHT Temp/Humidity Sensor</option>
-                <option value="3" ${type === 3 ? 'selected' : ''}>Push Button (Input Pullup)</option>
-                <option value="2" ${type === 2 ? 'selected' : ''}>Wall Switch / Touch (Input)</option>
-                <option value="7" ${type === 7 ? 'selected' : ''}>Analog Sensor (ADC)</option>
-              </select>
-            </div>
-            <div style="text-align:right;">
-              <button class="btn btn-danger btn-sm" onclick="removeComponentRow(${idx})" style="padding:4px 6px; font-size:11px; margin-top:14px;">&times;</button>
-            </div>
-          </div>`;
+      let html = `
+        <table>
+          <thead>
+            <tr>
+              <th>MAC Address</th>
+              <th>Microcontroller</th>
+              <th>Safe GPIO Pins</th>
+              <th style="text-align:right;">Action</th>
+            </tr>
+          </thead>
+          <tbody>`;
 
-        if (type === 1) { // Relay
-          html += `<div style="display:flex; align-items:center; gap:14px; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
-            <div style="width:140px;">
-              <label style="font-size:10px; margin:0 0 2px;">Relay Pin (GPIO)</label>
-              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 4}" min="0" max="48" style="margin:0; padding:4px;">
-            </div>
-            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:11px; margin-top:14px;">
-              <input type="checkbox" id="compFlags_${idx}" ${(c.flags & 1) ? 'checked' : ''} style="width:auto; margin:0;">
-              <span>Active LOW (inverted trigger)</span>
-            </label>
-            <span style="font-size:11px; color:var(--text-dim); margin-left:auto; font-family:var(--font-mono);">Entity: <code>${c.id || 'comp'}.state</code></span>
-          </div>`;
-        } else if (type === 4) { // Ultrasonic HC-SR04
-          html += `<div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1.5fr; gap:10px; align-items:center; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Trig Pin (GPIO)</label>
-              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 5}" min="0" max="48" style="margin:0; padding:4px;">
-            </div>
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Echo Pin (GPIO)</label>
-              <input type="number" id="compPin2_${idx}" value="${c.pin2 !== undefined ? c.pin2 : 18}" min="0" max="48" style="margin:0; padding:4px;">
-            </div>
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Tank Depth (cm)</label>
-              <input type="number" id="compParam1_${idx}" value="${c.param1 > 0 ? c.param1 : 200}" min="10" max="500" style="margin:0; padding:4px;">
-            </div>
-            <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono); text-align:right;">
-              Entities: <code>${c.id || 'comp'}.dist</code> (cm)<br><code>${c.id || 'comp'}.level</code> (%)
-            </div>
-          </div>`;
-        } else if (type === 5) { // DHT
-          html += `<div style="display:grid; grid-template-columns: 1fr 1.2fr 1.5fr; gap:10px; align-items:center; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Data Pin (GPIO)</label>
-              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 4}" min="0" max="48" style="margin:0; padding:4px;">
-            </div>
-            <div>
-              <label style="font-size:10px; margin:0 0 2px;">Sensor Model</label>
-              <select id="compParam1_${idx}" style="margin:0; padding:4px;">
-                <option value="11" ${c.param1 === 11 || !c.param1 ? 'selected' : ''}>DHT11 (Standard)</option>
-                <option value="22" ${c.param1 === 22 ? 'selected' : ''}>DHT22 / AM2302 (Precision)</option>
-              </select>
-            </div>
-            <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono); text-align:right;">
-              Entities: <code>${c.id || 'comp'}.temp</code> (&deg;C)<br><code>${c.id || 'comp'}.hum</code> (%)
-            </div>
-          </div>`;
-        } else if (type === 2 || type === 3) { // Button or Switch
-          html += `<div style="display:flex; align-items:center; gap:14px; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
-            <div style="width:140px;">
-              <label style="font-size:10px; margin:0 0 2px;">Input Pin (GPIO)</label>
-              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 0}" min="0" max="48" style="margin:0; padding:4px;">
-            </div>
-            <span style="font-size:11px; color:var(--text-dim);">Internal pullup enabled automatically</span>
-            <span style="font-size:11px; color:var(--text-dim); margin-left:auto; font-family:var(--font-mono);">Entity: <code>${c.id || 'comp'}.state</code></span>
-          </div>`;
-        } else if (type === 7) { // ADC
-          html += `<div style="display:flex; align-items:center; gap:14px; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
-            <div style="width:140px;">
-              <label style="font-size:10px; margin:0 0 2px;">ADC Pin (GPIO)</label>
-              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 0}" min="0" max="48" style="margin:0; padding:4px;">
-            </div>
-            <span style="font-size:11px; color:var(--text-dim); margin-left:auto; font-family:var(--font-mono);">Entity: <code>${c.id || 'comp'}.raw</code></span>
-          </div>`;
-        }
-
-        html += `</div>`;
+      unassigned.forEach(p => {
+        html += `
+          <tr>
+            <td style="font-family:var(--font-mono); font-weight:600;">${escapeHtml(p.mac)}</td>
+            <td><span class="badge badge-primary">${escapeHtml(p.chip || 'ESP32')}</span></td>
+            <td style="font-family:var(--font-mono); font-size:11px; color:var(--text-dim);">${escapeHtml(p.gpios || '--')}</td>
+            <td style="text-align:right;">
+              <button class="btn btn-sm" onclick="openBindModal('${p.mac}', '${p.chip}')">Bind</button>
+            </td>
+          </tr>`;
       });
-      list.innerHTML = html;
+
+      html += '</tbody></table>';
+      container.innerHTML = html;
     }
 
-    function onComponentTypeChange(idx) {
-      syncCurrentCompInputs();
-      const typeEl = document.getElementById('compType_' + idx);
-      if (typeEl) currentComponents[idx].type = parseInt(typeEl.value);
-      renderComponentRows();
+    // =========================================================================
+    // MODAL HANDLERS & AP BRIDGE PROVISIONING
+    // =========================================================================
+
+    // Bind Modal
+    let pendingBindMac = '';
+    function openBindModal(mac, chip) {
+      pendingBindMac = mac;
+      document.getElementById('bindMacDisplay').textContent = mac;
+      const nextIdx = nodesCache.length + 1;
+      document.getElementById('bindNodeId').value = 'N0' + nextIdx;
+      document.getElementById('bindNodeName').value = 'Node ' + nextIdx + ' (' + (chip || 'ESP') + ')';
+      document.getElementById('bindApEnable').checked = false;
+      document.getElementById('bindApSsid').value = 'MiniHA_N0' + nextIdx;
+      document.getElementById('bindApPass').value = '';
+      document.getElementById('bindApHidden').checked = false;
+      toggleBindApFields();
+      document.getElementById('bindModal').style.display = 'flex';
     }
-
-    function addComponentRow() {
-      syncCurrentCompInputs();
-      const idx = currentComponents.length;
-      currentComponents.push({
-        id: 'comp' + (idx + 1),
-        name: 'Component ' + (idx + 1),
-        type: 1,
-        pin1: 4,
-        pin2: 255,
-        flags: 1,
-        param1: 0
-      });
-      renderComponentRows();
+    function closeBindModal() {
+      document.getElementById('bindModal').style.display = 'none';
     }
-
-    function removeComponentRow(idx) {
-      syncCurrentCompInputs();
-      currentComponents.splice(idx, 1);
-      renderComponentRows();
+    function toggleBindApFields() {
+      const en = document.getElementById('bindApEnable').checked;
+      document.getElementById('bindApFields').style.display = en ? 'flex' : 'none';
     }
+    async function submitBindNode() {
+      const nodeId = document.getElementById('bindNodeId').value.trim();
+      const nodeName = document.getElementById('bindNodeName').value.trim();
+      if (!nodeId) return showToast('Node ID is required', 'error');
 
-    function syncCurrentCompInputs() {
-      currentComponents.forEach((c, idx) => {
-        const idEl = document.getElementById('compCid_' + idx);
-        const nameEl = document.getElementById('compName_' + idx);
-        const typeEl = document.getElementById('compType_' + idx);
-        const p1El = document.getElementById('compPin1_' + idx);
-        const p2El = document.getElementById('compPin2_' + idx);
-        const flagsEl = document.getElementById('compFlags_' + idx);
-        const paramEl = document.getElementById('compParam1_' + idx);
+      const apEnabled = document.getElementById('bindApEnable').checked;
+      const apSsid = document.getElementById('bindApSsid').value.trim();
+      const apPass = document.getElementById('bindApPass').value;
+      const apHidden = document.getElementById('bindApHidden').checked;
 
-        if (idEl) c.id = idEl.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 11);
-        if (nameEl) c.name = nameEl.value.trim();
-        if (typeEl) c.type = parseInt(typeEl.value) || 1;
-        if (p1El) c.pin1 = parseInt(p1El.value) || 0;
-        if (p2El) c.pin2 = parseInt(p2El.value) || 255;
-        if (flagsEl) c.flags = flagsEl.checked ? 1 : 0;
-        if (paramEl) c.param1 = parseInt(paramEl.value) || 0;
-      });
-    }
-
-    async function saveComponents() {
-      syncCurrentCompInputs();
-      if (!activeCompNodeId) return;
-
-      const res = await fetch('/api/nodes/components', {
+      const res = await fetch('/api/bind', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: activeCompNodeId, components: currentComponents })
+        body: JSON.stringify({
+          mac: pendingBindMac,
+          id: nodeId,
+          name: nodeName,
+          ap_enabled: apEnabled,
+          ap_ssid: apSsid,
+          ap_pass: apPass,
+          ap_hidden: apHidden
+        })
       });
 
       if (res.ok) {
-        closeModal('componentModal');
-        showToast('Peripheral components saved and pushed to node!', 'success');
+        showToast(`Node '${nodeId}' bound successfully!`, 'success');
+        closeBindModal();
         refreshData();
       } else {
-        showToast('Failed to save components', 'error');
+        showToast('Failed to bind node', 'error');
       }
     }
 
+    // AP Bridge Modal
+    let activeApNodeId = '';
+    function openApModal(nodeId) {
+      activeApNodeId = nodeId;
+      const node = nodesCache.find(n => n.id === nodeId);
+      document.getElementById('apModalTitle').textContent = `Configure Wi-Fi AP Bridge: ${node ? (node.name || node.id) : nodeId}`;
+      const en = node && node.ap_enabled;
+      document.getElementById('apModalEnable').checked = en;
+      document.getElementById('apModalSsid').value = (node && node.ap_ssid) ? node.ap_ssid : ('MiniHA_AP_' + nodeId);
+      document.getElementById('apModalPass').value = (node && node.ap_pass) ? node.ap_pass : '';
+      document.getElementById('apModalHidden').checked = node && node.ap_hidden;
+      toggleApModalFields();
+      document.getElementById('apModal').style.display = 'flex';
+    }
+    function closeApModal() {
+      document.getElementById('apModal').style.display = 'none';
+    }
+    function toggleApModalFields() {
+      const en = document.getElementById('apModalEnable').checked;
+      document.getElementById('apModalFieldsWrap').style.display = en ? 'flex' : 'none';
+    }
+    async function submitApModal() {
+      const apEnabled = document.getElementById('apModalEnable').checked;
+      const apSsid = document.getElementById('apModalSsid').value.trim();
+      const apPass = document.getElementById('apModalPass').value;
+      const apHidden = document.getElementById('apModalHidden').checked;
+
+      const res = await fetch('/api/nodes/ap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: activeApNodeId,
+          ap_enabled: apEnabled,
+          ap_ssid: apSsid,
+          ap_pass: apPass,
+          ap_hidden: apHidden
+        })
+      });
+
+      if (res.ok) {
+        showToast('AP Bridge config dispatched to slave', 'success');
+        closeApModal();
+        refreshData();
+      } else {
+        showToast('Failed to save AP bridge config', 'error');
+      }
+    }
+
+    // Delete Node
     async function deleteNode(nodeId) {
       if (!confirm(`Are you sure you want to delete and unbind node '${nodeId}'?`)) return;
       const res = await fetch('/api/nodes/delete', {
@@ -2579,733 +3034,422 @@ inline void setupWebEndpoints() {
         body: JSON.stringify({ id: nodeId })
       });
       if (res.ok) {
-        showToast('Node deleted', 'success');
+        showToast('Node deleted successfully', 'success');
         refreshData();
       } else {
         showToast('Failed to delete node', 'error');
       }
     }
 
-    // =========================================================================
-    // DISCOVERY & BINDING
-    // =========================================================================
-    let pendingNodesCache = [];
-    function renderPending(pending) {
-      pendingNodesCache = pending || [];
-      const c = document.getElementById('pendingTable');
-      if (pending.length === 0) {
-        c.innerHTML = '<div style="color:var(--text-muted); padding:6px 0;">No unconfigured devices detected on bus.</div>';
-        return;
-      }
-      let html = '<table><tr><th>MAC</th><th>Chip</th><th>GPIOs</th><th>Action</th></tr>';
-      pending.forEach(d => {
-        html += `<tr>
-          <td><code>${d.mac}</code></td>
-          <td>${d.chip}</td>
-          <td>${d.gpios}</td>
-          <td><button class="btn btn-sm" onclick="openBindModal('${d.mac}')">Bind</button></td>
-        </tr>`;
-      });
-      c.innerHTML = html + '</table>';
-    }
+    // Component Modal
+    let activeCompNodeId = '';
+    let currentModalComponents = [];
+    let activeSafePins = [0, 1, 3, 4, 5, 6, 7, 8, 10, 20, 21];
 
-    function toggleBindApFields() {
-      const en = document.getElementById('bindApEn').checked;
-      document.getElementById('bindApFields').style.display = en ? 'block' : 'none';
-      if (en && !document.getElementById('bindApSsid').value) {
-        const id = document.getElementById('bindNodeId').value.trim() || 'N01';
-        document.getElementById('bindApSsid').value = 'MiniHA_AP_' + id;
-      }
-    }
+    function openComponentModal(nodeId) {
+      activeCompNodeId = nodeId;
+      const node = nodesCache.find(n => n.id === nodeId);
+      document.getElementById('compModalTitle').textContent = `Configure Peripherals: ${node ? (node.name || node.id) : nodeId}`;
+      
+      const chip = (node && node.chip) ? node.chip.toUpperCase() : 'ESP32C3';
+      document.getElementById('compModalChip').textContent = `Chip Architecture: ${chip}`;
 
-    function toggleApModalFields() {
-      const en = document.getElementById('apModalEn').checked;
-      document.getElementById('apModalFields').style.display = en ? 'block' : 'none';
-    }
-
-    let activeApNodeId = null;
-    function openApModal(nodeId) {
-      activeApNodeId = nodeId;
-      const node = configuredNodes.find(n => n.id === nodeId);
-      if (!node) return;
-
-      document.getElementById('apModalTitle').innerText = `Configure Wi-Fi AP Bridge: ${node.name || nodeId} (${nodeId})`;
-      const en = !!node.ap_enabled;
-      document.getElementById('apModalEn').checked = en;
-      document.getElementById('apModalSsid').value = node.ap_ssid || ('MiniHA_AP_' + nodeId);
-      document.getElementById('apModalPass').value = node.ap_pass || '';
-      toggleApModalFields();
-      document.getElementById('apModal').style.display = 'flex';
-    }
-
-    async function saveNodeApConfig() {
-      if (!activeApNodeId) return;
-      const en = document.getElementById('apModalEn').checked;
-      const ssid = document.getElementById('apModalSsid').value.trim();
-      const pass = document.getElementById('apModalPass').value;
-
-      if (en && !ssid) {
-        showToast('Please specify an AP SSID', 'error');
-        return;
-      }
-
-      const res = await fetch('/api/nodes/ap', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: activeApNodeId, ap_enabled: en, ap_ssid: ssid, ap_pass: pass })
-      });
-
-      if (res.ok) {
-        closeModal('apModal');
-        showToast('AP Bridge configuration saved and pushed to slave!', 'success');
-        refreshData();
+      if (chip.includes('8266')) {
+        activeSafePins = [4, 5, 12, 13, 14, 0, 2, 15, 16];
+      } else if (chip.includes('C3')) {
+        activeSafePins = [0, 1, 3, 4, 5, 6, 7, 8, 10, 20, 21];
       } else {
-        showToast('Failed to save AP configuration', 'error');
+        activeSafePins = [4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
       }
+
+      currentModalComponents = (node && node.components) ? JSON.parse(JSON.stringify(node.components)) : [];
+      renderComponentModalRows();
+      document.getElementById('compModal').style.display = 'flex';
     }
 
-    function openBindModal(mac) {
-      activeBindMac = mac;
-      document.getElementById('bindMacLabel').innerText = 'Device MAC: ' + mac;
-      if (document.getElementById('bindApEn')) document.getElementById('bindApEn').checked = false;
-      if (document.getElementById('bindApFields')) document.getElementById('bindApFields').style.display = 'none';
-      if (document.getElementById('bindApSsid')) document.getElementById('bindApSsid').value = '';
-      if (document.getElementById('bindApPass')) document.getElementById('bindApPass').value = '';
-      document.getElementById('bindModal').style.display = 'flex';
+    function closeComponentModal() {
+      document.getElementById('compModal').style.display = 'none';
     }
 
-    async function submitBindNode() {
-      const id = document.getElementById('bindNodeId').value.trim();
-      const name = document.getElementById('bindNodeName').value.trim();
-      const apEn = document.getElementById('bindApEn') ? document.getElementById('bindApEn').checked : false;
-      const apSsid = document.getElementById('bindApSsid') ? document.getElementById('bindApSsid').value.trim() : '';
-      const apPass = document.getElementById('bindApPass') ? document.getElementById('bindApPass').value : '';
-
-      if (!id || !name) return showToast('Fill all fields', 'error');
-
-      await fetch('/api/bind', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mac: activeBindMac, id: id, name: name, ap_enabled: apEn, ap_ssid: apSsid, ap_pass: apPass })
-      });
-      closeModal('bindModal');
-      showToast('Node binding dispatched', 'success');
-      refreshData();
-    }
-
-    // =========================================================================
-    // AUTOMATION RULES ENGINE (MODAL-BASED)
-    // =========================================================================
-    let currentRules = [];
-
-    async function loadRules() {
-      try {
-        const res = await fetch('/api/rules');
-        const data = await res.json();
-        currentRules = data.rules || [];
-        renderRules();
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    function renderRules() {
-      const container = document.getElementById('rulesList');
-      if (!container) return;
-      if (currentRules.length === 0) {
-        container.innerHTML = '<div style="color:var(--text-muted); padding:30px 10px; text-align:center;">No automation rules configured. Click <strong>+ Add Rule</strong> above to create event-driven automations.</div>';
+    function renderComponentModalRows() {
+      const container = document.getElementById('compRowsContainer');
+      if (currentModalComponents.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-dim); padding:10px 0;">No peripheral components assigned. Click "+ Add Peripheral Component" below.</div>';
         return;
       }
 
       let html = '';
-      currentRules.forEach((rule, idx) => {
-        const isEnabled = rule.enabled;
-        const cond = (rule.conditions && rule.conditions[0]) ? rule.conditions[0] : { node: '--', key: 'LVL', op: '>=', val: 0 };
-        const act = (rule.actions && rule.actions[0]) ? rule.actions[0] : { target: 'LOCAL', slot: 1, val: 1 };
-        const nTitle = rule.notify_title || '';
+      currentModalComponents.forEach((c, idx) => {
+        const type = parseInt(c.type) || 1;
+        const pin1 = c.pin1 !== undefined ? c.pin1 : 255;
+        const pin2 = c.pin2 !== undefined ? c.pin2 : 255;
 
-        html += `<div class="node-box" style="margin-bottom:12px; border:1px solid var(--card-border);">
-          <div class="node-header" style="flex-wrap:wrap; gap:8px;">
+        html += `
+          <div style="padding:12px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border); border-radius:var(--radius-sm); display:grid; grid-template-columns:1fr 1.2fr 0.8fr 0.8fr 1fr auto; gap:8px; align-items:center;">
             <div>
-              <strong style="font-size:14px;">${rule.name || ('Rule #' + (idx + 1))}</strong>
-              <span class="badge" style="margin-left:8px; font-size:10px; background:${isEnabled ? 'var(--success-subtle)' : 'var(--card-elevated)'}; color:${isEnabled ? 'var(--success)' : 'var(--text-dim)'};">${isEnabled ? 'ENABLED' : 'DISABLED'}</span>
+              <label>Component Type</label>
+              <select onchange="updateCompType(${idx}, this.value)" style="font-size:11px;">
+                <option value="1" ${type===1?'selected':''}>Relay Actuator</option>
+                <option value="2" ${type===2?'selected':''}>Ultrasonic (HC-SR04)</option>
+                <option value="3" ${type===3?'selected':''}>DHT Temp/Humidity</option>
+                <option value="4" ${type===4?'selected':''}>Digital Push Button</option>
+                <option value="5" ${type===5?'selected':''}>Capacitive Touch</option>
+                <option value="6" ${type===6?'selected':''}>Analog Sensor (ADC)</option>
+              </select>
             </div>
-            <div style="display:flex; gap:8px;">
-              <button class="btn btn-secondary btn-sm" onclick="toggleRuleEnable(${idx})" style="padding:3px 8px; font-size:11px;">${isEnabled ? 'Disable' : 'Enable'}</button>
-              <button class="btn btn-secondary btn-sm" onclick="openAddRuleModal(${idx})" style="padding:3px 8px; font-size:11px;">Edit</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteRule(${idx})" style="padding:3px 8px; font-size:11px;">Delete</button>
+            <div>
+              <label>Friendly Name</label>
+              <input type="text" value="${escapeHtml(c.name || ('Comp ' + (idx + 1)))}" onchange="currentModalComponents[${idx}].name=this.value.trim()" style="font-size:11px;">
             </div>
-          </div>
-
-          <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:10px; margin-top:8px; font-size:12px;">
-            <div style="background:var(--card-elevated); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
-              <span style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">When (Condition)</span>
-              <strong>${cond.node}</strong> &bull; <code>${cond.key}</code> <strong>${cond.op}</strong> ${cond.val}
+            <div>
+              <label>Primary Pin</label>
+              <select onchange="currentModalComponents[${idx}].pin1=parseInt(this.value)" style="font-size:11px;">
+                ${renderPinOptions(pin1)}
+              </select>
             </div>
-            <div style="background:var(--card-elevated); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
-              <span style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">Then (Action)</span>
-              Target <strong>${act.target}</strong> &bull; ${act.comp || ('Slot ' + act.slot)} &rarr; <strong style="color:${act.val === 1 ? 'var(--success)' : 'var(--text-dim)'}">${act.val === 1 ? 'TURN ON' : 'TURN OFF'}</strong>
+            <div>
+              <label>${type===2 ? 'Echo Pin' : 'Sec Pin'}</label>
+              <select ${type===2 ? '' : 'disabled'} onchange="currentModalComponents[${idx}].pin2=parseInt(this.value)" style="font-size:11px;">
+                <option value="255">None</option>
+                ${renderPinOptions(pin2)}
+              </select>
             </div>
-          </div>
-
-          ${rule.notify ? `<div style="margin-top:8px; font-size:11px; color:var(--text-muted); background:rgba(16, 185, 129, 0.05); padding:6px 10px; border-radius:var(--radius-sm); border:1px solid rgba(16, 185, 129, 0.15);">
-            <strong style="color:var(--success);">Push Alert:</strong> "${nTitle || 'Automation Alert'}" &mdash; ${rule.notify_msg || 'Condition triggered'}
-          </div>` : ''}
-        </div>`;
+            <div>
+              <label>Entity Tag</label>
+              <input type="text" value="${escapeHtml(c.id || ('comp' + idx))}" onchange="currentModalComponents[${idx}].id=this.value.trim()" style="font-size:11px;">
+            </div>
+            <div>
+              <button class="btn btn-danger btn-sm" onclick="removeComponentRow(${idx})" style="padding:4px 8px; margin-top:14px;">&times;</button>
+            </div>
+          </div>`;
       });
       container.innerHTML = html;
     }
 
-    let activeEditRuleIdx = -1;
-
-    function updateRuleCondKeys(nodeId, selectedKey) {
-      const select = document.getElementById('ruleModalCondKey');
-      const node = configuredNodes.find(n => n.id === nodeId);
-      let optHtml = '';
-      if (node && node.components && node.components.length > 0) {
-        node.components.forEach(c => {
-          const cid = c.id || 'comp';
-          const cName = c.name || cid;
-          const cType = parseInt(c.type) || 1;
-          if (cType === 4) { // Ultrasonic
-            optHtml += `<option value="${cid}.dist">${cName} &rarr; Distance (cm) [${cid}.dist]</option>`;
-            optHtml += `<option value="${cid}.level">${cName} &rarr; Tank Level (%) [${cid}.level]</option>`;
-          } else if (cType === 5) { // DHT
-            optHtml += `<option value="${cid}.temp">${cName} &rarr; Temperature (&deg;C) [${cid}.temp]</option>`;
-            optHtml += `<option value="${cid}.hum">${cName} &rarr; Humidity (%) [${cid}.hum]</option>`;
-          } else if (cType === 1) { // Relay
-            optHtml += `<option value="${cid}.state">${cName} &rarr; Relay State (0/1) [${cid}.state]</option>`;
-          } else if (cType === 2 || cType === 3) { // Button/Touch
-            optHtml += `<option value="${cid}.state">${cName} &rarr; Input State (0/1) [${cid}.state]</option>`;
-          } else if (cType === 7) { // ADC
-            optHtml += `<option value="${cid}.raw">${cName} &rarr; ADC Value [${cid}.raw]</option>`;
-          }
-        });
-      } else if (node && node.slots && node.slots.length > 0) {
-        node.slots.forEach(s => {
-          const sName = s.name || `Slot ${s.slot}`;
-          if (s.type === 4) {
-            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Distance / Level (cm)</option>`;
-          } else if (s.type === 6 || s.type === 7) {
-            optHtml += `<option value="SLOT_${s.slot}_TMP">Slot ${s.slot} (${sName}): Temperature (&deg;C)</option>`;
-            optHtml += `<option value="SLOT_${s.slot}_HUM">Slot ${s.slot} (${sName}): Humidity (%)</option>`;
-          } else if (s.type === 1) {
-            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Relay Output State (0/1)</option>`;
-          } else if (s.type === 2 || s.type === 3) {
-            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Physical Input State (0/1)</option>`;
-          } else if (s.type === 9) {
-            optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Analog Value</option>`;
-          }
-        });
-      }
-      optHtml += `<option value="LVL">Global / Primary Distance (cm)</option>`;
-      optHtml += `<option value="TMP">Global / Primary Temperature (&deg;C)</option>`;
-      optHtml += `<option value="HUM">Global / Primary Humidity (%)</option>`;
-      select.innerHTML = optHtml;
-      if (selectedKey) select.value = selectedKey;
-    }
-
-    function updateRuleActSlots(nodeId, selectedSlotOrComp) {
-      const select = document.getElementById('ruleModalActSlot');
-      const node = configuredNodes.find(n => n.id === nodeId);
-      let optHtml = '';
-      if (node && node.components && node.components.length > 0) {
-        node.components.filter(c => parseInt(c.type) === 1).forEach((c, idx) => {
-          const cid = c.id || ('comp' + idx);
-          optHtml += `<option value="${cid}">${c.name || cid} [${cid}]</option>`;
-        });
-      }
-      if (!optHtml && node && node.slots && node.slots.length > 0) {
-        node.slots.filter(s => s.type === 1).forEach(s => {
-          optHtml += `<option value="${s.slot}">Slot ${s.slot}: ${s.name || ('Relay ' + s.slot)}</option>`;
-        });
-      }
-      if (!optHtml) {
-        optHtml = `<option value="0">Default Actuator</option>`;
-      }
-      select.innerHTML = optHtml;
-      if (selectedSlotOrComp !== undefined) select.value = selectedSlotOrComp;
-    }
-
-    function onRuleCondNodeChange() {
-      const cNode = document.getElementById('ruleModalCondNode').value;
-      updateRuleCondKeys(cNode);
-    }
-
-    function onRuleActTargetChange() {
-      const aTarget = document.getElementById('ruleModalActTarget').value;
-      updateRuleActSlots(aTarget);
-    }
-
-    function openAddRuleModal(editIdx = -1) {
-      activeEditRuleIdx = editIdx;
-      document.getElementById('ruleModalTitle').innerText = (editIdx >= 0) ? 'Edit Automation Rule' : 'Add Automation Rule';
-
-      // Populate Node Dropdowns
-      const condSelect = document.getElementById('ruleModalCondNode');
-      const actSelect = document.getElementById('ruleModalActTarget');
-      let optionsHtml = '<option value="LOCAL">LOCAL (Master Hub)</option>';
-      configuredNodes.forEach(n => {
-        optionsHtml += `<option value="${n.id}">${n.name || n.id} (${n.id})</option>`;
+    function renderPinOptions(selectedPin) {
+      let out = '';
+      activeSafePins.forEach(p => {
+        out += `<option value="${p}" ${p===selectedPin?'selected':''}>GPIO ${p}</option>`;
       });
-      condSelect.innerHTML = optionsHtml;
-      actSelect.innerHTML = optionsHtml;
+      return out;
+    }
 
-      if (editIdx >= 0 && currentRules[editIdx]) {
-        const r = currentRules[editIdx];
-        document.getElementById('ruleModalName').value = r.name || '';
-        const c = (r.conditions && r.conditions[0]) ? r.conditions[0] : {};
-        condSelect.value = c.node || 'LOCAL';
-        updateRuleCondKeys(c.node || 'LOCAL', c.key || 'LVL');
-        document.getElementById('ruleModalCondOp').value = c.op || '>=';
-        document.getElementById('ruleModalCondVal').value = (c.val !== undefined) ? c.val : 100;
+    function updateCompType(idx, val) {
+      currentModalComponents[idx].type = parseInt(val);
+      renderComponentModalRows();
+    }
 
-        const a = (r.actions && r.actions[0]) ? r.actions[0] : {};
-        actSelect.value = a.target || 'LOCAL';
-        updateRuleActSlots(a.target || 'LOCAL', a.comp || a.slot || 0);
-        document.getElementById('ruleModalActVal').value = (a.val !== undefined) ? a.val : 1;
+    function addNewComponentRow() {
+      const idx = currentModalComponents.length;
+      const defPin = activeSafePins[idx % activeSafePins.length] || 0;
+      currentModalComponents.push({
+        type: 1,
+        name: 'Relay ' + (idx + 1),
+        id: 'relay' + (idx + 1),
+        pin1: defPin,
+        pin2: 255,
+        flags: 0,
+        param1: 0
+      });
+      renderComponentModalRows();
+    }
 
-        document.getElementById('ruleModalNotif').checked = !!r.notify;
-        document.getElementById('ruleModalTitleText').value = r.notify_title || '';
-        document.getElementById('ruleModalMsgText').value = r.notify_msg || '';
+    function removeComponentRow(idx) {
+      currentModalComponents.splice(idx, 1);
+      renderComponentModalRows();
+    }
+
+    async function saveComponentModal() {
+      const res = await fetch('/api/nodes/components', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: activeCompNodeId, components: currentModalComponents })
+      });
+      if (res.ok) {
+        showToast('Components saved & dispatched over bus', 'success');
+        closeComponentModal();
+        refreshData();
       } else {
-        document.getElementById('ruleModalName').value = 'Rule #' + (currentRules.length + 1);
-        if (configuredNodes.length > 0) condSelect.value = configuredNodes[0].id;
-        updateRuleCondKeys(condSelect.value, 'LVL');
-        document.getElementById('ruleModalCondOp').value = '>=';
-        document.getElementById('ruleModalCondVal').value = 140;
-
-        actSelect.value = 'LOCAL';
-        updateRuleActSlots(actSelect.value, 0);
-        document.getElementById('ruleModalActVal').value = 1;
-
-        document.getElementById('ruleModalNotif').checked = true;
-        document.getElementById('ruleModalTitleText').value = 'Automation Alert';
-        document.getElementById('ruleModalMsgText').value = 'Rule condition triggered';
+        showToast('Failed to save components', 'error');
       }
+    }
 
+    // =========================================================================
+    // AUTOMATIONS (RULES ENGINE)
+    // =========================================================================
+    async function loadRules() {
+      try {
+        const res = await fetch('/api/rules');
+        const data = await res.json();
+        const rules = data.rules || [];
+        const container = document.getElementById('rulesList');
+        if (rules.length === 0) {
+          container.innerHTML = '<div style="color:var(--text-dim); padding:10px 0;">No automation rules configured. Click "+ Add Rule" above to create event-driven logic.</div>';
+          return;
+        }
+
+        let html = '';
+        rules.forEach((r, idx) => {
+          const c = r.cond || {};
+          const a = r.act || {};
+          html += `
+            <div style="padding:14px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm); margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+              <div>
+                <strong style="font-size:13px; color:var(--text);">${escapeHtml(r.name || ('Rule #' + (idx + 1)))}</strong>
+                <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted); margin-top:4px;">
+                  IF <span style="color:#60a5fa;">[${escapeHtml(c.node || 'LOCAL')}.${escapeHtml(c.key || 'LVL')}]</span>
+                  ${escapeHtml(c.op || '>')} <span style="color:#f59e0b;">${c.val}</span>
+                  THEN <span style="color:#10b981;">[${escapeHtml(a.target || 'LOCAL')}.${escapeHtml(a.comp || ('slot' + (a.slot||0)))}] &rarr; ${a.state == 1 ? 'ON' : 'OFF'}</span>
+                </div>
+              </div>
+              <div style="display:flex; gap:6px;">
+                <button class="btn btn-secondary btn-sm" onclick="editRule(${idx})">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteRule(${idx})">Delete</button>
+              </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+      } catch (e) {}
+    }
+
+    function openAddRuleModal() {
+      editingRuleIdx = -1;
+      document.getElementById('ruleModalTitle').textContent = 'Add Automation Rule';
+      document.getElementById('ruleNameInput').value = 'Rule #' + (document.querySelectorAll('#rulesList > div').length + 1);
+      populateRuleNodeSelectors();
       document.getElementById('ruleModal').style.display = 'flex';
     }
 
-    async function saveRuleFromModal() {
-      const name = document.getElementById('ruleModalName').value.trim();
-      if (!name) return showToast('Please enter a rule name', 'error');
+    function closeRuleModal() {
+      document.getElementById('ruleModal').style.display = 'none';
+    }
 
-      const cNode = document.getElementById('ruleModalCondNode').value;
-      const cKey = document.getElementById('ruleModalCondKey').value || 'LVL';
-      const cOp = document.getElementById('ruleModalCondOp').value;
-      const cVal = parseFloat(document.getElementById('ruleModalCondVal').value) || 0;
+    function populateRuleNodeSelectors() {
+      const condNode = document.getElementById('ruleCondNode');
+      const actTarget = document.getElementById('ruleActTarget');
+      condNode.innerHTML = '';
+      actTarget.innerHTML = '';
 
-      const aTarget = document.getElementById('ruleModalActTarget').value;
-      const aSlotVal = document.getElementById('ruleModalActSlot').value || '0';
-      const aVal = parseInt(document.getElementById('ruleModalActVal').value) || 1;
+      condNode.appendChild(new Option('LOCAL (Master)', 'LOCAL'));
+      actTarget.appendChild(new Option('LOCAL (Master)', 'LOCAL'));
 
-      const isNotif = document.getElementById('ruleModalNotif').checked;
-      const nTitle = document.getElementById('ruleModalTitleText').value.trim();
-      const nMsg = document.getElementById('ruleModalMsgText').value.trim();
-
-      const ruleObj = {
-        name: name,
-        enabled: true,
-        conditions: [{ node: cNode, key: cKey, op: cOp, val: cVal }],
-        actions: [{ target: aTarget, comp: aSlotVal, slot: parseInt(aSlotVal) || 0, val: aVal, reason: name }],
-        notify: isNotif,
-        notify_title: nTitle,
-        notify_msg: nMsg
-      };
-
-      if (activeEditRuleIdx >= 0) {
-        currentRules[activeEditRuleIdx] = ruleObj;
-      } else {
-        currentRules.push(ruleObj);
-      }
-
-      const res = await fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: currentRules })
+      nodesCache.forEach(n => {
+        condNode.appendChild(new Option(n.name || n.id, n.id));
+        actTarget.appendChild(new Option(n.name || n.id, n.id));
       });
 
-      if (res.ok) {
-        closeModal('ruleModal');
-        showToast('Rule saved successfully!', 'success');
-        renderRules();
-      } else {
-        showToast('Failed to save rule', 'error');
+      updateRuleCondKeys(condNode.value);
+      updateRuleActSlots(actTarget.value);
+    }
+
+    function updateRuleCondKeys(nodeId) {
+      const keySelect = document.getElementById('ruleCondKey');
+      keySelect.innerHTML = '';
+      keySelect.appendChild(new Option('Tank Level % (LVL)', 'LVL'));
+      keySelect.appendChild(new Option('Temperature °C (TMP)', 'TMP'));
+      keySelect.appendChild(new Option('Humidity % (HUM)', 'HUM'));
+      keySelect.appendChild(new Option('Distance cm (dist)', 'dist'));
+
+      const node = nodesCache.find(n => n.id === nodeId);
+      if (node && node.components) {
+        node.components.forEach(c => {
+          if (c.id) keySelect.appendChild(new Option(c.name + ' [' + c.id + ']', c.id));
+        });
       }
     }
 
-    async function toggleRuleEnable(idx) {
-      if (!currentRules[idx]) return;
-      currentRules[idx].enabled = !currentRules[idx].enabled;
+    function updateRuleActSlots(nodeId) {
+      const slotSelect = document.getElementById('ruleActSlot');
+      slotSelect.innerHTML = '';
+      const node = nodesCache.find(n => n.id === nodeId);
+      if (node && node.components) {
+        node.components.forEach((c, idx) => {
+          if (c.type == 1) { // Relay
+            slotSelect.appendChild(new Option(c.name || c.id || ('Relay ' + idx), c.id || idx));
+          }
+        });
+      }
+      if (slotSelect.options.length === 0) {
+        slotSelect.appendChild(new Option('Relay 0 (Default)', 0));
+      }
+    }
+
+    async function saveRuleFromModal() {
+      const name = document.getElementById('ruleNameInput').value.trim();
+      const condNode = document.getElementById('ruleCondNode').value;
+      const condKey = document.getElementById('ruleCondKey').value;
+      const condOp = document.getElementById('ruleCondOp').value;
+      const condVal = parseFloat(document.getElementById('ruleCondVal').value) || 0;
+      const actTarget = document.getElementById('ruleActTarget').value;
+      const actSlot = document.getElementById('ruleActSlot').value;
+      const actState = parseInt(document.getElementById('ruleActState').value) || 0;
+
+      const ruleObj = {
+        name: name,
+        cond: { node: condNode, key: condKey, op: condOp, val: condVal },
+        act: { target: actTarget, comp: actSlot, slot: parseInt(actSlot)||0, state: actState }
+      };
+
+      const res = await fetch('/api/rules');
+      const data = await res.json();
+      const rules = data.rules || [];
+
+      if (editingRuleIdx >= 0 && editingRuleIdx < rules.length) {
+        rules[editingRuleIdx] = ruleObj;
+      } else {
+        rules.push(ruleObj);
+      }
+
       await fetch('/api/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: currentRules })
+        body: JSON.stringify({ rules })
       });
-      renderRules();
+
+      showToast('Automation rule saved', 'success');
+      closeRuleModal();
+      loadRules();
     }
 
     async function deleteRule(idx) {
       if (!confirm('Delete this automation rule?')) return;
-      currentRules.splice(idx, 1);
+      const res = await fetch('/api/rules');
+      const data = await res.json();
+      const rules = data.rules || [];
+      rules.splice(idx, 1);
       await fetch('/api/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: currentRules })
+        body: JSON.stringify({ rules })
       });
       showToast('Rule deleted', 'success');
-      renderRules();
+      loadRules();
     }
 
     async function clearAllRules() {
       if (!confirm('Are you sure you want to delete ALL automation rules?')) return;
-      await fetch('/api/rules/clear', { method: 'POST' });
-      currentRules = [];
+      await fetch('/api/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rules: [] })
+      });
       showToast('All rules cleared', 'success');
-      renderRules();
+      loadRules();
     }
 
     // =========================================================================
-    // USERS, SETTINGS & ACCOUNT
+    // DOWNTIME-SAFE EEPROM STANDALONE SCHEDULES
     // =========================================================================
-    async function loadUsers() {
-      try {
-        const res = await fetch('/api/users');
-        const data = await res.json();
-        let html = '<table><tr><th>Username</th><th>Role</th><th>Status</th><th>Actions</th></tr>';
-        (data.users || []).forEach(u => {
-          const status = u.isDefault ? '<span style="color:var(--warning);">Default Pass</span>' : '<span style="color:var(--success);">Active</span>';
-          html += `<tr>
-            <td><strong>${u.user}</strong></td>
-            <td><span class="badge">${u.role}</span></td>
-            <td>${status}</td>
-            <td>
-              <button class="btn btn-secondary btn-sm" onclick="openPassModal('${u.user}')">Password</button>
-              ${u.user !== 'admin' ? `<button class="btn btn-danger btn-sm" onclick="deleteUser('${u.user}')">Delete</button>` : ''}
-            </td>
-          </tr>`;
-        });
-        document.getElementById('usersTable').innerHTML = html + '</table>';
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    let activePassUser = '';
-    function openPassModal(targetUser = null) {
-      activePassUser = targetUser || currentSession.user;
-      document.getElementById('passModalTitle').innerText = 'Change Password: ' + activePassUser;
-      document.getElementById('modalNewPass').value = '';
-      document.getElementById('modalConfirmPass').value = '';
-      document.getElementById('passModal').style.display = 'flex';
-    }
-
-    async function submitPassChange() {
-      const p1 = document.getElementById('modalNewPass').value;
-      const p2 = document.getElementById('modalConfirmPass').value;
-      if (!p1 || p1 !== p2) return showToast('Passwords must match and cannot be empty', 'error');
-
-      const res = await fetch('/api/users/edit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: activePassUser, pass: p1 })
-      });
-      if (res.ok) {
-        closeModal('passModal');
-        showToast('Password updated successfully', 'success');
-        checkSession();
-      } else {
-        showToast('Failed to update password', 'error');
-      }
-    }
-
-    function openAddUserModal() {
-      document.getElementById('addUserName').value = '';
-      document.getElementById('addUserPass').value = '';
-      document.getElementById('addUserModal').style.display = 'flex';
-    }
-
-    async function submitAddUser() {
-      const u = document.getElementById('addUserName').value.trim();
-      const p = document.getElementById('addUserPass').value;
-      const r = document.getElementById('addUserRole').value;
-      if (!u || !p) return showToast('Username and password required', 'error');
-
-      const res = await fetch('/api/users/add', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: u, pass: p, role: r })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        closeModal('addUserModal');
-        showToast('User created successfully', 'success');
-        loadUsers();
-      } else {
-        showToast(data.error || 'Failed to add user', 'error');
-      }
-    }
-
-    async function deleteUser(u) {
-      if (!confirm(`Delete user '${u}'?`)) return;
-      const res = await fetch('/api/users/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: u })
-      });
-      const data = await res.json();
-      if (res.ok) {
-        showToast('User deleted', 'success');
-        loadUsers();
-      } else {
-        showToast(data.error || 'Error deleting user', 'error');
-      }
-    }
-
-    async function loadAccountDiagnostics() {
-      try {
-        const u = localStorage.getItem('miniha_user') || 'admin';
-        const r = localStorage.getItem('miniha_role') || 'ADMIN';
-        document.getElementById('accountUserDisplay').textContent = u;
-        document.getElementById('accountRoleBadge').textContent = r.toUpperCase();
-
-        const res = await fetch('/api/system');
-        const d = await res.json();
-        if (d.chip_model) document.getElementById('diagCpu').textContent = d.chip_model + ' @ ' + (d.cpu_freq || 240) + 'MHz';
-        if (d.free_heap) {
-          const freeKb = Math.round(d.free_heap / 1024);
-          const totalKb = Math.round((d.total_heap || d.free_heap) / 1024);
-          document.getElementById('diagHeap').textContent = freeKb + ' KB Free / ' + totalKb + ' KB';
-        }
-        if (d.littlefs_total) {
-          const usedKb = Math.round((d.littlefs_used || 0) / 1024);
-          const totKb = Math.round(d.littlefs_total / 1024);
-          document.getElementById('diagStorage').textContent = usedKb + ' KB / ' + totKb + ' KB';
-        }
-        if (d.uptime_sec !== undefined) {
-          const sec = d.uptime_sec;
-          const h = Math.floor(sec / 3600);
-          const m = Math.floor((sec % 3600) / 60);
-          const s = sec % 60;
-          document.getElementById('diagUptime').textContent = 'Uptime: ' + h + 'h ' + m + 'm ' + s + 's';
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    async function submitAccountPassChange() {
-      const p1 = document.getElementById('accountNewPass').value;
-      const p2 = document.getElementById('accountConfirmPass').value;
-      if (!p1 || p1 !== p2) {
-        showToast('Passwords do not match or empty', 'error');
-        return;
-      }
-      const u = localStorage.getItem('miniha_user') || 'admin';
-      const r = localStorage.getItem('miniha_role') || 'admin';
-      const res = await fetch('/api/users/edit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: u, pass: p1, role: r })
-      });
-      if (res.ok) {
-        showToast('Password updated successfully!', 'success');
-        document.getElementById('accountNewPass').value = '';
-        document.getElementById('accountConfirmPass').value = '';
-      } else {
-        showToast('Password change failed', 'error');
-      }
-    }
-
-    async function loadSettings() {
-      try {
-        const res = await fetch('/api/system');
-        const data = await res.json();
-        document.getElementById('cfgStaSSID').value = data.sta_ssid || '';
-        document.getElementById('cfgStaPass').value = '';
-        document.getElementById('cfgMqttEn').checked = !!data.mqtt_enabled;
-        document.getElementById('cfgMqttBroker').value = data.mqtt_broker || '';
-        document.getElementById('cfgMqttPort').value = data.mqtt_port || 8883;
-        document.getElementById('cfgMqttHomeId').value = data.mqtt_home_id || 'home_1';
-        document.getElementById('cfgMqttUser').value = data.mqtt_user || '';
-        document.getElementById('cfgMqttPass').value = '';
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    // =========================================================================
-    // DOWNTIME-SAFE STANDALONE NODE SCHEDULES (SILICON EEPROM)
-    // =========================================================================
-    let activeSchedNodeId = null;
-    let currentSchedules = [];
-
     function openScheduleTabForNode(nodeId) {
-      activeSchedNodeId = nodeId;
-      showTab('schedules');
-    }
-
-    function openScheduleModal(nodeId) {
-      openScheduleTabForNode(nodeId);
+      switchNavTab('schedules');
+      const select = document.getElementById('schedNodeSelect');
+      if (select) {
+        select.value = nodeId;
+        loadNodeSchedules(nodeId);
+      }
     }
 
     function loadSchedulesTab() {
-      const select = document.getElementById('schedTabNodeSelect');
-      if (!select) return;
-
-      let optHtml = '';
-      configuredNodes.forEach(n => {
-        optHtml += `<option value="${n.id}">${n.name || n.id} (${n.id})</option>`;
+      const select = document.getElementById('schedNodeSelect');
+      select.innerHTML = '';
+      nodesCache.forEach(n => {
+        select.appendChild(new Option(n.name || n.id, n.id));
       });
-      select.innerHTML = optHtml;
-
-      if (!activeSchedNodeId && configuredNodes.length > 0) {
-        activeSchedNodeId = configuredNodes[0].id;
+      if (nodesCache.length > 0) {
+        activeSchedNodeId = nodesCache[0].id;
+        loadNodeSchedules(activeSchedNodeId);
       }
-      if (activeSchedNodeId) {
-        select.value = activeSchedNodeId;
-      }
-      onSchedNodeChange();
     }
 
-    function onSchedNodeChange() {
-      const select = document.getElementById('schedTabNodeSelect');
-      if (select && select.value) {
-        activeSchedNodeId = select.value;
-      }
-      const node = configuredNodes.find(n => n.id === activeSchedNodeId);
-      currentSchedules = node ? JSON.parse(JSON.stringify(node.schedules || [])) : [];
-      renderSchedulesTab();
+    function loadNodeSchedules(nodeId) {
+      activeSchedNodeId = nodeId;
+      const node = nodesCache.find(n => n.id === nodeId);
+      currentSchedules = (node && node.schedules) ? JSON.parse(JSON.stringify(node.schedules)) : [];
+      renderSchedulesList();
     }
 
-    function renderSchedulesTab() {
-      const list = document.getElementById('schedTabList');
-      if (!list) return;
-
-      const node = configuredNodes.find(n => n.id === activeSchedNodeId);
-      if (!node) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding:16px 0; font-size:13px;">No hardware node selected.</div>';
-        return;
-      }
-
-      const relayComps = (node.components && node.components.length > 0)
-        ? node.components.map((c, i) => ({ id: c.id, name: c.name || c.id, compIdx: i, type: parseInt(c.type) })).filter(c => c.type === 1)
-        : (node.slots || []).map(s => ({ id: 'slot' + s.slot, name: s.name || ('Relay ' + s.slot), compIdx: s.slot, type: s.type })).filter(s => s.type === 1);
-
+    function renderSchedulesList() {
+      const container = document.getElementById('schedulesContainer');
       if (currentSchedules.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding:16px; background:var(--card-elevated); border-radius:var(--radius-sm); border:1px solid var(--card-border); font-size:13px;">No standalone schedules configured for this node. Click <strong>+ Add Daily Schedule</strong> below.</div>';
+        container.innerHTML = '<div style="color:var(--text-dim); padding:10px 0;">No standalone schedules configured for this node. Click "+ Add Daily Schedule" below.</div>';
         return;
       }
+
+      const node = nodesCache.find(n => n.id === activeSchedNodeId);
+      const comps = (node && node.components) ? node.components.filter(c => c.type == 1) : [];
 
       let html = '';
       currentSchedules.forEach((s, idx) => {
-        let actCheckboxes = '';
-        if (relayComps.length > 0) {
-          relayComps.forEach(rc => {
-            let isChecked = false;
-            if (s.targetCompsMask !== undefined && s.targetCompsMask > 0) isChecked = !!(s.targetCompsMask & (1 << rc.compIdx));
-            else if (s.targetSlotsMask !== undefined && s.targetSlotsMask > 0) isChecked = !!(s.targetSlotsMask & (1 << rc.compIdx));
-            else if (s.targetSlots && Array.isArray(s.targetSlots)) isChecked = s.targetSlots.includes(rc.compIdx);
-            else isChecked = (s.targetSlot === rc.compIdx || s.targetComp === rc.compIdx);
-            actCheckboxes += `<label style="display:inline-flex; align-items:center; gap:5px; margin-right:8px; margin-bottom:4px; cursor:pointer; background:var(--card); padding:4px 8px; border-radius:var(--radius-sm); border:1px solid var(--card-border); font-size:11px;">
-              <input type="checkbox" class="sched-chk-${idx}" value="${rc.compIdx}" ${isChecked ? 'checked' : ''}>
-              <span>${rc.name} (${rc.id})</span>
-            </label>`;
+        const startH = String(s.startH !== undefined ? s.startH : 6).padStart(2, '0');
+        const startM = String(s.startM !== undefined ? s.startM : 0).padStart(2, '0');
+        const dur = s.durationMin !== undefined ? s.durationMin : 15;
+        const mask = s.targetCompsMask !== undefined ? s.targetCompsMask : (s.targetSlotsMask !== undefined ? s.targetSlotsMask : 1);
+
+        let checkboxesHtml = '';
+        if (comps.length > 0) {
+          comps.forEach((c, cIdx) => {
+            const isChecked = (mask & (1 << cIdx)) !== 0;
+            checkboxesHtml += `
+              <label style="display:inline-flex; align-items:center; gap:4px; margin-right:10px; font-size:11px; text-transform:none; cursor:pointer;">
+                <input type="checkbox" class="sched-chk-${idx}" value="${cIdx}" ${isChecked?'checked':''} style="width:auto;">
+                <span>${escapeHtml(c.name || ('Relay ' + cIdx))}</span>
+              </label>`;
           });
         } else {
-          actCheckboxes = '<span style="color:var(--warning); font-size:11px;">No Relay output actuators configured on this node. Go to Overview &rarr; Configure Components to add relays.</span>';
+          checkboxesHtml = '<span style="color:var(--text-dim); font-size:11px;">Relay 0 (Default)</span>';
         }
 
-        const onH = String(s.onHour || 0).padStart(2, '0');
-        const onM = String(s.onMinute || 0).padStart(2, '0');
-        const offH = String(s.offHour || 0).padStart(2, '0');
-        const offM = String(s.offMinute || 0).padStart(2, '0');
-
-        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:12px 14px; margin-bottom:10px;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid var(--card-border-subtle); padding-bottom:6px;">
-            <div style="display:flex; align-items:center; gap:8px;">
-              <strong style="font-size:13px;">Daily Schedule #${idx + 1}</strong>
-              <label style="display:inline-flex; align-items:center; gap:4px; margin:0; cursor:pointer; font-size:11px; color:var(--text-muted);">
-                <input type="checkbox" id="schedEn_${idx}" ${s.enabled ? 'checked' : ''} style="width:auto; margin:0;">
-                <span>Enabled</span>
-              </label>
-            </div>
-            <button class="btn btn-danger btn-sm" onclick="removeScheduleRow(${idx})" style="padding:2px 8px; font-size:11px;">Delete</button>
-          </div>
-          
-          <div style="margin-bottom:8px;">
-            <label style="font-size:10px; margin:0 0 4px; display:block; text-transform:uppercase; color:var(--text-dim); font-weight:700;">Target Actuators (Multi-Select Support)</label>
-            <div style="display:flex; flex-wrap:wrap; gap:4px; margin-top:2px;">
-              ${actCheckboxes}
-            </div>
-          </div>
-
-          <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-top:6px;">
+        html += `
+          <div style="padding:12px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm); margin-bottom:10px; display:grid; grid-template-columns:120px 140px 1fr auto; gap:12px; align-items:center;">
             <div>
-              <label style="font-size:10px; margin:0 0 2px;">Turn ON Time</label>
-              <input type="time" id="schedOn_${idx}" value="${onH}:${onM}" style="margin:0; padding:6px;">
+              <label>Daily Start Time</label>
+              <input type="time" value="${startH}:${startM}" onchange="updateScheduleTime(${idx}, this.value)" style="font-size:11px;">
             </div>
             <div>
-              <label style="font-size:10px; margin:0 0 2px;">Turn OFF Time</label>
-              <input type="time" id="schedOff_${idx}" value="${offH}:${offM}" style="margin:0; padding:6px;">
+              <label>Duration (Minutes)</label>
+              <input type="number" min="1" max="1440" value="${dur}" onchange="currentSchedules[${idx}].durationMin=parseInt(this.value)||1" style="font-size:11px;">
             </div>
-          </div>
-        </div>`;
+            <div>
+              <label>Target Actuators</label>
+              <div style="display:flex; flex-wrap:wrap; margin-top:4px;">${checkboxesHtml}</div>
+            </div>
+            <div>
+              <button class="btn btn-danger btn-sm" onclick="removeScheduleRow(${idx})" style="padding:4px 8px; margin-top:14px;">&times;</button>
+            </div>
+          </div>`;
       });
-      list.innerHTML = html;
+      container.innerHTML = html;
     }
 
-    function addScheduleToActiveNode() {
-      if (currentSchedules.length >= 8) {
-        showToast('Max 8 standalone schedules per slave microcontroller', 'error');
-        return;
-      }
-      syncScheduleInputs();
-      const node = configuredNodes.find(n => n.id === activeSchedNodeId);
-      const relayComps = (node && node.components && node.components.length > 0)
-        ? node.components.map((c, i) => ({ id: c.id, compIdx: i, type: parseInt(c.type) })).filter(c => c.type === 1)
-        : (node ? (node.slots || []).filter(s => s.type === 1).map(s => ({ id: 'slot' + s.slot, compIdx: s.slot, type: s.type })) : []);
-      const defaultSlot = (relayComps.length > 0) ? relayComps[0].compIdx : 0;
+    function updateScheduleTime(idx, val) {
+      if (!val) return;
+      const parts = val.split(':');
+      currentSchedules[idx].startH = parseInt(parts[0]) || 0;
+      currentSchedules[idx].startM = parseInt(parts[1]) || 0;
+    }
 
+    function addScheduleRow() {
+      if (currentSchedules.length >= 8) {
+        return showToast('Maximum 8 standalone schedule slots per microcontroller EEPROM', 'warning');
+      }
       currentSchedules.push({
-        enabled: 1,
-        targetSlot: defaultSlot,
-        targetComp: defaultSlot,
-        targetSlots: [defaultSlot],
-        targetSlotsMask: (1 << defaultSlot),
-        targetCompsMask: (1 << defaultSlot),
-        action: 1,
-        onHour: 18,
-        onMinute: 0,
-        offHour: 6,
-        offMinute: 0
+        startH: 6,
+        startM: 0,
+        durationMin: 30,
+        targetCompsMask: 1,
+        targetSlotsMask: 1,
+        action: 1
       });
-      renderSchedulesTab();
+      renderSchedulesList();
     }
 
     function removeScheduleRow(idx) {
-      syncScheduleInputs();
       currentSchedules.splice(idx, 1);
-      renderSchedulesTab();
+      renderSchedulesList();
     }
 
     function syncScheduleInputs() {
       currentSchedules.forEach((s, idx) => {
-        const onEl = document.getElementById('schedOn_' + idx);
-        const offEl = document.getElementById('schedOff_' + idx);
-        const enEl = document.getElementById('schedEn_' + idx);
-        if (enEl) s.enabled = enEl.checked ? 1 : 0;
-        if (onEl && onEl.value) {
-          const parts = onEl.value.split(':');
-          s.onHour = parseInt(parts[0]) || 0;
-          s.onMinute = parseInt(parts[1]) || 0;
-        }
-        if (offEl && offEl.value) {
-          const parts = offEl.value.split(':');
-          s.offHour = parseInt(parts[0]) || 0;
-          s.offMinute = parseInt(parts[1]) || 0;
-        }
         const chks = document.querySelectorAll('.sched-chk-' + idx);
         let mask = 0;
         const selectedIndices = [];
@@ -3335,16 +3479,107 @@ inline void setupWebEndpoints() {
       });
 
       if (res.ok) {
-        const node = configuredNodes.find(n => n.id === activeSchedNodeId);
-        if (node) node.schedules = currentSchedules;
-        showToast('Schedules saved and pushed to slave EEPROM over RS-422!', 'success');
+        showToast(`Schedules pushed to Node '${activeSchedNodeId}' EEPROM`, 'success');
         refreshData();
       } else {
         showToast('Failed to save schedules', 'error');
       }
     }
 
-        async function saveSystemSettings() {
+    // =========================================================================
+    // USERS, SETTINGS & ACCOUNT
+    // =========================================================================
+    async function loadUsers() {
+      try {
+        const res = await fetch('/api/users');
+        const data = await res.json();
+        const users = data.users || [];
+        const container = document.getElementById('usersList');
+
+        let html = `
+          <table>
+            <thead>
+              <tr>
+                <th>Username</th>
+                <th>Role</th>
+                <th style="text-align:right;">Actions</th>
+              </tr>
+            </thead>
+            <tbody>`;
+
+        users.forEach(u => {
+          html += `
+            <tr>
+              <td><strong style="color:var(--text);">${escapeHtml(u.user)}</strong></td>
+              <td><span class="badge ${u.role==='admin'?'badge-success':(u.role==='member'?'badge-primary':'')}">${escapeHtml((u.role||'guest').toUpperCase())}</span></td>
+              <td style="text-align:right;">
+                ${u.user !== 'admin' ? `<button class="btn btn-danger btn-sm" onclick="deleteUser('${u.user}')">Delete</button>` : '<span style="color:var(--text-dim); font-size:11px;">Primary Admin</span>'}
+              </td>
+            </tr>`;
+        });
+
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      } catch (e) {}
+    }
+
+    function openAddUserModal() {
+      document.getElementById('addUserName').value = '';
+      document.getElementById('addUserPass').value = '';
+      document.getElementById('addUserModal').style.display = 'flex';
+    }
+    function closeAddUserModal() {
+      document.getElementById('addUserModal').style.display = 'none';
+    }
+    async function submitAddUser() {
+      const u = document.getElementById('addUserName').value.trim();
+      const p = document.getElementById('addUserPass').value;
+      const r = document.getElementById('addUserRole').value;
+      if (!u || !p) return showToast('Username and password required', 'error');
+
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: u, pass: p, role: r })
+      });
+      if (res.ok) {
+        showToast(`User '${u}' created`, 'success');
+        closeAddUserModal();
+        loadUsers();
+      } else {
+        showToast('Failed to create user', 'error');
+      }
+    }
+
+    async function deleteUser(u) {
+      if (!confirm(`Delete user '${u}'?`)) return;
+      const res = await fetch('/api/users/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: u })
+      });
+      if (res.ok) {
+        showToast('User deleted', 'success');
+        loadUsers();
+      } else {
+        showToast('Failed to delete user', 'error');
+      }
+    }
+
+    async function loadSettings() {
+      try {
+        const res = await fetch('/api/system');
+        const d = await res.json();
+        document.getElementById('cfgStaSSID').value = d.sta_ssid || '';
+        document.getElementById('cfgMqttEn').checked = !!d.mqtt_enabled;
+        document.getElementById('cfgMqttBroker').value = d.mqtt_broker || '';
+        document.getElementById('cfgMqttPort').value = d.mqtt_port || 8883;
+        document.getElementById('cfgMqttHomeId').value = d.mqtt_home_id || 'home_1';
+        document.getElementById('cfgMqttUser').value = d.mqtt_user || '';
+      } catch (e) {}
+    }
+
+    async function saveSystemSettings() {
       const payload = {
         sta_ssid: document.getElementById('cfgStaSSID').value.trim(),
         sta_pass: document.getElementById('cfgStaPass').value,
@@ -3361,10 +3596,112 @@ inline void setupWebEndpoints() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      showToast('Settings saved. Hub is rebooting...', 'success');
+      showToast('Settings saved. Hub is updating...', 'success');
     }
 
-        checkSession();
+    async function loadAccountDiagnostics() {
+      try {
+        document.getElementById('accountUserDisplay').textContent = currentSession.user || 'admin';
+        document.getElementById('accountRoleBadge').textContent = (currentSession.role || 'ADMIN').toUpperCase();
+
+        const res = await fetch('/api/system');
+        const d = await res.json();
+        if (d.free_heap) {
+          const freeKb = Math.round(d.free_heap / 1024);
+          const totalKb = Math.round((d.total_heap || d.free_heap) / 1024);
+          document.getElementById('diagHeap').textContent = freeKb + ' KB Free / ' + totalKb + ' KB';
+        }
+        if (d.littlefs_total) {
+          const usedKb = Math.round((d.littlefs_used || 0) / 1024);
+          const totKb = Math.round(d.littlefs_total / 1024);
+          document.getElementById('diagLittleFS').textContent = usedKb + ' KB used / ' + totKb + ' KB';
+        }
+        if (d.uptime !== undefined) {
+          const hrs = Math.floor(d.uptime / 3600);
+          const mins = Math.floor((d.uptime % 3600) / 60);
+          document.getElementById('diagUptime').textContent = hrs + 'h ' + mins + 'm';
+          document.getElementById('sidebarUptime').textContent = hrs + 'h ' + mins + 'm';
+        }
+        document.getElementById('diagChip').textContent = d.chip || 'ESP32 Supervisor';
+      } catch (e) {}
+    }
+
+    function openPassModal() {
+      document.getElementById('modalNewPass').value = '';
+      document.getElementById('passModal').style.display = 'flex';
+    }
+    function closePassModal() {
+      document.getElementById('passModal').style.display = 'none';
+    }
+    async function submitModalPassChange() {
+      const p = document.getElementById('modalNewPass').value;
+      if (!p) return showToast('Password required', 'error');
+      const res = await fetch('/api/users/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: currentSession.user || 'admin', pass: p, role: currentSession.role || 'admin' })
+      });
+      if (res.ok) {
+        showToast('Password updated successfully!', 'success');
+        closePassModal();
+        document.getElementById('defaultPassBanner').style.display = 'none';
+      } else {
+        showToast('Failed to update password', 'error');
+      }
+    }
+
+    async function submitAccountPassChange() {
+      const p = document.getElementById('accountNewPass').value;
+      if (!p) return showToast('Password required', 'error');
+      const res = await fetch('/api/users/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: currentSession.user || 'admin', pass: p, role: currentSession.role || 'admin' })
+      });
+      if (res.ok) {
+        showToast('Password updated successfully', 'success');
+        document.getElementById('accountNewPass').value = '';
+        document.getElementById('defaultPassBanner').style.display = 'none';
+      } else {
+        showToast('Failed to update password', 'error');
+      }
+    }
+
+    // Utilities
+    function showToast(msg, type = 'info') {
+      const t = document.getElementById('toast');
+      if (!t) return;
+      t.textContent = msg;
+      t.style.display = 'block';
+      if (type === 'error') {
+        t.style.borderColor = 'var(--danger-border)';
+        t.style.color = '#fca5a5';
+      } else if (type === 'success') {
+        t.style.borderColor = 'var(--success-border)';
+        t.style.color = '#6ee7b7';
+      } else if (type === 'warning') {
+        t.style.borderColor = 'var(--warning-border)';
+        t.style.color = '#fcd34d';
+      } else {
+        t.style.borderColor = 'var(--card-border)';
+        t.style.color = 'var(--text)';
+      }
+      clearTimeout(t._timeout);
+      t._timeout = setTimeout(() => { t.style.display = 'none'; }, 3500);
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    // Startup
+    checkSession();
     setInterval(refreshData, 3000);
   </script>
 </body>

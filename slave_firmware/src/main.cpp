@@ -350,6 +350,7 @@ void processIncomingPacket(const ParsedPacket& pkt) {
     }
     if (count > 0) rep += ":";
     rep += "ap=" + String(config.apEnabled ? 1 : 0);
+    rep += ":heap=" + String(ESP.getFreeHeap());
     sendPacketToMaster("REP", rep);
   }
   // Verb 2: SET (e.g. SET:<comp_id>:<0|1> or SET:SLOT:<id>:STATE:<0|1>)
@@ -407,9 +408,15 @@ void processIncomingPacket(const ParsedPacket& pkt) {
           }
           int pIdx = pkt.payload.indexOf(":AP_PASS:");
           if (pIdx != -1) {
-            String apP = pkt.payload.substring(pIdx + 9);
+            int pEnd = pkt.payload.indexOf(':', pIdx + 9);
+            String apP = (pEnd == -1) ? pkt.payload.substring(pIdx + 9) : pkt.payload.substring(pIdx + 9, pEnd);
             strncpy(config.apPass, apP.c_str(), sizeof(config.apPass) - 1);
             config.apPass[sizeof(config.apPass) - 1] = '\0';
+          }
+          int hIdx = pkt.payload.indexOf(":AP_HIDDEN:");
+          if (hIdx != -1) {
+            int hEnd = pkt.payload.indexOf(':', hIdx + 11);
+            config.apHidden = (hEnd == -1) ? pkt.payload.substring(hIdx + 11).toInt() : pkt.payload.substring(hIdx + 11, hEnd).toInt();
           }
         }
 
@@ -418,11 +425,11 @@ void processIncomingPacket(const ParsedPacket& pkt) {
 
         // If Downstream SoftAP is provisioned, activate bridge server immediately!
         if (config.apEnabled) {
-          Serial.printf("[AP] Activating Downstream SoftAP '%s'...\n", config.apSsid);
+          Serial.printf("[AP] Activating Downstream SoftAP '%s' (Hidden: %d)...\n", config.apSsid, config.apHidden);
           if (config.transportMode == MODE_WIRELESS) WiFi.mode(WIFI_AP_STA);
           else WiFi.mode(WIFI_AP);
-          if (strlen(config.apPass) >= 8) WiFi.softAP(config.apSsid, config.apPass);
-          else WiFi.softAP(config.apSsid);
+          const char* passPtr = (strlen(config.apPass) >= 8) ? config.apPass : NULL;
+          WiFi.softAP(config.apSsid, passPtr, 1, config.apHidden ? 1 : 0);
           if (!bridgeServer) {
             bridgeServer = new WiFiServer(DEFAULT_MESH_PORT);
             bridgeServer->begin();
@@ -468,13 +475,17 @@ void processIncomingPacket(const ParsedPacket& pkt) {
         sendPacketToMaster("ACK", "COMP_CONFIGURED:" + String(cIdx));
       }
     } else if (pkt.payload.startsWith("AP:")) {
-      // CFG:AP:<1|0>:<ssid>:<pass>
+      // CFG:AP:<1|0>:<ssid>:<pass>:<hidden>
       int c1 = pkt.payload.indexOf(':', 3);
       if (c1 != -1) {
         int en = pkt.payload.substring(3, c1).toInt();
         int c2 = pkt.payload.indexOf(':', c1 + 1);
         String apSsid = (c2 != -1) ? pkt.payload.substring(c1 + 1, c2) : pkt.payload.substring(c1 + 1);
-        String apPass = (c2 != -1) ? pkt.payload.substring(c2 + 1) : "";
+        int c3 = (c2 != -1) ? pkt.payload.indexOf(':', c2 + 1) : -1;
+        String apPass = (c3 != -1) ? pkt.payload.substring(c2 + 1, c3) : ((c2 != -1) ? pkt.payload.substring(c2 + 1) : "");
+        if (c3 != -1) {
+          config.apHidden = pkt.payload.substring(c3 + 1).toInt() ? 1 : 0;
+        }
 
         config.apEnabled = (en == 1) ? 1 : 0;
         if (apSsid.length() > 0) {
@@ -486,11 +497,11 @@ void processIncomingPacket(const ParsedPacket& pkt) {
         saveConfig();
 
         if (config.apEnabled) {
-          Serial.printf("[AP] Starting downstream SoftAP '%s' for child nodes...\n", config.apSsid);
+          Serial.printf("[AP] Starting downstream SoftAP '%s' (Hidden: %d)...\n", config.apSsid, config.apHidden);
           if (config.transportMode == MODE_WIRELESS) WiFi.mode(WIFI_AP_STA);
           else WiFi.mode(WIFI_AP);
-          if (strlen(config.apPass) >= 8) WiFi.softAP(config.apSsid, config.apPass);
-          else WiFi.softAP(config.apSsid);
+          const char* passPtr = (strlen(config.apPass) >= 8) ? config.apPass : NULL;
+          WiFi.softAP(config.apSsid, passPtr, 1, config.apHidden ? 1 : 0);
           if (!bridgeServer) {
             bridgeServer = new WiFiServer(DEFAULT_MESH_PORT);
             bridgeServer->begin();
@@ -650,6 +661,7 @@ void startCaptivePortal() {
 
     html += "<hr style='border:0;border-top:1px solid #334155;margin:20px 0'>";
     html += "<label><input type='checkbox' name='ap_en' value='1'" + String(config.apEnabled ? " checked" : "") + " style='width:auto;margin-right:8px'>Host Downstream SoftAP (Repeater mode for nearby child slaves)</label>";
+    html += "<label style='margin:4px 0 10px;font-size:12px;color:#94a3b8'><input type='checkbox' name='ap_hidden' value='1'" + String(config.apHidden ? " checked" : "") + " style='width:auto;margin-right:8px'>Hide SoftAP Network (Hidden SSID)</label>";
     html += "<div class='row'>";
     html += "<div><label>Downstream SSID</label><input type='text' name='ap_ssid' value='" + (strlen(config.apSsid) > 0 ? String(config.apSsid) : "SlaveNet-01") + "'></div>";
     html += "<div><label>Downstream Password</label><input type='text' name='ap_pass' value='" + String(config.apPass) + "' placeholder='Min 8 chars'></div>";
@@ -682,6 +694,7 @@ void startCaptivePortal() {
     config.masterPort = (p > 0) ? p : DEFAULT_MESH_PORT;
 
     config.apEnabled = portalServer->hasArg("ap_en") ? 1 : 0;
+    config.apHidden = portalServer->hasArg("ap_hidden") ? 1 : 0;
     if (portalServer->arg("ap_ssid").length() > 0) {
       strncpy(config.apSsid, portalServer->arg("ap_ssid").c_str(), sizeof(config.apSsid) - 1);
       config.apSsid[sizeof(config.apSsid) - 1] = '\0';
@@ -805,9 +818,10 @@ void setup() {
     // Bound Wired Mode
     Serial.println("[WIRED] Operating on Isolated RS-422 Hardware Serial Star Bus.");
     if (config.apEnabled) {
-      Serial.printf("[AP] Starting downstream SoftAP '%s' for child nodes...\n", config.apSsid);
+      Serial.printf("[AP] Starting downstream SoftAP '%s' (Hidden: %d)...\n", config.apSsid, config.apHidden);
       WiFi.mode(WIFI_AP);
-      WiFi.softAP(config.apSsid, config.apPass);
+      const char* passPtr = (strlen(config.apPass) >= 8) ? config.apPass : NULL;
+      WiFi.softAP(config.apSsid, passPtr, 1, config.apHidden ? 1 : 0);
       bridgeServer = new WiFiServer(DEFAULT_MESH_PORT);
       bridgeServer->begin();
     } else {

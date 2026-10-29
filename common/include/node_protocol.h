@@ -17,7 +17,7 @@
 #define MAX_GPIO_SLOTS          16    // Backward compatibility alias
 #define MAX_LINKS               16    // Max local sensor-actuator link rules per node
 #define MAX_SCHEDULES           8     // Max standalone local schedule slots per node
-#define PROTOCOL_SCHEMA_VERSION 0x0007
+#define PROTOCOL_SCHEMA_VERSION 0x0008
 #define SCHEMA_MAGIC            (0xAA550000 | PROTOCOL_SCHEMA_VERSION)
 #define DEFAULT_MESH_PORT       8266
 
@@ -116,6 +116,7 @@ struct NodeStorageConfig {
   uint16_t masterPort;        // Master Port (default 8266)
 
   uint8_t apEnabled;          // 1 = hosts downstream SoftAP (Repeater mode)
+  uint8_t apHidden;           // 1 = hidden SSID broadcast
   char apSsid[33];            // Downstream SoftAP SSID (e.g. "SlaveNet-01")
   char apPass[65];            // Downstream SoftAP Password
 

@@ -27,6 +27,7 @@ struct GenericNodeTelemetry {
   float compVal2[MAX_COMPONENTS] = {0.0};
   uint8_t numComps = 0;
   unsigned long lastSeen = 0;
+  uint32_t freeHeap = 0;
 
   void setComponentData(const String& key, float v1, float v2 = 0.0) {
     for (uint8_t i = 0; i < numComps; i++) {
@@ -83,7 +84,8 @@ inline GenericNodeTelemetry* getOrCreateNodeState(const String& nodeId) {
   }
   if (numTrackedNodes < MAX_TRACKED_NODES) {
     nodeStates[numTrackedNodes].nodeId = nodeId;
-    nodeStates[numTrackedNodes].lastSeen = millis();
+    nodeStates[numTrackedNodes].lastSeen = 0; // 0 indicates offline until first packet received
+    nodeStates[numTrackedNodes].freeHeap = 0;
     return &nodeStates[numTrackedNodes++];
   }
   return nullptr;

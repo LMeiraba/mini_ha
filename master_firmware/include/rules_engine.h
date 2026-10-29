@@ -269,7 +269,13 @@ inline void clearAlertLogs() {
 
 inline void reloadNotificationsCache() {
   cachedNotifsDoc.clear();
-  if (LittleFS.exists(NOTIFICATIONS_CONFIG_PATH)) {
+  if (!LittleFS.exists(NOTIFICATIONS_CONFIG_PATH)) {
+    File file = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "w");
+    if (file) {
+      file.print(R"({"notifications":[]})");
+      file.close();
+    }
+  } else {
     File file = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "r");
     if (file) {
       deserializeJson(cachedNotifsDoc, file);

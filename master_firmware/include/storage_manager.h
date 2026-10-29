@@ -57,6 +57,16 @@ inline bool initLittleFSStorage() {
     }
   }
 
+  // Self-healing: If notifications.json does not exist, initialize empty registry
+  if (!LittleFS.exists("/config/notifications.json")) {
+    Serial.println("[STORAGE] Auto-creating default /config/notifications.json...");
+    File f = LittleFS.open("/config/notifications.json", "w");
+    if (f) {
+      f.print(R"({"notifications":[]})");
+      f.close();
+    }
+  }
+
   // Self-healing: If system.json does not exist, initialize default network/cloud settings
   if (!LittleFS.exists(SYSTEM_CONFIG_PATH)) {
     Serial.println("[STORAGE] Auto-creating default /config/system.json...");
@@ -147,7 +157,38 @@ inline void registerPendingDevice(const String& mac, const String& chip, const S
     f.close();
     if (!err && doc.containsKey("nodes")) {
       for (JsonObject node : doc["nodes"].as<JsonArray>()) {
-        if (node["mac"].as<String>() == mac) return; // Already bound to a node!
+        if (node["mac"].as<String>() == mac) {
+          // Automatic Re-provision on reflash/reboot!
+          extern void broadcastBusPacket(const String& pkt);
+          String existingId = node["id"].as<String>();
+          bool apEnabled = node.containsKey("ap") ? node["ap"].as<bool>() : false;
+          String apSsid = node.containsKey("ap_ssid") ? node["ap_ssid"].as<String>() : "";
+          String apPass = node.containsKey("ap_pass") ? node["ap_pass"].as<String>() : "";
+          String bindPkt = "MAC:" + mac + ":SET_ID:" + existingId;
+          if (apEnabled && apSsid.length() > 0) {
+            bindPkt += ":AP:1:AP_SSID:" + apSsid + ":AP_PASS:" + apPass;
+          }
+          broadcastBusPacket(buildPacket("ALL", "M", "BIND", bindPkt));
+          Serial.printf("[AUTO-BIND] Re-provisioned recognized MAC %s back to Node ID: %s\n", mac.c_str(), existingId.c_str());
+
+          // Re-dispatch component peripherals if previously assigned
+          if (node.containsKey("components") && node["components"].is<JsonArray>()) {
+            JsonArray comps = node["components"].as<JsonArray>();
+            int idx = 0;
+            for (JsonObject c : comps) {
+              int type = c["type"].as<int>();
+              int pin1 = c.containsKey("pin1") ? c["pin1"].as<int>() : 255;
+              int pin2 = c.containsKey("pin2") ? c["pin2"].as<int>() : 255;
+              int flags = c.containsKey("flags") ? c["flags"].as<int>() : 0;
+              int param1 = c.containsKey("param1") ? c["param1"].as<int>() : 0;
+              String cid = c.containsKey("id") ? c["id"].as<String>() : ("c" + String(idx));
+              String p = "COMP:" + String(idx) + ":" + String(type) + ":" + String(pin1) + ":" + String(pin2) + ":" + String(flags) + ":" + String(param1) + ":" + cid;
+              broadcastBusPacket(buildPacket(existingId, "M", "CFG", p));
+              idx++;
+            }
+          }
+          return; // Recognized & re-provisioned
+        }
       }
     }
   }

@@ -603,7 +603,7 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.printf("\n[MASTER] Booting Mini-HomeAssistant Supervisor on %s...\n", MASTER_CHIP_NAME);
+  Serial.printf("\n[MASTER] Booting Mini-HomeAssistant Supervisor v0.1.1-beta on %s...\n", MASTER_CHIP_NAME);
   // Initialize Isolated RS-422 Star Hardware Serial Ports
   BusPort1.begin(115200, SERIAL_8N1, PORT1_RX_PIN, PORT1_TX_PIN);
   Serial.printf("[MASTER] Star Port 1: UART1 (RX: GPIO%d, TX: GPIO%d)\n", PORT1_RX_PIN, PORT1_TX_PIN);

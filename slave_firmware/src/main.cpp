@@ -350,7 +350,7 @@ void sendAnnouncement() {
                    ":COMPS:" + String(MAX_COMPONENTS) + 
                    ":MODE:" + String(config.transportMode == MODE_WIRELESS ? "WIFI" : "WIRED") +
                    ":AP:" + String(config.apEnabled ? 1 : 0) +
-                   ":FW:3.2.0";
+                   ":FW:0.1.1-beta";
   Serial.println("[BUS TX] Sending ANN to Master: " + payload);
   sendPacketToMaster("ANN", payload);
 }
@@ -820,7 +820,7 @@ void setup() {
   applyHardwareConfiguration();
 
   Serial.println("\n==========================================");
-  Serial.printf(" [MINI-HA SLAVE] Node: %s | Chip: %s\n", config.nodeId, CHIP_NAME_STR);
+  Serial.printf(" [MINI-HA SLAVE] Node: %s | Chip: %s (v0.1.1-beta)\n", config.nodeId, CHIP_NAME_STR);
   Serial.printf(" Transport: %s | Bus: 115200 baud\n", config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED");
   Serial.println("==========================================\n");
 

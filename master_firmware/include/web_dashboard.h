@@ -326,8 +326,8 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", out);
   });
 
-  // 5. User Management: Add User (Admin only)
-  webServer.on("/api/users/add", HTTP_POST, []() {
+  // 5. User Management: Add User (Admin only - accepts both /api/users/add and /api/users)
+  auto handleAddUser = []() {
     if (!requireRole(ROLE_ADMIN)) return;
     if (!webServer.hasArg("plain")) {
       webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"Missing body\"}");
@@ -350,6 +350,9 @@ inline void setupWebEndpoints() {
       deserializeJson(doc, f);
       f.close();
     }
+    if (!doc.containsKey("users") || !doc["users"].is<JsonArray>()) {
+      doc.createNestedArray("users");
+    }
     JsonArray users = doc["users"].as<JsonArray>();
     for (JsonObject u : users) {
       if (u["user"].as<String>() == newUser) {
@@ -369,7 +372,9 @@ inline void setupWebEndpoints() {
       outF.close();
     }
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"User added\"}");
-  });
+  };
+  webServer.on("/api/users/add", HTTP_POST, handleAddUser);
+  webServer.on("/api/users", HTTP_POST, handleAddUser);
 
   // 6. User Management: Edit User / Change Password
   webServer.on("/api/users/edit", HTTP_POST, []() {
@@ -567,9 +572,9 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Command dispatched\"}");
   });
 
-  // 12. Read System & Cloud Configuration
+  // 12. Read System & Cloud Configuration (Diagnostics accessible to all signed-in users)
   webServer.on("/api/system", HTTP_GET, []() {
-    if (!requireRole(ROLE_ADMIN)) return;
+    if (!requireRole(ROLE_GUEST)) return;
     DynamicJsonDocument doc(512);
     doc["ap_ssid"] = sysSecurity.apSsid;
     doc["sta_ssid"] = sysSecurity.staSsid;
@@ -1943,7 +1948,7 @@ inline void setupWebEndpoints() {
 
       <div style="margin-top:18px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.05); display:flex; justify-content:space-between; font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">
         <span>miniha.local</span>
-        <span>v0.1.0-beta</span>
+        <span>v0.1.1-beta</span>
       </div>
     </div>
   </div>
@@ -2060,78 +2065,92 @@ inline void setupWebEndpoints() {
         </div>
 
         <!-- ========================================================================= -->
-        <!-- TAB 1: DASHBOARD (UNIFIED CONTROLS & SENSOR TELEMETRY) -->
+        <!-- TAB 1: DASHBOARD (UNIFIED CONTROLS, SENSORS & SYSTEM HEALTH) -->
         <!-- ========================================================================= -->
         <section id="viewDashboard">
-          <!-- KPI Summary Strip -->
-          <div class="kpi-grid">
-            <div class="kpi-card">
-              <div class="kpi-icon-wrap" style="color:#60a5fa;">
-                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/></svg>
+
+          <!-- Master Supervisor & Star-Mesh Health Diagnostic Card -->
+          <div class="card" style="margin-bottom:18px; background:linear-gradient(135deg, rgba(22,27,38,0.85), rgba(15,18,25,0.95)); border:1px solid rgba(255,255,255,0.08);">
+            <div class="card-header" style="margin-bottom:12px;">
+              <div style="display:flex; align-items:center; gap:10px;">
+                <span class="status-dot online"></span>
+                <div>
+                  <h3 class="card-title" style="font-size:14px; letter-spacing:0.3px;">Master Supervisor &amp; Star-Mesh Health</h3>
+                  <div style="font-size:11px; color:var(--text-dim); margin-top:2px;">Local hub runtime, LittleFS partition storage &amp; RS-422 star diagnostics</div>
+                </div>
               </div>
-              <div class="kpi-data">
-                <div class="kpi-label">Nodes Connected</div>
-                <div class="kpi-val" id="kpiNodesOnline">0 / 0 Online</div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="badge badge-success" style="font-family:var(--font-mono); font-size:10px; font-weight:700;">v0.1.1-beta</span>
+                <span class="badge badge-primary" id="dashHubIp">192.168.4.1</span>
               </div>
             </div>
 
-            <div class="kpi-card">
-              <div class="kpi-icon-wrap" style="color:#10b981;">
-                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/></svg>
-              </div>
-              <div class="kpi-data">
-                <div class="kpi-label">Active Switches</div>
-                <div class="kpi-val" id="kpiActiveRelays">0 ON</div>
-              </div>
+            <div class="node-hardware-strip" style="grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:10px;">
+              <div class="hw-prop"><span class="hw-lbl">Controller Chip</span><span class="hw-val" id="dashChip">ESP32 Supervisor</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Master Free RAM</span><span class="hw-val" id="dashHeap">-- KB Free</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Flash Storage</span><span class="hw-val" id="dashLittleFS">-- KB used</span></div>
+              <div class="hw-prop"><span class="hw-lbl">System Uptime</span><span class="hw-val" id="dashUptime">--</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Bus Star Ports</span><span class="hw-val" id="dashBusCount">UART1 &amp; UART2</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Connected Mesh</span><span class="hw-val" id="dashMeshSummary" style="color:var(--primary);">0 Slaves Online</span></div>
             </div>
 
-            <div class="kpi-card">
-              <div class="kpi-icon-wrap" style="color:#38bdf8;">
-                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/></svg>
+            <!-- Connected Slaves Live Telemetry Strip -->
+            <div style="margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
+              <div style="font-size:11px; font-weight:700; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+                <span>Connected Slave Microcontrollers Telemetry</span>
+                <span id="dashSlaveCountText" style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted);">0 registered</span>
               </div>
-              <div class="kpi-data">
-                <div class="kpi-label">Water Tank</div>
-                <div class="kpi-val" id="kpiTankLevel">-- %</div>
-              </div>
-            </div>
-
-            <div class="kpi-card">
-              <div class="kpi-icon-wrap" style="color:#f59e0b;">
-                <svg class="icon" style="width:20px; height:20px;" viewBox="0 0 24 24"><path d="M14 14.76V3.5a2.5 2.5 0 0 0-5 0v11.26a4.5 4.5 0 1 0 5 0z"/></svg>
-              </div>
-              <div class="kpi-data">
-                <div class="kpi-label">Environment</div>
-                <div class="kpi-val" id="kpiClimate">-- &deg;C</div>
+              <div id="dashSlavesHealthContainer" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:10px;">
+                <div style="color:var(--text-dim); font-size:11px; padding:6px 0;">No slave microcontrollers bound yet.</div>
               </div>
             </div>
           </div>
 
-          <!-- Live Actuators & Switches Section -->
-          <div class="card">
+          <!-- ROW 1: ACTUATORS & RELAYS -->
+          <div class="card" style="margin-bottom:18px;">
             <div class="card-header">
               <div>
                 <h3 class="card-title">
                   <svg class="icon" style="color:var(--primary);" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
-                  <span>Actuators & Relays</span>
+                  <span>Actuators &amp; Relays</span>
                 </h3>
-                <p class="card-desc">Instant sub-millisecond local switching over isolated RS-422 bus</p>
+                <p class="card-desc">Sub-millisecond local switching over isolated RS-422 star bus</p>
               </div>
+              <div id="actuatorCountBadge" class="badge">0 Active</div>
             </div>
             <div id="dashboardRelaysGrid" class="controls-grid">
-              <div style="color:var(--text-dim); padding:10px 0;">No actuators configured. Add relays in Hardware Nodes tab.</div>
+              <div style="color:var(--text-dim); padding:10px 0;">No actuators configured yet. Use Hardware Nodes tab to configure peripherals.</div>
             </div>
           </div>
 
-          <!-- Live Sensors & Gauges Section -->
+          <!-- ROW 2: WALL SWITCHES & INPUT BUTTONS -->
+          <div class="card" style="margin-bottom:18px;">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">
+                  <svg class="icon" style="color:#38bdf8;" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 8v8"/><circle cx="12" cy="8" r="2"/></svg>
+                  <span>Wall Switches &amp; Input Buttons</span>
+                </h3>
+                <p class="card-desc">Edge-triggered wall rocker toggle switches (FLIPPED UP/DOWN), push buttons, and touch inputs</p>
+              </div>
+              <div id="inputsCountBadge" class="badge">0 Inputs</div>
+            </div>
+            <div id="dashboardInputsGrid" class="controls-grid">
+              <div style="color:var(--text-dim); padding:10px 0;">No wall switches or buttons configured.</div>
+            </div>
+          </div>
+
+          <!-- ROW 3: SENSORS & TELEMETRY FEEDS -->
           <div class="card">
             <div class="card-header">
               <div>
                 <h3 class="card-title">
                   <svg class="icon" style="color:var(--success);" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 4.24 4.24"/><path d="m14.83 9.17 4.24-4.24"/><path d="m14.83 14.83 4.24 4.24"/><path d="m9.17 14.83-4.24 4.24"/></svg>
-                  <span>Sensors & Telemetry Feeds</span>
+                  <span>Sensors &amp; Telemetry Feeds</span>
                 </h3>
-                <p class="card-desc">Real-time water levels, temperature dials, and hardware bus feeds</p>
+                <p class="card-desc">Real-time ultrasonic water levels, DHT temperature/humidity, and ADC voltages</p>
               </div>
+              <div id="sensorsCountBadge" class="badge">0 Sensors</div>
             </div>
             <div id="dashboardSensorsGrid" class="controls-grid">
               <div style="color:var(--text-dim); padding:10px 0;">No sensors active.</div>
@@ -2381,6 +2400,21 @@ inline void setupWebEndpoints() {
   <!-- ========================================================================= -->
   <!-- MODALS -->
   <!-- ========================================================================= -->
+
+  <!-- CUSTOM CONFIRMATION MODAL -->
+  <div id="customConfirmModal" class="modal-backdrop" style="display:none; z-index:99999;">
+    <div class="modal-card" style="max-width:440px;">
+      <div class="modal-head">
+        <h4 class="modal-title" id="confirmModalTitle">Confirm Action</h4>
+        <button class="btn btn-secondary btn-sm" onclick="closeConfirmModal()">&times;</button>
+      </div>
+      <div id="confirmModalMessage" style="font-size:13px; color:var(--text-muted); margin:14px 0 22px; line-height:1.5;"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeConfirmModal()">Cancel</button>
+        <button class="btn btn-danger" id="confirmModalBtn" onclick="executeConfirmModalAction()">Confirm</button>
+      </div>
+    </div>
+  </div>
 
   <!-- BIND MODAL -->
   <div id="bindModal" class="modal-backdrop" style="display:none;">
@@ -2822,7 +2856,11 @@ inline void setupWebEndpoints() {
     // Real-Time Telemetry & Data Polling
     async function refreshData() {
       try {
-        const [nRes, sRes] = await Promise.all([fetch('/api/nodes'), fetch('/api/state')]);
+        const [nRes, sRes, sysRes] = await Promise.all([
+          fetch('/api/nodes'),
+          fetch('/api/state'),
+          fetch('/api/system')
+        ]);
         if (nRes.ok) {
           const nData = await nRes.json();
           nodesCache = nData.nodes || [];
@@ -2834,6 +2872,10 @@ inline void setupWebEndpoints() {
             liveStates[n.id] = n;
           });
         }
+        if (sysRes && sysRes.ok) {
+          const sysData = await sysRes.json();
+          updateSystemHealthUI(sysData);
+        }
 
         renderDashboard();
         renderNodesCards();
@@ -2844,38 +2886,111 @@ inline void setupWebEndpoints() {
       }
     }
 
+    function updateSystemHealthUI(d) {
+      if (!d) return;
+      if (d.chip_model || d.chip) {
+        const chipText = (d.chip_model || d.chip) + (d.chip_cores ? ` (${d.chip_cores} Core @ ${d.cpu_freq || 160}MHz)` : '');
+        const el = document.getElementById('dashChip');
+        if (el) el.textContent = chipText;
+        const diagEl = document.getElementById('diagChip');
+        if (diagEl) diagEl.textContent = chipText;
+      }
+      if (d.free_heap) {
+        const freeKb = Math.round(d.free_heap / 1024);
+        const totalKb = Math.round((d.total_heap || d.free_heap) / 1024);
+        const ramText = `${freeKb} KB Free / ${totalKb} KB`;
+        const el = document.getElementById('dashHeap');
+        if (el) el.textContent = ramText;
+        const diagEl = document.getElementById('diagHeap');
+        if (diagEl) diagEl.textContent = ramText;
+      }
+      if (d.littlefs_total) {
+        const usedKb = Math.round((d.littlefs_used || 0) / 1024);
+        const totKb = Math.round(d.littlefs_total / 1024);
+        const fsText = `${usedKb} KB used / ${totKb} KB`;
+        const el = document.getElementById('dashLittleFS');
+        if (el) el.textContent = fsText;
+        const diagEl = document.getElementById('diagLittleFS');
+        if (diagEl) diagEl.textContent = fsText;
+      }
+      const uptimeVal = (d.uptime_sec !== undefined) ? d.uptime_sec : d.uptime;
+      if (uptimeVal !== undefined) {
+        const hrs = Math.floor(uptimeVal / 3600);
+        const mins = Math.floor((uptimeVal % 3600) / 60);
+        const uptimeText = `${hrs}h ${mins}m`;
+        const el = document.getElementById('dashUptime');
+        if (el) el.textContent = uptimeText;
+        const diagEl = document.getElementById('diagUptime');
+        if (diagEl) diagEl.textContent = uptimeText;
+        const sideEl = document.getElementById('sidebarUptime');
+        if (sideEl) sideEl.textContent = uptimeText;
+      }
+      if (d.ap_ssid) {
+        const el = document.getElementById('dashHubIp');
+        if (el) el.textContent = d.ap_ssid + ' (192.168.4.1)';
+      }
+    }
+
     function updateRtcClock() {
       const d = new Date();
       document.getElementById('hubRtcClock').textContent = d.toLocaleTimeString();
     }
 
     // =========================================================================
-    // TAB 1: RENDER UNIFIED DASHBOARD
+    // TAB 1: RENDER UNIFIED DASHBOARD (3-ROW COMPONENT ARCHITECTURE)
     // =========================================================================
     function renderDashboard() {
       let totalNodes = nodesCache.length;
       let onlineNodes = 0;
+      let totalRelays = 0;
       let activeRelays = 0;
-      let latestTankLevel = null;
-      let latestTemp = null;
-      let latestHum = null;
+      let totalInputs = 0;
+      let totalSensors = 0;
 
       let relaysHtml = '';
+      let inputsHtml = '';
       let sensorsHtml = '';
+      let slavesHealthHtml = '';
 
       nodesCache.forEach(node => {
-        const state = liveStates[node.id] || { components: {}, relays: [], lastSeen: 999999, hasSeen: false };
+        const state = liveStates[node.id] || { components: {}, relays: [], lastSeen: 999999, hasSeen: false, freeHeap: 0 };
         const isOnline = (state.hasSeen && state.lastSeen <= 8);
         if (isOnline) onlineNodes++;
 
+        // Render Slave Health Card for Telemetry Strip
+        const lastSeenText = (!state.hasSeen) ? 'Never seen' : (isOnline ? `${state.lastSeen}s ago` : `${state.lastSeen}s ago (Offline)`);
+        const ramText = state.freeHeap ? `${Math.round(state.freeHeap / 1024)} KB Free` : (isOnline ? 'Active' : 'Offline');
+        slavesHealthHtml += `
+          <div style="padding:10px 12px; background:rgba(0,0,0,0.35); border:1px solid ${isOnline ? 'rgba(16,185,129,0.25)' : 'rgba(255,255,255,0.06)'}; border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:5px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <span class="status-dot ${isOnline ? 'online' : 'offline'}"></span>
+                <strong style="font-size:12px; color:var(--text-bright);">${escapeHtml(node.name || node.id)}</strong>
+              </div>
+              <span class="badge ${isOnline ? 'badge-success' : 'badge-danger'}" style="font-size:9px; padding:2px 6px;">${isOnline ? 'ONLINE' : 'OFFLINE'}</span>
+            </div>
+            <div style="font-family:var(--font-mono); font-size:10px; color:var(--text-dim); display:flex; justify-content:space-between;">
+              <span>ID: ${escapeHtml(node.id)}</span>
+              <span>${escapeHtml(node.chip || 'Microcontroller')}</span>
+            </div>
+            <div style="font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.05); padding-top:4px;">
+              <span>RAM: <strong style="color:${state.freeHeap ? '#38bdf8' : 'var(--text-dim)'};">${ramText}</strong></span>
+              <span>Seen: ${lastSeenText}</span>
+            </div>
+          </div>`;
+
         const comps = node.components || [];
+        const slots = node.slots || [];
+
+        // 1. Process Peripherals via Decoupled Components Scheme
         comps.forEach((c, idx) => {
           const compId = c.id || ('comp' + idx);
           const compName = c.name || compId;
           const cType = parseInt(c.type) || 1;
           const compState = (state.comps && state.comps[compId]) ? state.comps[compId] : ((state.components && state.components[compId]) ? state.components[compId] : null);
 
-          if (cType === 1) { // Relay Actuator
+          if (cType === 1) { // ROW 1: Relay Actuator
+            totalRelays++;
             let isOn = false;
             if (compState && compState.v1 !== undefined) {
               isOn = (compState.v1 == 1);
@@ -2890,37 +3005,39 @@ inline void setupWebEndpoints() {
                 <div class="control-card-header">
                   <div>
                     <div class="control-name">${escapeHtml(compName)}</div>
-                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; GPIO ${c.pin1}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; Output GPIO ${c.pin1}</div>
                   </div>
-                  <span class="badge ${isOn ? 'badge-success' : ''}">${isOn ? 'ON' : 'OFF'}</span>
+                  <span class="badge ${isOn ? 'badge-success' : ''}">${isOn ? 'ENERGIZED' : 'STANDBY'}</span>
                 </div>
                 <div class="toggle-switch-wrap">
-                  <span class="toggle-status-text ${isOn ? 'on' : 'off'}">${isOn ? 'ENERGIZED' : 'STANDBY'}</span>
+                  <span class="toggle-status-text ${isOn ? 'on' : 'off'}">${isOn ? 'ON (CLOSED)' : 'OFF (OPEN)'}</span>
                   <button class="switch-btn ${isOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleComponent('${node.id}', '${compId}', ${isOn})" title="Toggle ${escapeHtml(compName)}">
                     <span class="switch-thumb"></span>
                   </button>
                 </div>
               </div>`;
-          } else if (cType === 4) { // Wall Rocker / Toggle Switch
+          } else if (cType === 4) { // ROW 2: Wall Rocker / Toggle Switch
+            totalInputs++;
             let swVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
-            sensorsHtml += `
+            inputsHtml += `
               <div class="control-card">
                 <div class="control-card-header">
                   <div>
                     <div class="control-name">${escapeHtml(compName)}</div>
-                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; Toggle Switch (GPIO ${c.pin1})</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; Wall Toggle Switch (GPIO ${c.pin1})</div>
                   </div>
                   <span class="badge ${swVal == 1 ? 'badge-primary' : ''}">${swVal == 1 ? 'FLIPPED UP' : 'FLIPPED DOWN'}</span>
                 </div>
                 <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
                   <span class="status-dot ${swVal == 1 ? 'online' : ''}"></span>
-                  <span style="font-size:12px; font-weight:600; font-family:var(--font-mono); color:${swVal == 1 ? '#38bdf8' : 'var(--text-dim)'};">${swVal == 1 ? 'POSITION 1 (HIGH)' : 'POSITION 0 (LOW)'}</span>
+                  <span style="font-size:12px; font-weight:600; font-family:var(--font-mono); color:${swVal == 1 ? '#38bdf8' : 'var(--text-dim)'};">${swVal == 1 ? 'POSITION HIGH (1)' : 'POSITION LOW (0)'}</span>
                 </div>
                 <div style="font-size:10px; color:var(--text-dim); margin-top:6px;">Edge-triggered &bull; Any flip toggles linked relays</div>
               </div>`;
-          } else if (cType === 2 || cType === 3) { // Push Button / Touch
+          } else if (cType === 2 || cType === 3) { // ROW 2: Push Button / Touch Sensor
+            totalInputs++;
             let bVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
-            sensorsHtml += `
+            inputsHtml += `
               <div class="control-card">
                 <div class="control-card-header">
                   <div>
@@ -2934,13 +3051,13 @@ inline void setupWebEndpoints() {
                   <span style="font-size:12px; font-weight:600; font-family:var(--font-mono);">${bVal == 1 ? 'PRESSED / ACTIVE' : 'RELEASED'}</span>
                 </div>
               </div>`;
-          } else if (cType === 5 || (cType === 2 && c.pin2 !== undefined && c.pin2 !== 255)) { // Ultrasonic Sensor
+          } else if (cType === 5 || (cType === 2 && c.pin2 !== undefined && c.pin2 !== 255)) { // ROW 3: Ultrasonic Sensor
+            totalSensors++;
             let dist = (compState && compState.v1 !== undefined) ? compState.v1 : state.dist;
             let level = (compState && compState.v2 !== undefined) ? compState.v2 : -1;
             if (level === -1 && dist >= 0) {
               level = Math.max(0, Math.min(100, Math.round((1 - (dist / 200)) * 100)));
             }
-            if (level >= 0) latestTankLevel = level;
 
             sensorsHtml += `
               <div class="control-card">
@@ -2958,15 +3075,14 @@ inline void setupWebEndpoints() {
                   <div class="tank-metrics">
                     <div class="tank-percent">${level >= 0 ? level : '--'}%</div>
                     <div class="tank-dist">${dist >= 0 ? dist + ' cm distance' : 'Sensor idle'}</div>
-                    <div style="font-size:10px; color:var(--text-dim); margin-top:2px;">Target: [${compId}.level]</div>
+                    <div style="font-size:10px; color:var(--text-dim); margin-top:2px;">Metric: [${compId}.level]</div>
                   </div>
                 </div>
               </div>`;
-          } else if (cType === 6 || (cType === 3 && c.pin2 !== undefined && c.pin2 !== 255)) { // DHT Sensor
+          } else if (cType === 6 || (cType === 3 && c.pin2 !== undefined && c.pin2 !== 255)) { // ROW 3: DHT Climate Sensor
+            totalSensors++;
             let t = (compState && compState.v1 !== undefined) ? compState.v1 : state.temp;
             let h = (compState && compState.v2 !== undefined) ? compState.v2 : state.hum;
-            if (t > 0) latestTemp = t;
-            if (h > 0) latestHum = h;
 
             sensorsHtml += `
               <div class="control-card">
@@ -2988,7 +3104,8 @@ inline void setupWebEndpoints() {
                   </div>
                 </div>
               </div>`;
-          } else if (cType === 7) { // Analog ADC
+          } else if (cType === 7) { // ROW 3: Analog ADC
+            totalSensors++;
             let aVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
             sensorsHtml += `
               <div class="control-card">
@@ -3006,17 +3123,78 @@ inline void setupWebEndpoints() {
               </div>`;
           }
         });
+
+        // 2. Legacy Slots Backward-Compatibility (If node has slots but no components array)
+        if (comps.length === 0 && slots.length > 0) {
+          slots.forEach((s, sIdx) => {
+            const slotNum = s.slot || (sIdx + 1);
+            const slotType = s.type;
+            if (slotType === 1) { // Relay
+              totalRelays++;
+              const isOn = (state.relays && state.relays[sIdx]) ? true : false;
+              if (isOn && isOnline) activeRelays++;
+              const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
+              relaysHtml += `
+                <div class="control-card">
+                  <div class="control-card-header">
+                    <div>
+                      <div class="control-name">Slot ${slotNum} Relay</div>
+                      <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; GPIO ${s.gpio}</div>
+                    </div>
+                    <span class="badge ${isOn ? 'badge-success' : ''}">${isOn ? 'ENERGIZED' : 'STANDBY'}</span>
+                  </div>
+                  <div class="toggle-switch-wrap">
+                    <span class="toggle-status-text ${isOn ? 'on' : 'off'}">${isOn ? 'ON' : 'OFF'}</span>
+                    <button class="switch-btn ${isOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleSlot('${node.id}', ${slotNum}, ${isOn})">
+                      <span class="switch-thumb"></span>
+                    </button>
+                  </div>
+                </div>`;
+            } else if (slotType === 2 || slotType === 3) {
+              totalInputs++;
+              inputsHtml += `
+                <div class="control-card">
+                  <div class="control-card-header">
+                    <div>
+                      <div class="control-name">Slot ${slotNum} Input</div>
+                      <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; GPIO ${s.gpio}</div>
+                    </div>
+                    <span class="badge">Input</span>
+                  </div>
+                  <div style="margin-top:8px; font-size:12px; color:var(--text-dim);">Configured input button</div>
+                </div>`;
+            }
+          });
+        }
       });
 
-      // Update KPI Banner
-      document.getElementById('kpiNodesOnline').textContent = `${onlineNodes} / ${totalNodes} Online`;
-      document.getElementById('kpiActiveRelays').textContent = `${activeRelays} ON`;
-      document.getElementById('kpiTankLevel').textContent = (latestTankLevel !== null) ? `${latestTankLevel}%` : '-- %';
-      document.getElementById('kpiClimate').textContent = (latestTemp !== null) ? `${latestTemp.toFixed(1)}°C` : '-- °C';
+      // Update Header Badges & Summaries
+      const meshSumEl = document.getElementById('dashMeshSummary');
+      if (meshSumEl) meshSumEl.textContent = `${onlineNodes} / ${totalNodes} Slaves Online`;
+      const slaveCountEl = document.getElementById('dashSlaveCountText');
+      if (slaveCountEl) slaveCountEl.textContent = `${onlineNodes} of ${totalNodes} Online`;
+
+      const actBadge = document.getElementById('actuatorCountBadge');
+      if (actBadge) actBadge.textContent = `${activeRelays} / ${totalRelays} Energized`;
+      const inBadge = document.getElementById('inputsCountBadge');
+      if (inBadge) inBadge.textContent = `${totalInputs} Configured`;
+      const sensBadge = document.getElementById('sensorsCountBadge');
+      if (sensBadge) sensBadge.textContent = `${totalSensors} Active`;
+
+      // Populate Containers
+      const slavesContainer = document.getElementById('dashSlavesHealthContainer');
+      if (slavesContainer) {
+        slavesContainer.innerHTML = slavesHealthHtml || '<div style="color:var(--text-dim); font-size:11px; padding:6px 0;">No slave microcontrollers bound yet.</div>';
+      }
 
       const relaysGrid = document.getElementById('dashboardRelaysGrid');
       if (relaysGrid) {
         relaysGrid.innerHTML = relaysHtml || '<div style="color:var(--text-dim); padding:10px 0;">No actuators configured yet. Use Hardware Nodes tab to configure peripherals.</div>';
+      }
+
+      const inputsGrid = document.getElementById('dashboardInputsGrid');
+      if (inputsGrid) {
+        inputsGrid.innerHTML = inputsHtml || '<div style="color:var(--text-dim); padding:10px 0;">No wall toggle switches or buttons configured.</div>';
       }
 
       const sensorsGrid = document.getElementById('dashboardSensorsGrid');
@@ -3173,6 +3351,38 @@ inline void setupWebEndpoints() {
     // MODAL HANDLERS & AP BRIDGE PROVISIONING
     // =========================================================================
 
+    // Custom Glassmorphic Confirmation Modal
+    let pendingConfirmCallback = null;
+
+    function showConfirmModal(title, message, onConfirm, confirmText = 'Confirm', isDanger = true) {
+      const titleEl = document.getElementById('confirmModalTitle');
+      if (titleEl) titleEl.textContent = title || 'Confirm Action';
+      const msgEl = document.getElementById('confirmModalMessage');
+      if (msgEl) msgEl.innerHTML = message;
+      const btn = document.getElementById('confirmModalBtn');
+      if (btn) {
+        btn.textContent = confirmText;
+        btn.className = isDanger ? 'btn btn-danger' : 'btn';
+      }
+      pendingConfirmCallback = onConfirm;
+      const modal = document.getElementById('customConfirmModal');
+      if (modal) modal.style.display = 'flex';
+    }
+
+    function closeConfirmModal() {
+      const modal = document.getElementById('customConfirmModal');
+      if (modal) modal.style.display = 'none';
+      pendingConfirmCallback = null;
+    }
+
+    function executeConfirmModalAction() {
+      const cb = pendingConfirmCallback;
+      closeConfirmModal();
+      if (typeof cb === 'function') {
+        cb();
+      }
+    }
+
     // Bind Modal
     let pendingBindMac = '';
     function openBindModal(mac, chip) {
@@ -3277,19 +3487,30 @@ inline void setupWebEndpoints() {
     }
 
     // Delete Node
-    async function deleteNode(nodeId) {
-      if (!confirm(`Are you sure you want to delete and unbind node '${nodeId}'?`)) return;
-      const res = await fetch('/api/nodes/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: nodeId })
-      });
-      if (res.ok) {
-        showToast('Node deleted successfully', 'success');
-        refreshData();
-      } else {
-        showToast('Failed to delete node', 'error');
-      }
+    function deleteNode(nodeId) {
+      showConfirmModal(
+        'Delete Hardware Node',
+        `Are you sure you want to delete and unbind node <strong>${escapeHtml(nodeId)}</strong>? All configured components and zero-latency hardware links on this node will be removed.`,
+        async () => {
+          try {
+            const res = await fetch('/api/nodes/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: nodeId })
+            });
+            if (res.ok) {
+              showToast('Node deleted successfully', 'success');
+              refreshData();
+            } else {
+              showToast('Failed to delete node', 'error');
+            }
+          } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+          }
+        },
+        'Delete Node',
+        true
+      );
     }
 
     // Curated Hardware Safe GPIO Dictionaries (Dangerous Flash & Strapping Pins Excluded)
@@ -4024,30 +4245,52 @@ inline void setupWebEndpoints() {
       }
     }
 
-    async function deleteRule(idx) {
-      if (!confirm('Delete this automation rule?')) return;
-      const res = await fetch('/api/rules');
-      const data = await res.json();
-      const rules = data.rules || [];
-      rules.splice(idx, 1);
-      await fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules })
-      });
-      loadRules();
-      showToast('Rule deleted', 'info');
+    function deleteRule(idx) {
+      showConfirmModal(
+        'Delete Automation Rule',
+        'Are you sure you want to delete this automation rule? This action cannot be undone.',
+        async () => {
+          try {
+            const res = await fetch('/api/rules');
+            const data = await res.json();
+            const rules = data.rules || [];
+            rules.splice(idx, 1);
+            await fetch('/api/rules', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rules })
+            });
+            loadRules();
+            showToast('Rule deleted', 'info');
+          } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+          }
+        },
+        'Delete Rule',
+        true
+      );
     }
 
-    async function clearAllRules() {
-      if (!confirm('Clear all automation rules?')) return;
-      await fetch('/api/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rules: [] })
-      });
-      loadRules();
-      showToast('All rules cleared', 'info');
+    function clearAllRules() {
+      showConfirmModal(
+        'Clear All Automation Rules',
+        'Are you sure you want to remove ALL automation rules from the master controller flash memory?',
+        async () => {
+          try {
+            await fetch('/api/rules', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ rules: [] })
+            });
+            loadRules();
+            showToast('All rules cleared', 'info');
+          } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+          }
+        },
+        'Clear All',
+        true
+      );
     }
 
     // =========================================================================
@@ -4296,19 +4539,30 @@ inline void setupWebEndpoints() {
       }
     }
 
-    async function deleteNotif(idx) {
-      if (!confirm('Delete this notification rule?')) return;
-      const res = await fetch('/api/notifications');
-      const data = await res.json();
-      const notifs = data.notifications || [];
-      notifs.splice(idx, 1);
-      await fetch('/api/notifications', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ notifications: notifs })
-      });
-      loadNotifications();
-      showToast('Notification rule deleted', 'info');
+    function deleteNotif(idx) {
+      showConfirmModal(
+        'Delete Notification Rule',
+        'Are you sure you want to delete this notification alert rule? This action cannot be undone.',
+        async () => {
+          try {
+            const res = await fetch('/api/notifications');
+            const data = await res.json();
+            const notifs = data.notifications || [];
+            notifs.splice(idx, 1);
+            await fetch('/api/notifications', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ notifications: notifs })
+            });
+            loadNotifications();
+            showToast('Notification rule deleted', 'info');
+          } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+          }
+        },
+        'Delete Rule',
+        true
+      );
     }
 
     async function clearAlertsFeed() {
@@ -4531,19 +4785,30 @@ inline void setupWebEndpoints() {
       }
     }
 
-    async function deleteUser(u) {
-      if (!confirm(`Delete user '${u}'?`)) return;
-      const res = await fetch('/api/users/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: u })
-      });
-      if (res.ok) {
-        showToast('User deleted', 'success');
-        loadUsers();
-      } else {
-        showToast('Failed to delete user', 'error');
-      }
+    function deleteUser(u) {
+      showConfirmModal(
+        'Delete User Account',
+        `Are you sure you want to permanently delete user account <strong>${escapeHtml(u)}</strong>?`,
+        async () => {
+          try {
+            const res = await fetch('/api/users/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user: u })
+            });
+            if (res.ok) {
+              showToast('User deleted successfully', 'success');
+              loadUsers();
+            } else {
+              showToast('Failed to delete user', 'error');
+            }
+          } catch (e) {
+            showToast('Error: ' + e.message, 'error');
+          }
+        },
+        'Delete User',
+        true
+      );
     }
 
     async function loadSettings() {
@@ -4586,23 +4851,7 @@ inline void setupWebEndpoints() {
 
         const res = await fetch('/api/system');
         const d = await res.json();
-        if (d.free_heap) {
-          const freeKb = Math.round(d.free_heap / 1024);
-          const totalKb = Math.round((d.total_heap || d.free_heap) / 1024);
-          document.getElementById('diagHeap').textContent = freeKb + ' KB Free / ' + totalKb + ' KB';
-        }
-        if (d.littlefs_total) {
-          const usedKb = Math.round((d.littlefs_used || 0) / 1024);
-          const totKb = Math.round(d.littlefs_total / 1024);
-          document.getElementById('diagLittleFS').textContent = usedKb + ' KB used / ' + totKb + ' KB';
-        }
-        if (d.uptime !== undefined) {
-          const hrs = Math.floor(d.uptime / 3600);
-          const mins = Math.floor((d.uptime % 3600) / 60);
-          document.getElementById('diagUptime').textContent = hrs + 'h ' + mins + 'm';
-          document.getElementById('sidebarUptime').textContent = hrs + 'h ' + mins + 'm';
-        }
-        document.getElementById('diagChip').textContent = d.chip || 'ESP32 Supervisor';
+        updateSystemHealthUI(d);
       } catch (e) {}
     }
 

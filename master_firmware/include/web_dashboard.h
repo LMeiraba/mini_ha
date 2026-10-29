@@ -1032,8 +1032,7 @@ inline void setupWebEndpoints() {
   });
 
   // 17. Modern Single Page Application (Dashboard + Login)
-  webServer.on("/", HTTP_GET, []() {
-    String html = R"rawliteral(<!DOCTYPE html>
+  static const char INDEX_HTML[] PROGMEM = R"rawliteral(<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -1498,6 +1497,10 @@ inline void setupWebEndpoints() {
     #toast.show { transform: translateY(0); opacity: 1; }
     #toast.success { border-color: var(--success-border); color: #6ee7b7; }
     #toast.error { border-color: var(--danger-border); color: #fca5a5; }
+
+    .admin-only { display: none !important; }
+    body.role-admin .admin-only { display: inline-flex !important; }
+    body.role-admin div.admin-only, body.role-admin .card.admin-only { display: block !important; }
   </style>
 </head>
 <body>
@@ -2060,7 +2063,12 @@ inline void setupWebEndpoints() {
           document.getElementById('roleBadge').innerText = data.user + ' (' + data.role.toUpperCase() + ')';
           
           const isAdmin = (data.role === 'admin');
-          document.querySelectorAll('.admin-only').forEach(el => el.style.display = isAdmin ? 'block' : 'none');
+          if (isAdmin) {
+            document.body.classList.add('role-admin');
+          } else {
+            document.body.classList.remove('role-admin');
+          }
+          document.querySelectorAll('.admin-only').forEach(el => el.style.display = isAdmin ? '' : 'none');
           document.getElementById('defaultPassBanner').style.display = (isAdmin && data.isDefault) ? 'flex' : 'none';
 
           // Sync browser real-world time to Master & Slaves (downtime-safe local RTC)
@@ -3377,6 +3385,14 @@ inline void setupWebEndpoints() {
 </body>
 </html>
 )rawliteral";
-    webServer.send(200, "text/html; charset=utf-8", html);
+
+  webServer.on("/", HTTP_GET, []() {
+    webServer.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
+  });
+  webServer.on("/index.html", HTTP_GET, []() {
+    webServer.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
+  });
+  webServer.on("/favicon.ico", HTTP_GET, []() {
+    webServer.send(204);
   });
 }

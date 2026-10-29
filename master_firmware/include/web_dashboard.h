@@ -978,6 +978,58 @@ inline void setupWebEndpoints() {
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Hardware links pushed to slave EEPROM\"}");
   });
 
+  // 14g. Notifications API (Independent Sensor Alert Rules)
+  webServer.on("/api/notifications", HTTP_GET, []() {
+    if (!requireRole(ROLE_MEMBER)) return;
+    if (LittleFS.exists(NOTIFICATIONS_CONFIG_PATH)) {
+      File f = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "r");
+      webServer.streamFile(f, "application/json; charset=utf-8");
+      f.close();
+    } else {
+      webServer.send(200, "application/json; charset=utf-8", "{\"notifications\":[]}");
+    }
+  });
+
+  webServer.on("/api/notifications", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    if (!webServer.hasArg("plain")) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"No body\"}");
+      return;
+    }
+    File f = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "w");
+    if (f) {
+      f.print(webServer.arg("plain"));
+      f.close();
+      reloadNotificationsCache();
+      webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Notifications saved\"}");
+    } else {
+      webServer.send(500, "application/json; charset=utf-8", "{\"error\":\"LittleFS write error\"}");
+    }
+  });
+
+  // 14h. Live Alert History / Log Feed API
+  webServer.on("/api/alerts", HTTP_GET, []() {
+    if (!requireRole(ROLE_MEMBER)) return;
+    DynamicJsonDocument doc(2048);
+    JsonArray arr = doc.createNestedArray("alerts");
+    for (uint8_t i = 0; i < alertCount; i++) {
+      JsonObject a = arr.createNestedObject();
+      a["title"] = recentAlerts[i].title;
+      a["msg"] = recentAlerts[i].msg;
+      a["level"] = recentAlerts[i].level;
+      a["time"] = recentAlerts[i].timestamp;
+    }
+    String out;
+    serializeJson(doc, out);
+    webServer.send(200, "application/json; charset=utf-8", out);
+  });
+
+  webServer.on("/api/alerts/clear", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    clearAlertLogs();
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Alert feed cleared\"}");
+  });
+
   // 14e. Time Sync API (Sync real-world clock from browser/phone even when offline!)
   webServer.on("/api/time", HTTP_POST, []() {
     if (webServer.hasArg("plain")) {
@@ -1937,6 +1989,11 @@ inline void setupWebEndpoints() {
           <span>Automations</span>
         </div>
 
+        <div class="nav-item admin-only" id="nav-notifications" onclick="switchNavTab('notifications')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
+          <span>Notifications</span>
+        </div>
+
         <div class="nav-item admin-only" id="nav-schedules" onclick="switchNavTab('schedules')">
           <svg class="icon" viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M12 14v4l2 2"/></svg>
           <span>Schedules</span>
@@ -2124,14 +2181,49 @@ inline void setupWebEndpoints() {
             <div class="card-header">
               <div>
                 <h3 class="card-title">Automation Rules Engine</h3>
-                <p class="card-desc">Event-driven logic evaluated locally by Master supervisor. Triggers target actuators upon threshold breach.</p>
+                <p class="card-desc">Multi-condition (AND / OR) event logic evaluated locally on ESP32 silicon. Dispatches actuator triggers upon threshold breach.</p>
               </div>
               <div style="display:flex; gap:8px;">
-                <button class="btn btn-sm" onclick="openAddRuleModal()">+ Add Rule</button>
+                <button class="btn btn-sm" onclick="openAddRuleModal()">+ Add Automation Rule</button>
                 <button class="btn btn-secondary btn-sm" onclick="clearAllRules()">Clear All Rules</button>
               </div>
             </div>
             <div id="rulesList"><div style="color:var(--text-dim);">Loading automation rules...</div></div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- TAB: NOTIFICATIONS & ALERTS (INDEPENDENT SENSOR THRESHOLD ALERTS) -->
+        <!-- ========================================================================= -->
+        <section id="viewNotifications" style="display:none;">
+          <div style="display:grid; grid-template-columns:1.3fr 1fr; gap:16px; align-items:start;">
+            
+            <!-- Notification Rules Panel -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">Sensor Notification Rules</h3>
+                  <p class="card-desc">Independent threshold alerts that push MQTT notices and log warnings without changing relay states</p>
+                </div>
+                <button class="btn btn-sm" onclick="openAddNotifModal()">+ Add Alert Rule</button>
+              </div>
+              <div id="notifsList"><div style="color:var(--text-dim);">Loading notification rules...</div></div>
+            </div>
+
+            <!-- Live Alert Feed / History -->
+            <div class="card">
+              <div class="card-header">
+                <div>
+                  <h3 class="card-title">Live Alert Feed</h3>
+                  <p class="card-desc">Real-time alerts triggered by sensor thresholds</p>
+                </div>
+                <button class="btn btn-secondary btn-sm" onclick="clearAlertsFeed()">Clear Feed</button>
+              </div>
+              <div id="alertsFeedContainer" style="display:flex; flex-direction:column; gap:8px; max-height:480px; overflow-y:auto; padding-right:4px;">
+                <div style="color:var(--text-dim); font-size:12px;">No alerts recorded yet.</div>
+              </div>
+            </div>
+
           </div>
         </section>
 
@@ -2434,66 +2526,47 @@ inline void setupWebEndpoints() {
     </div>
   </div>
 
-  <!-- ADD RULE MODAL -->
+  <!-- ADD / EDIT AUTOMATION RULE MODAL (MULTI-CONDITION AND/OR & MULTI-ACTION) -->
   <div id="ruleModal" class="modal-backdrop" style="display:none;">
-    <div class="modal-card">
+    <div class="modal-card" style="max-width:760px;">
       <div class="modal-head">
         <h4 class="modal-title" id="ruleModalTitle">Add Automation Rule</h4>
         <button class="btn btn-secondary btn-sm" onclick="closeRuleModal()">&times;</button>
       </div>
-      <div style="display:flex; flex-direction:column; gap:12px;">
-        <div>
-          <label>Rule Name</label>
-          <input type="text" id="ruleNameInput" placeholder="e.g. Tank Overflow Auto-Off">
-        </div>
-
-        <div style="padding:10px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
-          <strong style="font-size:11px; text-transform:uppercase; color:var(--primary); display:block; margin-bottom:8px;">IF Condition</strong>
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
-            <div>
-              <label>Node</label>
-              <select id="ruleCondNode" onchange="updateRuleCondKeys(this.value)"></select>
-            </div>
-            <div>
-              <label>Variable / Key</label>
-              <select id="ruleCondKey"></select>
-            </div>
-          </div>
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-            <div>
-              <label>Operator</label>
-              <select id="ruleCondOp">
-                <option value=">">&gt; (Greater than)</option>
-                <option value="<">&lt; (Less than)</option>
-                <option value="==">== (Equal to)</option>
-                <option value="!=">!= (Not equal)</option>
-              </select>
-            </div>
-            <div>
-              <label>Threshold Value</label>
-              <input type="number" id="ruleCondVal" step="any" value="85">
-            </div>
-          </div>
-        </div>
-
-        <div style="padding:10px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
-          <strong style="font-size:11px; text-transform:uppercase; color:var(--success); display:block; margin-bottom:8px;">THEN Action</strong>
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
-            <div>
-              <label>Target Node</label>
-              <select id="ruleActTarget" onchange="updateRuleActSlots(this.value)"></select>
-            </div>
-            <div>
-              <label>Actuator / Peripheral</label>
-              <select id="ruleActSlot"></select>
-            </div>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div style="display:grid; grid-template-columns:1.8fr 1fr; gap:10px;">
+          <div>
+            <label>Rule Friendly Name</label>
+            <input type="text" id="ruleNameInput" placeholder="e.g. Tank Overflow Auto-Off">
           </div>
           <div>
-            <label>Action Command</label>
-            <select id="ruleActState">
-              <option value="1">Turn ON</option>
-              <option value="0">Turn OFF</option>
+            <label>Condition Matching Logic</label>
+            <select id="ruleLogicSelect">
+              <option value="AND">Match ALL Conditions (AND)</option>
+              <option value="OR">Match ANY Condition (OR)</option>
             </select>
+          </div>
+        </div>
+
+        <!-- WHEN CONDITIONS SECTION -->
+        <div style="padding:12px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong style="font-size:11px; text-transform:uppercase; color:var(--primary); font-weight:700;">WHEN Conditions</strong>
+            <button class="btn btn-secondary btn-sm" onclick="addRuleCondRow()" style="font-size:11px; padding:3px 8px;">+ Add Condition</button>
+          </div>
+          <div id="ruleCondsList" style="display:flex; flex-direction:column; gap:8px;">
+            <!-- Dynamic Condition Rows -->
+          </div>
+        </div>
+
+        <!-- THEN ACTIONS SECTION -->
+        <div style="padding:12px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong style="font-size:11px; text-transform:uppercase; color:var(--success); font-weight:700;">THEN Actions (Actuator Triggers)</strong>
+            <button class="btn btn-secondary btn-sm" onclick="addRuleActRow()" style="font-size:11px; padding:3px 8px;">+ Add Action</button>
+          </div>
+          <div id="ruleActsList" style="display:flex; flex-direction:column; gap:8px;">
+            <!-- Dynamic Action Rows -->
           </div>
         </div>
       </div>
@@ -2501,6 +2574,60 @@ inline void setupWebEndpoints() {
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeRuleModal()">Cancel</button>
         <button class="btn" onclick="saveRuleFromModal()">Save Rule</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADD / EDIT NOTIFICATION RULE MODAL -->
+  <div id="notifModal" class="modal-backdrop" style="display:none;">
+    <div class="modal-card" style="max-width:720px;">
+      <div class="modal-head">
+        <h4 class="modal-title" id="notifModalTitle">Add Notification & Alert Rule</h4>
+        <button class="btn btn-secondary btn-sm" onclick="closeNotifModal()">&times;</button>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div style="display:grid; grid-template-columns:1.8fr 1fr; gap:10px;">
+          <div>
+            <label>Alert Rule Name</label>
+            <input type="text" id="notifNameInput" placeholder="e.g. High Tank Level Alert">
+          </div>
+          <div>
+            <label>Severity Level</label>
+            <select id="notifLevelSelect">
+              <option value="warning">Warning (Amber)</option>
+              <option value="critical">Critical / Emergency (Red)</option>
+              <option value="info">Info (Blue)</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="padding:10px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <strong style="font-size:11px; text-transform:uppercase; color:var(--warning); font-weight:700;">Alert Threshold Conditions</strong>
+            <button class="btn btn-secondary btn-sm" onclick="addNotifCondRow()" style="font-size:11px; padding:3px 8px;">+ Add Condition</button>
+          </div>
+          <div style="margin-bottom:8px;">
+            <label style="font-size:10px;">Matching Logic</label>
+            <select id="notifLogicSelect" style="font-size:11px;">
+              <option value="AND">Trigger if ALL conditions are met (AND)</option>
+              <option value="OR">Trigger if ANY condition is met (OR)</option>
+            </select>
+          </div>
+          <div id="notifCondsList" style="display:flex; flex-direction:column; gap:8px;">
+            <!-- Dynamic Notification Condition Rows -->
+          </div>
+        </div>
+
+        <div>
+          <label>Alert Message / Warning Text</label>
+          <input type="text" id="notifMsgInput" placeholder="e.g. Water tank level exceeded safety threshold!">
+          <span style="font-size:10px; color:var(--text-dim); margin-top:2px; display:block;">Pushed directly to MQTT <code>miniha/&lt;homeId&gt;/notify</code> and logged to Hub Alert Feed.</span>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeNotifModal()">Cancel</button>
+        <button class="btn" onclick="saveNotifFromModal()">Save Alert Rule</button>
       </div>
     </div>
   </div>
@@ -2574,7 +2701,7 @@ inline void setupWebEndpoints() {
 
     // Navigation Switcher
     function switchNavTab(tab) {
-      const tabs = ['dashboard', 'nodes', 'rules', 'schedules', 'users', 'settings', 'account'];
+      const tabs = ['dashboard', 'nodes', 'rules', 'notifications', 'schedules', 'users', 'settings', 'account'];
       tabs.forEach(t => {
         const navEl = document.getElementById('nav-' + t);
         const viewEl = document.getElementById('view' + t.charAt(0).toUpperCase() + t.slice(1));
@@ -2590,7 +2717,8 @@ inline void setupWebEndpoints() {
       const titles = {
         dashboard: ['Home Dashboard', 'Unified controls, sensors & mesh telemetry'],
         nodes: ['Hardware Nodes & Provisioning', 'Configured slaves, peripherals & real-time discovery'],
-        rules: ['Automations Engine', 'Local event-driven logic evaluated by Master hub'],
+        rules: ['Automations Engine', 'Multi-condition event logic evaluated locally by Master hub'],
+        notifications: ['Alerts & Notifications', 'Independent sensor threshold alerts and event warnings (no relay state changes)'],
         schedules: ['Downtime-Safe Schedules', 'Autonomous EEPROM daily schedules per slave'],
         users: ['User Accounts & RBAC', 'Manage accounts, member switches & guest dashboards'],
         settings: ['System Settings', 'Home Wi-Fi STA client & optional Cloud MQTT bridge'],
@@ -2603,6 +2731,7 @@ inline void setupWebEndpoints() {
 
       if (tab === 'account') loadAccountDiagnostics();
       if (tab === 'rules') loadRules();
+      if (tab === 'notifications') { loadNotifications(); loadAlertsFeed(); }
       if (tab === 'schedules') loadSchedulesTab();
       if (tab === 'users') loadUsers();
       if (tab === 'settings') loadSettings();
@@ -3342,7 +3471,19 @@ inline void setupWebEndpoints() {
       activeLinkNodeId = nodeId;
       const node = nodesCache.find(n => n.id === nodeId);
       document.getElementById('linkModalTitle').textContent = `Direct Hardware Links: ${node ? (node.name || node.id) : nodeId}`;
-      currentModalLinks = (node && node.links) ? JSON.parse(JSON.stringify(node.links)) : [];
+      const rawLinks = (node && node.links) ? JSON.parse(JSON.stringify(node.links)) : [];
+      currentModalLinks = [];
+      rawLinks.forEach(l => {
+        if (l.trigs && l.tgts) {
+          currentModalLinks.push(l);
+        } else if (l.trig !== undefined && l.tgt !== undefined) {
+          currentModalLinks.push({
+            trigs: [l.trig],
+            tgts: [l.tgt],
+            act: l.act || 1
+          });
+        }
+      });
       renderLinkModalRows();
       document.getElementById('linkModal').style.display = 'flex';
     }
@@ -3368,57 +3509,85 @@ inline void setupWebEndpoints() {
       }
 
       if (currentModalLinks.length === 0) {
-        container.innerHTML = '<div style="color:var(--text-dim); padding:10px 0; font-size:12px;">No hardware links assigned. Click "+ Add Hardware Link" below to connect a wall button directly to a relay.</div>';
+        container.innerHTML = '<div style="color:var(--text-dim); padding:10px 0; font-size:12px;">No hardware links assigned. Click "+ Add Hardware Link" below to connect switches directly to relays.</div>';
         return;
       }
 
       let html = '';
-      currentModalLinks.forEach((l, idx) => {
-        let trigOptions = '';
+      currentModalLinks.forEach((rule, rIdx) => {
+        let trigChks = '';
         inputComps.forEach(item => {
-          const sel = (l.trig === item.idx) ? 'selected' : '';
-          trigOptions += `<option value="${item.idx}" ${sel}>${escapeHtml(item.c.name || ('Input ' + item.idx))} [${escapeHtml(item.c.id || ('comp' + item.idx))}]</option>`;
+          const checked = (rule.trigs && rule.trigs.includes(item.idx)) ? 'checked' : '';
+          trigChks += `<label style="display:inline-flex; align-items:center; gap:4px; margin-right:10px; font-size:11px; cursor:pointer;">
+            <input type="checkbox" value="${item.idx}" ${checked} onchange="toggleLinkTrig(${rIdx}, ${item.idx}, this.checked)" style="width:auto; margin:0;">
+            <span>${escapeHtml(item.c.name || ('Input ' + item.idx))}</span>
+          </label>`;
         });
 
-        let tgtOptions = '';
+        let tgtChks = '';
         outputComps.forEach(item => {
-          const sel = (l.tgt === item.idx) ? 'selected' : '';
-          tgtOptions += `<option value="${item.idx}" ${sel}>${escapeHtml(item.c.name || ('Relay ' + item.idx))} [${escapeHtml(item.c.id || ('comp' + item.idx))}]</option>`;
+          const checked = (rule.tgts && rule.tgts.includes(item.idx)) ? 'checked' : '';
+          tgtChks += `<label style="display:inline-flex; align-items:center; gap:4px; margin-right:10px; font-size:11px; cursor:pointer;">
+            <input type="checkbox" value="${item.idx}" ${checked} onchange="toggleLinkTgt(${rIdx}, ${item.idx}, this.checked)" style="width:auto; margin:0;">
+            <span>${escapeHtml(item.c.name || ('Relay ' + item.idx))}</span>
+          </label>`;
         });
 
-        const act = parseInt(l.act) || 1;
+        const act = parseInt(rule.act) || 1;
 
         html += `
-          <div style="padding:12px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border); border-radius:var(--radius-sm); display:grid; grid-template-columns:1.5fr auto 1fr auto 1.5fr auto; gap:10px; align-items:center;">
-            <div>
-              <label>Trigger Input</label>
-              <select onchange="currentModalLinks[${idx}].trig=parseInt(this.value)" style="font-size:11px;">
-                ${trigOptions}
-              </select>
+          <div style="padding:12px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border); border-radius:var(--radius-sm); margin-bottom:8px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <strong style="font-size:11px; text-transform:uppercase; color:var(--primary); font-weight:700;">Hardware Tie Rule #${rIdx + 1}</strong>
+              <button class="btn btn-danger btn-sm" onclick="removeLinkRow(${rIdx})" style="padding:2px 8px; font-size:11px;">Delete</button>
             </div>
-            <div style="color:var(--text-dim); font-size:14px; margin-top:14px;">&rarr;</div>
-            <div>
-              <label>Hardware Action</label>
-              <select onchange="currentModalLinks[${idx}].act=parseInt(this.value)" style="font-size:11px;">
-                <option value="1" ${act===1?'selected':''}>Toggle Output</option>
-                <option value="2" ${act===2?'selected':''}>Force Turn ON</option>
-                <option value="3" ${act===3?'selected':''}>Force Turn OFF</option>
-              </select>
+
+            <div style="margin-bottom:8px;">
+              <label style="font-size:10px; text-transform:uppercase; color:var(--text-dim); font-weight:700; margin-bottom:4px; display:block;">Trigger Inputs (Multiple Allowed - Any Flip Triggers)</label>
+              <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                ${trigChks}
+              </div>
             </div>
-            <div style="color:var(--text-dim); font-size:14px; margin-top:14px;">&rarr;</div>
-            <div>
-              <label>Target Relay</label>
-              <select onchange="currentModalLinks[${idx}].tgt=parseInt(this.value)" style="font-size:11px;">
-                ${tgtOptions}
-              </select>
-            </div>
-            <div>
-              <button class="btn btn-danger btn-sm" onclick="removeLinkRow(${idx})" style="padding:4px 8px; margin-top:14px;">&times;</button>
+
+            <div style="display:grid; grid-template-columns:1fr 2fr; gap:12px; align-items:start;">
+              <div>
+                <label style="font-size:10px; text-transform:uppercase; color:var(--text-dim); font-weight:700; margin-bottom:4px; display:block;">Hardware Action</label>
+                <select onchange="currentModalLinks[${rIdx}].act=parseInt(this.value)" style="font-size:11px;">
+                  <option value="1" ${act===1?'selected':''}>Toggle Output(s)</option>
+                  <option value="2" ${act===2?'selected':''}>Force Turn ON</option>
+                  <option value="3" ${act===3?'selected':''}>Force Turn OFF</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="font-size:10px; text-transform:uppercase; color:var(--text-dim); font-weight:700; margin-bottom:4px; display:block;">Target Relays (Multiple Allowed)</label>
+                <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                  ${tgtChks}
+                </div>
+              </div>
             </div>
           </div>`;
       });
 
       container.innerHTML = html;
+    }
+
+    function toggleLinkTrig(rIdx, trigIdx, isChecked) {
+      if (!currentModalLinks[rIdx].trigs) currentModalLinks[rIdx].trigs = [];
+      if (isChecked) {
+        if (!currentModalLinks[rIdx].trigs.includes(trigIdx)) currentModalLinks[rIdx].trigs.push(trigIdx);
+      } else {
+        currentModalLinks[rIdx].trigs = currentModalLinks[rIdx].trigs.filter(t => t !== trigIdx);
+      }
+    }
+
+    function toggleLinkTgt(rIdx, tgtIdx, isChecked) {
+      if (!currentModalLinks[rIdx].tgts) currentModalLinks[rIdx].tgts = [];
+      if (isChecked) {
+        if (!currentModalLinks[rIdx].tgts.includes(tgtIdx)) currentModalLinks[rIdx].tgts.push(tgtIdx);
+      } else {
+        currentModalLinks[rIdx].tgts = currentModalLinks[rIdx].tgts.filter(t => t !== tgtIdx);
+      }
     }
 
     function addLinkRow() {
@@ -3431,13 +3600,9 @@ inline void setupWebEndpoints() {
         return showToast('Node needs at least 1 input and 1 relay to create links', 'warning');
       }
 
-      if (currentModalLinks.length >= 16) {
-        return showToast('Maximum 16 hardware links per microcontroller', 'warning');
-      }
-
       currentModalLinks.push({
-        trig: inputComps[0].idx,
-        tgt: outputComps[0].idx,
+        trigs: [inputComps[0].idx],
+        tgts: [outputComps[0].idx],
         act: 1
       });
       renderLinkModalRows();
@@ -3450,15 +3615,31 @@ inline void setupWebEndpoints() {
 
     async function saveNodeLinks() {
       if (!activeLinkNodeId) return;
+
+      // Expand multi-trigger and multi-target rules into flat hardware links array
+      const flatLinks = [];
+      currentModalLinks.forEach(rule => {
+        const trigs = rule.trigs || [];
+        const tgts = rule.tgts || [];
+        const act = rule.act || 1;
+        trigs.forEach(trig => {
+          tgts.forEach(tgt => {
+            if (flatLinks.length < 16) {
+              flatLinks.push({ trig, tgt, act });
+            }
+          });
+        });
+      });
+
       const res = await fetch('/api/nodes/links', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: activeLinkNodeId, links: currentModalLinks })
+        body: JSON.stringify({ id: activeLinkNodeId, links: flatLinks })
       });
       if (res.ok) {
         const node = nodesCache.find(n => n.id === activeLinkNodeId);
-        if (node) node.links = currentModalLinks;
-        showToast('Hardware links saved & pushed to slave EEPROM over RS-422!', 'success');
+        if (node) node.links = flatLinks;
+        showToast(`Saved ${flatLinks.length} hardware link ties & pushed to slave EEPROM!`, 'success');
         closeLinksModal();
         refreshData();
       } else {
@@ -3467,31 +3648,47 @@ inline void setupWebEndpoints() {
     }
 
     // =========================================================================
-    // AUTOMATIONS (RULES ENGINE)
+    // TAB 3: AUTOMATIONS (RULES ENGINE: MULTI-CONDITION & MULTI-ACTION)
     // =========================================================================
+    let rulesCache = [];
+    let currentRuleConds = [];
+    let currentRuleActs = [];
+
     async function loadRules() {
       try {
         const res = await fetch('/api/rules');
         const data = await res.json();
-        const rules = data.rules || [];
+        rulesCache = data.rules || [];
         const container = document.getElementById('rulesList');
-        if (rules.length === 0) {
-          container.innerHTML = '<div style="color:var(--text-dim); padding:10px 0;">No automation rules configured. Click "+ Add Rule" above to create event-driven logic.</div>';
+        if (!container) return;
+
+        if (rulesCache.length === 0) {
+          container.innerHTML = '<div style="color:var(--text-dim); padding:16px 0;">No automation rules configured. Click "+ Add Automation Rule" above.</div>';
           return;
         }
 
         let html = '';
-        rules.forEach((r, idx) => {
-          const c = r.cond || {};
-          const a = r.act || {};
+        rulesCache.forEach((r, idx) => {
+          const logic = (r.logic || 'AND').toUpperCase();
+          const conds = (r.conditions && r.conditions.length) ? r.conditions : (r.cond ? [r.cond] : []);
+          const acts = (r.actions && r.actions.length) ? r.actions : (r.act ? [r.act] : []);
+
+          let condsSummary = conds.map(c => `<span style="color:#60a5fa;">[${escapeHtml(c.node || 'LOCAL')}.${escapeHtml(c.key || 'comp')}]</span> ${escapeHtml(c.op || '>=')} <span style="color:#f59e0b;">${c.val}</span>`).join(` <strong style="color:var(--text-dim); font-size:10px;">${logic}</strong> `);
+          if (!condsSummary) condsSummary = '<span style="color:var(--text-dim);">Always True</span>';
+
+          let actsSummary = acts.map(a => `<span style="color:#10b981;">[${escapeHtml(a.target || 'LOCAL')}.${escapeHtml(a.comp || 'relay')}] &rarr; ${(a.state == 1 || a.val == 1) ? 'ON' : 'OFF'}</span>`).join(', ');
+          if (!actsSummary) actsSummary = '<span style="color:var(--text-dim);">No Actions</span>';
+
           html += `
             <div style="padding:14px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm); margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
               <div>
-                <strong style="font-size:13px; color:var(--text);">${escapeHtml(r.name || ('Rule #' + (idx + 1)))}</strong>
-                <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted); margin-top:4px;">
-                  IF <span style="color:#60a5fa;">[${escapeHtml(c.node || 'LOCAL')}.${escapeHtml(c.key || 'LVL')}]</span>
-                  ${escapeHtml(c.op || '>')} <span style="color:#f59e0b;">${c.val}</span>
-                  THEN <span style="color:#10b981;">[${escapeHtml(a.target || 'LOCAL')}.${escapeHtml(a.comp || ('slot' + (a.slot||0)))}] &rarr; ${a.state == 1 ? 'ON' : 'OFF'}</span>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <strong style="font-size:13px; color:var(--text);">${escapeHtml(r.name || ('Rule #' + (idx + 1)))}</strong>
+                  <span class="badge ${logic === 'OR' ? 'badge-warning' : 'badge-primary'}">${logic} Logic</span>
+                </div>
+                <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted); margin-top:5px; line-height:1.5;">
+                  <div><strong>IF</strong> ${condsSummary}</div>
+                  <div><strong>THEN</strong> ${actsSummary}</div>
                 </div>
               </div>
               <div style="display:flex; gap:6px;">
@@ -3507,8 +3704,48 @@ inline void setupWebEndpoints() {
     function openAddRuleModal() {
       editingRuleIdx = -1;
       document.getElementById('ruleModalTitle').textContent = 'Add Automation Rule';
-      document.getElementById('ruleNameInput').value = 'Rule #' + (document.querySelectorAll('#rulesList > div').length + 1);
-      populateRuleNodeSelectors();
+      document.getElementById('ruleNameInput').value = 'Rule #' + (rulesCache.length + 1);
+      document.getElementById('ruleLogicSelect').value = 'AND';
+      
+      const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+      currentRuleConds = [{ node: firstNode, key: getDefaultMetricForNode(firstNode), op: '>=', val: 80 }];
+      currentRuleActs = [{ target: firstNode, comp: getDefaultActuatorForNode(firstNode), state: 1 }];
+
+      renderRuleModalConds();
+      renderRuleModalActs();
+      document.getElementById('ruleModal').style.display = 'flex';
+    }
+
+    function editRule(idx) {
+      if (!rulesCache || !rulesCache[idx]) return;
+      editingRuleIdx = idx;
+      const r = rulesCache[idx];
+      document.getElementById('ruleModalTitle').textContent = 'Edit Automation Rule';
+      document.getElementById('ruleNameInput').value = r.name || ('Rule #' + (idx + 1));
+      document.getElementById('ruleLogicSelect').value = (r.logic || 'AND').toUpperCase();
+
+      // Pre-populate conditions (preserves previous configuration completely)
+      if (r.conditions && Array.isArray(r.conditions) && r.conditions.length > 0) {
+        currentRuleConds = JSON.parse(JSON.stringify(r.conditions));
+      } else if (r.cond) {
+        currentRuleConds = [JSON.parse(JSON.stringify(r.cond))];
+      } else {
+        const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+        currentRuleConds = [{ node: firstNode, key: getDefaultMetricForNode(firstNode), op: '>=', val: 80 }];
+      }
+
+      // Pre-populate actions
+      if (r.actions && Array.isArray(r.actions) && r.actions.length > 0) {
+        currentRuleActs = JSON.parse(JSON.stringify(r.actions));
+      } else if (r.act) {
+        currentRuleActs = [JSON.parse(JSON.stringify(r.act))];
+      } else {
+        const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+        currentRuleActs = [{ target: firstNode, comp: getDefaultActuatorForNode(firstNode), state: 1 }];
+      }
+
+      renderRuleModalConds();
+      renderRuleModalActs();
       document.getElementById('ruleModal').style.display = 'flex';
     }
 
@@ -3516,91 +3753,224 @@ inline void setupWebEndpoints() {
       document.getElementById('ruleModal').style.display = 'none';
     }
 
-    function populateRuleNodeSelectors() {
-      const condNode = document.getElementById('ruleCondNode');
-      const actTarget = document.getElementById('ruleActTarget');
-      condNode.innerHTML = '';
-      actTarget.innerHTML = '';
-
-      condNode.appendChild(new Option('LOCAL (Master)', 'LOCAL'));
-      actTarget.appendChild(new Option('LOCAL (Master)', 'LOCAL'));
-
-      nodesCache.forEach(n => {
-        condNode.appendChild(new Option(n.name || n.id, n.id));
-        actTarget.appendChild(new Option(n.name || n.id, n.id));
-      });
-
-      updateRuleCondKeys(condNode.value);
-      updateRuleActSlots(actTarget.value);
+    function getDefaultMetricForNode(nodeId) {
+      const node = nodesCache.find(n => n.id === nodeId);
+      if (node && node.components && node.components.length > 0) {
+        const c = node.components[0];
+        const cid = c.id || 'comp';
+        if (c.type == 2) return cid + '.level';
+        if (c.type == 3) return cid + '.temp';
+        return cid + '.state';
+      }
+      return 'LVL';
     }
 
-    function updateRuleCondKeys(nodeId) {
-      const keySelect = document.getElementById('ruleCondKey');
-      keySelect.innerHTML = '';
+    function getDefaultActuatorForNode(nodeId) {
+      const node = nodesCache.find(n => n.id === nodeId);
+      if (node && node.components) {
+        const relay = node.components.find(c => c.type == 1);
+        if (relay) return relay.id || 'relay';
+      }
+      return 'relay1';
+    }
 
+    function getSensorOptionsHtml(nodeId, selectedKey) {
       const node = nodesCache.find(n => n.id === nodeId);
       if (!node || !node.components || node.components.length === 0) {
-        const opt = new Option('(No sensor components configured on this node)', '');
-        opt.disabled = true;
-        opt.selected = true;
-        keySelect.appendChild(opt);
-        return;
+        return '<option value="LVL" ' + (selectedKey==='LVL'?'selected':'') + '>Primary Level % (LVL)</option><option value="TMP" ' + (selectedKey==='TMP'?'selected':'') + '>Primary Temp (TMP)</option>';
       }
-
+      let html = '';
       node.components.forEach(c => {
         const type = parseInt(c.type) || 1;
         const cid = c.id || 'comp';
         const cname = c.name || cid;
-        if (type === 1) { // Relay
-          keySelect.appendChild(new Option(`${cname} → Relay State (0/1) [${cid}.state]`, `${cid}.state`));
-        } else if (type === 2) { // Ultrasonic
-          keySelect.appendChild(new Option(`${cname} → Tank Level % [${cid}.level]`, `${cid}.level`));
-          keySelect.appendChild(new Option(`${cname} → Distance cm [${cid}.dist]`, `${cid}.dist`));
-        } else if (type === 3) { // DHT
-          keySelect.appendChild(new Option(`${cname} → Temperature °C [${cid}.temp]`, `${cid}.temp`));
-          keySelect.appendChild(new Option(`${cname} → Humidity % [${cid}.hum]`, `${cid}.hum`));
-        } else if (type === 4) { // Button
-          keySelect.appendChild(new Option(`${cname} → Button Pressed (0/1) [${cid}.state]`, `${cid}.state`));
-        } else if (type === 5) { // Touch
-          keySelect.appendChild(new Option(`${cname} → Touch Active (0/1) [${cid}.state]`, `${cid}.state`));
-        } else if (type === 6 || type === 7) { // ADC
-          keySelect.appendChild(new Option(`${cname} → Analog Raw Value [${cid}.raw]`, `${cid}.raw`));
+        if (type === 1) {
+          html += `<option value="${cid}.state" ${selectedKey===cid+'.state'?'selected':''}>${escapeHtml(cname)} → Relay State [${cid}.state]</option>`;
+        } else if (type === 2) {
+          html += `<option value="${cid}.level" ${selectedKey===cid+'.level'?'selected':''}>${escapeHtml(cname)} → Tank Level % [${cid}.level]</option>`;
+          html += `<option value="${cid}.dist" ${selectedKey===cid+'.dist'?'selected':''}>${escapeHtml(cname)} → Distance cm [${cid}.dist]</option>`;
+        } else if (type === 3) {
+          html += `<option value="${cid}.temp" ${selectedKey===cid+'.temp'?'selected':''}>${escapeHtml(cname)} → Temperature °C [${cid}.temp]</option>`;
+          html += `<option value="${cid}.hum" ${selectedKey===cid+'.hum'?'selected':''}>${escapeHtml(cname)} → Humidity % [${cid}.hum]</option>`;
+        } else if (type === 4 || type === 5) {
+          html += `<option value="${cid}.state" ${selectedKey===cid+'.state'?'selected':''}>${escapeHtml(cname)} → Switch State [${cid}.state]</option>`;
+        } else if (type === 6 || type === 7) {
+          html += `<option value="${cid}.raw" ${selectedKey===cid+'.raw'?'selected':''}>${escapeHtml(cname)} → Analog Raw [${cid}.raw]</option>`;
         } else {
-          keySelect.appendChild(new Option(`${cname} [${cid}]`, cid));
+          html += `<option value="${cid}" ${selectedKey===cid?'selected':''}>${escapeHtml(cname)} [${cid}]</option>`;
         }
       });
+      return html;
     }
 
-    function updateRuleActSlots(nodeId) {
-      const slotSelect = document.getElementById('ruleActSlot');
-      slotSelect.innerHTML = '';
+    function getActuatorOptionsHtml(nodeId, selectedComp) {
       const node = nodesCache.find(n => n.id === nodeId);
-      if (node && node.components) {
-        node.components.forEach((c, idx) => {
-          if (c.type == 1) { // Relay
-            slotSelect.appendChild(new Option(c.name || c.id || ('Relay ' + idx), c.id || idx));
-          }
-        });
+      if (!node || !node.components || node.components.length === 0) {
+        return '<option value="relay1">Relay 1 (Default)</option>';
       }
-      if (slotSelect.options.length === 0) {
-        slotSelect.appendChild(new Option('Relay 0 (Default)', 0));
+      let html = '';
+      node.components.forEach((c, idx) => {
+        if (c.type == 1) { // Relay
+          const cid = c.id || ('relay' + idx);
+          html += `<option value="${cid}" ${selectedComp===cid?'selected':''}>${escapeHtml(c.name || ('Relay ' + idx))} [${cid}]</option>`;
+        }
+      });
+      if (!html) html = '<option value="relay1">Relay 1 (Default)</option>';
+      return html;
+    }
+
+    function getNodeOptionsHtml(selectedNodeId) {
+      let html = '';
+      nodesCache.forEach(n => {
+        html += `<option value="${n.id}" ${n.id===selectedNodeId?'selected':''}>${escapeHtml(n.name || n.id)}</option>`;
+      });
+      if (nodesCache.length === 0) {
+        html += `<option value="LOCAL">LOCAL (Master)</option>`;
       }
+      return html;
+    }
+
+    function renderRuleModalConds() {
+      const container = document.getElementById('ruleCondsList');
+      if (currentRuleConds.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-dim); font-size:11px;">No conditions added. Click "+ Add Condition" above.</div>';
+        return;
+      }
+
+      let html = '';
+      currentRuleConds.forEach((cond, idx) => {
+        html += `
+          <div style="display:grid; grid-template-columns:1.5fr 2fr 1fr 1fr auto; gap:8px; align-items:center; background:rgba(0,0,0,0.2); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div>
+              <label style="font-size:10px;">Source Node</label>
+              <select onchange="updateRuleCondNode(${idx}, this.value)" style="font-size:11px;">
+                ${getNodeOptionsHtml(cond.node)}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Sensor / Metric</label>
+              <select onchange="currentRuleConds[${idx}].key=this.value" id="ruleCondKeySelect_${idx}" style="font-size:11px;">
+                ${getSensorOptionsHtml(cond.node, cond.key)}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Operator</label>
+              <select onchange="currentRuleConds[${idx}].op=this.value" style="font-size:11px;">
+                <option value=">=" ${cond.op==='>='?'selected':''}>&gt;= (Greater/Eq)</option>
+                <option value="<=" ${cond.op==='<='?'selected':''}>&lt;= (Less/Eq)</option>
+                <option value="==" ${cond.op==='=='?'selected':''}>== (Equal to)</option>
+                <option value="!=" ${cond.op==='!='?'selected':''}>!= (Not equal)</option>
+                <option value=">" ${cond.op==='>'?'selected':''}>&gt; (Greater than)</option>
+                <option value="<" ${cond.op==='<'?'selected':''}>&lt; (Less than)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Threshold</label>
+              <input type="number" step="any" value="${cond.val !== undefined ? cond.val : 80}" onchange="currentRuleConds[${idx}].val=parseFloat(this.value)||0" style="font-size:11px; padding:4px;">
+            </div>
+            <div>
+              <button class="btn btn-danger btn-sm" onclick="removeRuleCondRow(${idx})" style="padding:2px 7px; margin-top:14px;">&times;</button>
+            </div>
+          </div>`;
+      });
+      container.innerHTML = html;
+    }
+
+    function updateRuleCondNode(idx, nodeId) {
+      currentRuleConds[idx].node = nodeId;
+      currentRuleConds[idx].key = getDefaultMetricForNode(nodeId);
+      renderRuleModalConds();
+    }
+
+    function addRuleCondRow() {
+      const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+      currentRuleConds.push({
+        node: firstNode,
+        key: getDefaultMetricForNode(firstNode),
+        op: '>=',
+        val: 80
+      });
+      renderRuleModalConds();
+    }
+
+    function removeRuleCondRow(idx) {
+      currentRuleConds.splice(idx, 1);
+      renderRuleModalConds();
+    }
+
+    function renderRuleModalActs() {
+      const container = document.getElementById('ruleActsList');
+      if (currentRuleActs.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-dim); font-size:11px;">No actions configured. Click "+ Add Action" above.</div>';
+        return;
+      }
+
+      let html = '';
+      currentRuleActs.forEach((act, idx) => {
+        const state = (act.state !== undefined) ? parseInt(act.state) : (act.val !== undefined ? parseInt(act.val) : 1);
+        html += `
+          <div style="display:grid; grid-template-columns:1.8fr 2fr 1.5fr auto; gap:8px; align-items:center; background:rgba(0,0,0,0.2); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div>
+              <label style="font-size:10px;">Target Node</label>
+              <select onchange="updateRuleActTarget(${idx}, this.value)" style="font-size:11px;">
+                ${getNodeOptionsHtml(act.target)}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Actuator / Relay</label>
+              <select onchange="currentRuleActs[${idx}].comp=this.value" id="ruleActCompSelect_${idx}" style="font-size:11px;">
+                ${getActuatorOptionsHtml(act.target, act.comp)}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Command</label>
+              <select onchange="currentRuleActs[${idx}].state=parseInt(this.value)" style="font-size:11px;">
+                <option value="1" ${state===1?'selected':''}>Turn ON (Energize)</option>
+                <option value="0" ${state===0?'selected':''}>Turn OFF (De-energize)</option>
+              </select>
+            </div>
+            <div>
+              <button class="btn btn-danger btn-sm" onclick="removeRuleActRow(${idx})" style="padding:2px 7px; margin-top:14px;">&times;</button>
+            </div>
+          </div>`;
+      });
+      container.innerHTML = html;
+    }
+
+    function updateRuleActTarget(idx, nodeId) {
+      currentRuleActs[idx].target = nodeId;
+      currentRuleActs[idx].comp = getDefaultActuatorForNode(nodeId);
+      renderRuleModalActs();
+    }
+
+    function addRuleActRow() {
+      const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+      currentRuleActs.push({
+        target: firstNode,
+        comp: getDefaultActuatorForNode(firstNode),
+        state: 1
+      });
+      renderRuleModalActs();
+    }
+
+    function removeRuleActRow(idx) {
+      currentRuleActs.splice(idx, 1);
+      renderRuleModalActs();
     }
 
     async function saveRuleFromModal() {
       const name = document.getElementById('ruleNameInput').value.trim();
-      const condNode = document.getElementById('ruleCondNode').value;
-      const condKey = document.getElementById('ruleCondKey').value;
-      const condOp = document.getElementById('ruleCondOp').value;
-      const condVal = parseFloat(document.getElementById('ruleCondVal').value) || 0;
-      const actTarget = document.getElementById('ruleActTarget').value;
-      const actSlot = document.getElementById('ruleActSlot').value;
-      const actState = parseInt(document.getElementById('ruleActState').value) || 0;
+      const logic = document.getElementById('ruleLogicSelect').value || 'AND';
+
+      if (!name) return showToast('Please enter a rule name', 'warning');
+      if (currentRuleActs.length === 0) return showToast('Add at least one THEN action', 'warning');
 
       const ruleObj = {
         name: name,
-        cond: { node: condNode, key: condKey, op: condOp, val: condVal },
-        act: { target: actTarget, comp: actSlot, slot: parseInt(actSlot)||0, state: actState }
+        enabled: true,
+        logic: logic,
+        conditions: currentRuleConds,
+        actions: currentRuleActs
       };
 
       const res = await fetch('/api/rules');
@@ -3613,15 +3983,19 @@ inline void setupWebEndpoints() {
         rules.push(ruleObj);
       }
 
-      await fetch('/api/rules', {
+      const saveRes = await fetch('/api/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rules })
       });
 
-      showToast('Automation rule saved', 'success');
-      closeRuleModal();
-      loadRules();
+      if (saveRes.ok) {
+        closeRuleModal();
+        loadRules();
+        showToast('Automation rule saved successfully', 'success');
+      } else {
+        showToast('Failed to save rule', 'error');
+      }
     }
 
     async function deleteRule(idx) {
@@ -3635,19 +4009,286 @@ inline void setupWebEndpoints() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rules })
       });
-      showToast('Rule deleted', 'success');
       loadRules();
+      showToast('Rule deleted', 'info');
     }
 
     async function clearAllRules() {
-      if (!confirm('Are you sure you want to delete ALL automation rules?')) return;
+      if (!confirm('Clear all automation rules?')) return;
       await fetch('/api/rules', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rules: [] })
       });
-      showToast('All rules cleared', 'success');
       loadRules();
+      showToast('All rules cleared', 'info');
+    }
+
+    // =========================================================================
+    // TAB: NOTIFICATIONS & INDEPENDENT ALERTS
+    // =========================================================================
+    let notifsCache = [];
+    let editingNotifIdx = -1;
+    let currentNotifConds = [];
+
+    async function loadNotifications() {
+      try {
+        const res = await fetch('/api/notifications');
+        const data = await res.json();
+        notifsCache = data.notifications || [];
+        const container = document.getElementById('notifsList');
+        if (!container) return;
+
+        if (notifsCache.length === 0) {
+          container.innerHTML = '<div style="color:var(--text-dim); padding:16px 0;">No notification rules configured. Click "+ Add Alert Rule" above.</div>';
+          return;
+        }
+
+        let html = '';
+        notifsCache.forEach((n, idx) => {
+          const logic = (n.logic || 'AND').toUpperCase();
+          const conds = (n.conditions && n.conditions.length) ? n.conditions : (n.cond ? [n.cond] : []);
+          const level = n.level || 'warning';
+
+          let levelBadge = '<span class="badge badge-warning">Warning</span>';
+          if (level === 'critical') levelBadge = '<span class="badge badge-danger">Critical</span>';
+          if (level === 'info') levelBadge = '<span class="badge badge-primary">Info</span>';
+
+          let condsSummary = conds.map(c => `<span style="color:#60a5fa;">[${escapeHtml(c.node || 'LOCAL')}.${escapeHtml(c.key || 'comp')}]</span> ${escapeHtml(c.op || '>=')} <span style="color:#f59e0b;">${c.val}</span>`).join(` <strong style="color:var(--text-dim); font-size:10px;">${logic}</strong> `);
+
+          html += `
+            <div style="padding:14px; background:rgba(0,0,0,0.2); border:1px solid var(--card-border); border-radius:var(--radius-sm); margin-bottom:10px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+              <div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <strong style="font-size:13px; color:var(--text);">${escapeHtml(n.name || ('Alert #' + (idx + 1)))}</strong>
+                  ${levelBadge}
+                  <span class="badge">${logic} Logic</span>
+                </div>
+                <div style="font-size:11px; font-family:var(--font-mono); color:var(--text-muted); margin-top:5px; line-height:1.5;">
+                  <div><strong>IF</strong> ${condsSummary || 'Always'}</div>
+                  <div><strong>MSG</strong> <span style="color:#e2e8f0;">"${escapeHtml(n.msg || 'Threshold reached')}"</span> &bull; <span style="color:#38bdf8;">MQTT /notify</span></div>
+                </div>
+              </div>
+              <div style="display:flex; gap:6px;">
+                <button class="btn btn-secondary btn-sm" onclick="editNotif(${idx})">Edit</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteNotif(${idx})">Delete</button>
+              </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+      } catch (e) {}
+    }
+
+    async function loadAlertsFeed() {
+      try {
+        const res = await fetch('/api/alerts');
+        const data = await res.json();
+        const alerts = data.alerts || [];
+        const container = document.getElementById('alertsFeedContainer');
+        if (!container) return;
+
+        if (alerts.length === 0) {
+          container.innerHTML = '<div style="color:var(--text-dim); font-size:12px; padding:10px 0;">No alerts triggered yet. System operating normally.</div>';
+          return;
+        }
+
+        let html = '';
+        alerts.forEach(a => {
+          let badge = '<span class="badge badge-warning">WARNING</span>';
+          if (a.level === 'critical') badge = '<span class="badge badge-danger">CRITICAL</span>';
+          if (a.level === 'info') badge = '<span class="badge badge-primary">INFO</span>';
+
+          const timeStr = a.time ? new Date(a.time * 1000).toLocaleTimeString() : '--:--';
+
+          html += `
+            <div style="padding:10px 12px; background:rgba(0,0,0,0.25); border:1px solid var(--card-border-subtle); border-radius:var(--radius-sm); display:flex; align-items:flex-start; gap:10px;">
+              <div>${badge}</div>
+              <div style="flex:1;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <strong style="font-size:12px; color:var(--text);">${escapeHtml(a.title)}</strong>
+                  <span style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">${timeStr}</span>
+                </div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">${escapeHtml(a.msg)}</div>
+              </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+      } catch (e) {}
+    }
+
+    function openAddNotifModal() {
+      editingNotifIdx = -1;
+      document.getElementById('notifModalTitle').textContent = 'Add Sensor Alert Rule';
+      document.getElementById('notifNameInput').value = 'Alert #' + (notifsCache.length + 1);
+      document.getElementById('notifLevelSelect').value = 'warning';
+      document.getElementById('notifLogicSelect').value = 'AND';
+      document.getElementById('notifMsgInput').value = '';
+
+      const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+      currentNotifConds = [{ node: firstNode, key: getDefaultMetricForNode(firstNode), op: '>=', val: 90 }];
+
+      renderNotifModalConds();
+      document.getElementById('notifModal').style.display = 'flex';
+    }
+
+    function editNotif(idx) {
+      if (!notifsCache || !notifsCache[idx]) return;
+      editingNotifIdx = idx;
+      const n = notifsCache[idx];
+      document.getElementById('notifModalTitle').textContent = 'Edit Sensor Alert Rule';
+      document.getElementById('notifNameInput').value = n.name || ('Alert #' + (idx + 1));
+      document.getElementById('notifLevelSelect').value = n.level || 'warning';
+      document.getElementById('notifLogicSelect').value = (n.logic || 'AND').toUpperCase();
+      document.getElementById('notifMsgInput').value = n.msg || '';
+
+      if (n.conditions && Array.isArray(n.conditions) && n.conditions.length > 0) {
+        currentNotifConds = JSON.parse(JSON.stringify(n.conditions));
+      } else if (n.cond) {
+        currentNotifConds = [JSON.parse(JSON.stringify(n.cond))];
+      } else {
+        const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+        currentNotifConds = [{ node: firstNode, key: getDefaultMetricForNode(firstNode), op: '>=', val: 90 }];
+      }
+
+      renderNotifModalConds();
+      document.getElementById('notifModal').style.display = 'flex';
+    }
+
+    function closeNotifModal() {
+      document.getElementById('notifModal').style.display = 'none';
+    }
+
+    function renderNotifModalConds() {
+      const container = document.getElementById('notifCondsList');
+      if (currentNotifConds.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-dim); font-size:11px;">No conditions added. Click "+ Add Condition" above.</div>';
+        return;
+      }
+
+      let html = '';
+      currentNotifConds.forEach((cond, idx) => {
+        html += `
+          <div style="display:grid; grid-template-columns:1.5fr 2fr 1fr 1fr auto; gap:8px; align-items:center; background:rgba(0,0,0,0.2); padding:8px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div>
+              <label style="font-size:10px;">Source Node</label>
+              <select onchange="updateNotifCondNode(${idx}, this.value)" style="font-size:11px;">
+                ${getNodeOptionsHtml(cond.node)}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Sensor / Metric</label>
+              <select onchange="currentNotifConds[${idx}].key=this.value" style="font-size:11px;">
+                ${getSensorOptionsHtml(cond.node, cond.key)}
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Operator</label>
+              <select onchange="currentNotifConds[${idx}].op=this.value" style="font-size:11px;">
+                <option value=">=" ${cond.op==='>='?'selected':''}>&gt;= (Greater/Eq)</option>
+                <option value="<=" ${cond.op==='<='?'selected':''}>&lt;= (Less/Eq)</option>
+                <option value="==" ${cond.op==='=='?'selected':''}>== (Equal to)</option>
+                <option value="!=" ${cond.op==='!='?'selected':''}>!= (Not equal)</option>
+                <option value=">" ${cond.op==='>'?'selected':''}>&gt; (Greater than)</option>
+                <option value="<" ${cond.op==='<'?'selected':''}>&lt; (Less than)</option>
+              </select>
+            </div>
+            <div>
+              <label style="font-size:10px;">Threshold</label>
+              <input type="number" step="any" value="${cond.val !== undefined ? cond.val : 90}" onchange="currentNotifConds[${idx}].val=parseFloat(this.value)||0" style="font-size:11px; padding:4px;">
+            </div>
+            <div>
+              <button class="btn btn-danger btn-sm" onclick="removeNotifCondRow(${idx})" style="padding:2px 7px; margin-top:14px;">&times;</button>
+            </div>
+          </div>`;
+      });
+      container.innerHTML = html;
+    }
+
+    function updateNotifCondNode(idx, nodeId) {
+      currentNotifConds[idx].node = nodeId;
+      currentNotifConds[idx].key = getDefaultMetricForNode(nodeId);
+      renderNotifModalConds();
+    }
+
+    function addNotifCondRow() {
+      const firstNode = (nodesCache.length > 0) ? nodesCache[0].id : 'LOCAL';
+      currentNotifConds.push({
+        node: firstNode,
+        key: getDefaultMetricForNode(firstNode),
+        op: '>=',
+        val: 90
+      });
+      renderNotifModalConds();
+    }
+
+    function removeNotifCondRow(idx) {
+      currentNotifConds.splice(idx, 1);
+      renderNotifModalConds();
+    }
+
+    async function saveNotifFromModal() {
+      const name = document.getElementById('notifNameInput').value.trim();
+      const level = document.getElementById('notifLevelSelect').value || 'warning';
+      const logic = document.getElementById('notifLogicSelect').value || 'AND';
+      const msg = document.getElementById('notifMsgInput').value.trim() || `${name} triggered!`;
+
+      if (!name) return showToast('Please enter an alert rule name', 'warning');
+      if (currentNotifConds.length === 0) return showToast('Add at least one threshold condition', 'warning');
+
+      const notifObj = {
+        name: name,
+        title: name,
+        level: level,
+        logic: logic,
+        msg: msg,
+        enabled: true,
+        conditions: currentNotifConds
+      };
+
+      const res = await fetch('/api/notifications');
+      const data = await res.json();
+      const notifs = data.notifications || [];
+
+      if (editingNotifIdx >= 0 && editingNotifIdx < notifs.length) {
+        notifs[editingNotifIdx] = notifObj;
+      } else {
+        notifs.push(notifObj);
+      }
+
+      const saveRes = await fetch('/api/notifications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notifications: notifs })
+      });
+
+      if (saveRes.ok) {
+        closeNotifModal();
+        loadNotifications();
+        showToast('Notification rule saved successfully', 'success');
+      } else {
+        showToast('Failed to save notification rule', 'error');
+      }
+    }
+
+    async function deleteNotif(idx) {
+      if (!confirm('Delete this notification rule?')) return;
+      const res = await fetch('/api/notifications');
+      const data = await res.json();
+      const notifs = data.notifications || [];
+      notifs.splice(idx, 1);
+      await fetch('/api/notifications', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notifications: notifs })
+      });
+      loadNotifications();
+      showToast('Notification rule deleted', 'info');
+    }
+
+    async function clearAlertsFeed() {
+      await fetch('/api/alerts/clear', { method: 'POST' });
+      loadAlertsFeed();
+      showToast('Alert feed cleared', 'info');
     }
 
     // =========================================================================

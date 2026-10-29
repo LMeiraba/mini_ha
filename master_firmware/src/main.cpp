@@ -681,10 +681,11 @@ void loop() {
   pollBusPort(BusPort2, busRxBuf2);
 #endif
 
-  // 3. Evaluate Dynamic Rules Engine every 500ms
+  // 3. Evaluate Dynamic Rules & Notification Engine every 500ms
   if (millis() - lastRulePoll > 500) {
     lastRulePoll = millis();
     evaluateDynamicRules();
+    evaluateNotificationRules();
   }
 
   // 4. Broadcast Poll to active slaves on RS-422 bus every 500ms (sub-second real-time responsiveness)

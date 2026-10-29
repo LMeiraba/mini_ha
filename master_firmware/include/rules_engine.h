@@ -9,7 +9,7 @@
 // GENERIC DYNAMIC RULES & TELEMETRY ENGINE
 // =========================================================================
 // Runs 100% offline on ESP32 silicon.
-// Evaluates JSON condition-action rules between any registered nodes.
+// Evaluates JSON multi-condition (AND/OR) action rules between registered nodes.
 // =========================================================================
 
 struct GenericNodeTelemetry {
@@ -95,7 +95,10 @@ void executeAction(const String& targetNode, const String& compId, int state, co
 void executeAction(const String& targetNode, int slot, int state, const String& reason);
 extern void publishMqttNotification(const String& title, const String& msg, const String& level);
 
-#define MAX_CONFIGURED_RULES 16
+// =========================================================================
+// AUTOMATION RULES ENGINE (MULTI-CONDITION AND/OR & MULTI-ACTION)
+// =========================================================================
+#define MAX_CONFIGURED_RULES 24
 static bool ruleActiveState[MAX_CONFIGURED_RULES] = {false};
 static DynamicJsonDocument cachedRulesDoc(4096);
 static bool cachedRulesLoaded = false;
@@ -113,6 +116,26 @@ inline void reloadRulesCache() {
   Serial.println("[RULES] In-memory rules cache reloaded from LittleFS.");
 }
 
+inline bool evaluateSingleCondition(JsonObject cond) {
+  String node = cond["node"].as<String>();
+  String key = cond["key"].as<String>();
+  String op = cond["op"].as<String>();
+  float targetVal = cond["val"].as<float>();
+
+  GenericNodeTelemetry* ns = getOrCreateNodeState(node);
+  if (!ns) return false;
+
+  float currentVal = ns->getMetricValue(key);
+
+  if (op == ">=") return (currentVal >= targetVal);
+  if (op == "<=") return (currentVal <= targetVal && currentVal != -1);
+  if (op == "==") return (currentVal == targetVal);
+  if (op == "!=") return (currentVal != targetVal);
+  if (op == ">")  return (currentVal > targetVal);
+  if (op == "<")  return (currentVal < targetVal && currentVal != -1);
+  return false;
+}
+
 inline void evaluateDynamicRules() {
   if (!cachedRulesLoaded) {
     reloadRulesCache();
@@ -123,58 +146,60 @@ inline void evaluateDynamicRules() {
   int rIdx = 0;
   for (JsonObject rule : rules) {
     if (rIdx >= MAX_CONFIGURED_RULES) break;
-    if (!rule["enabled"].as<bool>()) {
+    if (rule.containsKey("enabled") && !rule["enabled"].as<bool>()) {
       ruleActiveState[rIdx++] = false;
       continue;
     }
 
-    bool allConditionsMet = true;
-    JsonArray conditions = rule["conditions"].as<JsonArray>();
+    String logic = rule.containsKey("logic") ? rule["logic"].as<String>() : "AND";
+    logic.toUpperCase();
 
-    for (JsonObject cond : conditions) {
-      String node = cond["node"].as<String>();
-      String key = cond["key"].as<String>();
-      String op = cond["op"].as<String>();
-      float targetVal = cond["val"].as<float>();
+    bool conditionMet = false;
 
-      GenericNodeTelemetry* ns = getOrCreateNodeState(node);
-      if (!ns) {
-        allConditionsMet = false;
-        break;
-      }
-
-      float currentVal = ns->getMetricValue(key);
-
-      // Check condition
-      bool condResult = false;
-      if (op == ">=") condResult = (currentVal >= targetVal);
-      else if (op == "<=") condResult = (currentVal <= targetVal && currentVal != -1);
-      else if (op == "==") condResult = (currentVal == targetVal);
-      else if (op == ">")  condResult = (currentVal > targetVal);
-      else if (op == "<")  condResult = (currentVal < targetVal && currentVal != -1);
-
-      if (!condResult) {
-        allConditionsMet = false;
-        break;
-      }
-    }
-
-    if (allConditionsMet) {
-      // Rising edge check: only notify once when condition first becomes true
-      if (!ruleActiveState[rIdx]) {
-        ruleActiveState[rIdx] = true;
-        if (rule.containsKey("notify") && rule["notify"].as<bool>()) {
-          String notifTitle = rule.containsKey("notify_title") ? rule["notify_title"].as<String>() : rule["name"].as<String>();
-          String notifMsg = rule.containsKey("notify_msg") ? rule["notify_msg"].as<String>() : "Automation rule triggered!";
-          publishMqttNotification(notifTitle, notifMsg, "warning");
+    // Check multiple conditions (or legacy single cond)
+    if (rule.containsKey("conditions") && rule["conditions"].is<JsonArray>() && rule["conditions"].as<JsonArray>().size() > 0) {
+      JsonArray conditions = rule["conditions"].as<JsonArray>();
+      if (logic == "OR") {
+        conditionMet = false;
+        for (JsonObject cond : conditions) {
+          if (evaluateSingleCondition(cond)) {
+            conditionMet = true;
+            break;
+          }
+        }
+      } else { // "AND"
+        conditionMet = true;
+        for (JsonObject cond : conditions) {
+          if (!evaluateSingleCondition(cond)) {
+            conditionMet = false;
+            break;
+          }
         }
       }
+    } else if (rule.containsKey("cond")) {
+      conditionMet = evaluateSingleCondition(rule["cond"].as<JsonObject>());
+    }
 
-      JsonArray actions = rule["actions"].as<JsonArray>();
-      for (JsonObject act : actions) {
+    if (conditionMet) {
+      if (!ruleActiveState[rIdx]) {
+        ruleActiveState[rIdx] = true;
+      }
+
+      // Execute multiple actions
+      if (rule.containsKey("actions") && rule["actions"].is<JsonArray>()) {
+        JsonArray actions = rule["actions"].as<JsonArray>();
+        for (JsonObject act : actions) {
+          String target = act["target"].as<String>();
+          String comp = act.containsKey("comp") ? act["comp"].as<String>() : (act.containsKey("slot") ? String(act["slot"].as<int>()) : "0");
+          int val = act.containsKey("val") ? act["val"].as<int>() : (act.containsKey("state") ? act["state"].as<int>() : 1);
+          String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
+          executeAction(target, comp, val, reason);
+        }
+      } else if (rule.containsKey("act")) {
+        JsonObject act = rule["act"].as<JsonObject>();
         String target = act["target"].as<String>();
         String comp = act.containsKey("comp") ? act["comp"].as<String>() : (act.containsKey("slot") ? String(act["slot"].as<int>()) : "0");
-        int val = act.containsKey("val") ? act["val"].as<int>() : 1;
+        int val = act.containsKey("val") ? act["val"].as<int>() : (act.containsKey("state") ? act["state"].as<int>() : 1);
         String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
         executeAction(target, comp, val, reason);
       }
@@ -182,5 +207,115 @@ inline void evaluateDynamicRules() {
       ruleActiveState[rIdx] = false;
     }
     rIdx++;
+  }
+}
+
+// =========================================================================
+// INDEPENDENT NOTIFICATION & ALERT RULES ENGINE (NO STATE MODIFICATION)
+// =========================================================================
+#define NOTIFICATIONS_CONFIG_PATH "/config/notifications.json"
+#define MAX_CONFIGURED_NOTIFS 16
+static bool notifActiveState[MAX_CONFIGURED_NOTIFS] = {false};
+static DynamicJsonDocument cachedNotifsDoc(4096);
+static bool cachedNotifsLoaded = false;
+
+struct AlertLogEntry {
+  String title;
+  String msg;
+  String level;
+  uint32_t timestamp;
+};
+#define MAX_ALERT_LOGS 20
+static AlertLogEntry recentAlerts[MAX_ALERT_LOGS];
+static uint8_t alertCount = 0;
+
+inline void logAlert(const String& title, const String& msg, const String& level) {
+  if (alertCount < MAX_ALERT_LOGS) {
+    alertCount++;
+  }
+  for (int i = alertCount - 1; i > 0; i--) {
+    recentAlerts[i] = recentAlerts[i - 1];
+  }
+  recentAlerts[0].title = title;
+  recentAlerts[0].msg = msg;
+  recentAlerts[0].level = level;
+  time_t now = time(nullptr);
+  recentAlerts[0].timestamp = (now > 1700000000) ? (uint32_t)now : (millis() / 1000);
+}
+
+inline void clearAlertLogs() {
+  alertCount = 0;
+}
+
+inline void reloadNotificationsCache() {
+  cachedNotifsDoc.clear();
+  if (LittleFS.exists(NOTIFICATIONS_CONFIG_PATH)) {
+    File file = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "r");
+    if (file) {
+      deserializeJson(cachedNotifsDoc, file);
+      file.close();
+    }
+  }
+  cachedNotifsLoaded = true;
+  Serial.println("[NOTIFS] In-memory notifications cache reloaded from LittleFS.");
+}
+
+inline void evaluateNotificationRules() {
+  if (!cachedNotifsLoaded) {
+    reloadNotificationsCache();
+  }
+  if (!cachedNotifsDoc.containsKey("notifications")) return;
+
+  JsonArray notifs = cachedNotifsDoc["notifications"].as<JsonArray>();
+  int nIdx = 0;
+  for (JsonObject notif : notifs) {
+    if (nIdx >= MAX_CONFIGURED_NOTIFS) break;
+    if (notif.containsKey("enabled") && !notif["enabled"].as<bool>()) {
+      notifActiveState[nIdx++] = false;
+      continue;
+    }
+
+    String logic = notif.containsKey("logic") ? notif["logic"].as<String>() : "AND";
+    logic.toUpperCase();
+
+    bool conditionMet = false;
+    if (notif.containsKey("conditions") && notif["conditions"].is<JsonArray>() && notif["conditions"].as<JsonArray>().size() > 0) {
+      JsonArray conditions = notif["conditions"].as<JsonArray>();
+      if (logic == "OR") {
+        conditionMet = false;
+        for (JsonObject cond : conditions) {
+          if (evaluateSingleCondition(cond)) {
+            conditionMet = true;
+            break;
+          }
+        }
+      } else { // "AND"
+        conditionMet = true;
+        for (JsonObject cond : conditions) {
+          if (!evaluateSingleCondition(cond)) {
+            conditionMet = false;
+            break;
+          }
+        }
+      }
+    } else if (notif.containsKey("cond")) {
+      conditionMet = evaluateSingleCondition(notif["cond"].as<JsonObject>());
+    }
+
+    if (conditionMet) {
+      // Rising edge check: only notify once when condition first becomes true
+      if (!notifActiveState[nIdx]) {
+        notifActiveState[nIdx] = true;
+        String title = notif.containsKey("title") ? notif["title"].as<String>() : (notif.containsKey("name") ? notif["name"].as<String>() : "System Alert");
+        String msg = notif.containsKey("msg") ? notif["msg"].as<String>() : "Threshold condition triggered";
+        String level = notif.containsKey("level") ? notif["level"].as<String>() : "warning";
+        publishMqttNotification(title, msg, level);
+        logAlert(title, msg, level);
+        Serial.printf("[ALERT] %s: %s (Level: %s)\n", title.c_str(), msg.c_str(), level.c_str());
+      }
+    } else {
+      notifActiveState[nIdx] = false;
+    }
+    nIdx++;
   }
 }

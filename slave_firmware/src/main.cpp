@@ -390,6 +390,8 @@ void processIncomingPacket(const ParsedPacket& pkt) {
     if (count > 0) rep += ":";
     rep += "ap=" + String(config.apEnabled ? 1 : 0);
     rep += ":heap=" + String(ESP.getFreeHeap());
+    rep += ":fw=v0.1.1-beta";
+    rep += ":mode=" + String(config.transportMode == MODE_WIRELESS ? "WIFI" : "WIRED");
     sendPacketToMaster("REP", rep);
   }
   // Verb 2: SET (e.g. SET:<comp_id>:<0|1> or SET:SLOT:<id>:STATE:<0|1>)

@@ -28,6 +28,9 @@ struct GenericNodeTelemetry {
   uint8_t numComps = 0;
   unsigned long lastSeen = 0;
   uint32_t freeHeap = 0;
+  uint8_t port = 1;
+  String mode = "WIRED";
+  String fwVersion = "v0.1.1-beta";
 
   void setComponentData(const String& key, float v1, float v2 = 0.0) {
     for (uint8_t i = 0; i < numComps; i++) {
@@ -269,18 +272,19 @@ inline void clearAlertLogs() {
 
 inline void reloadNotificationsCache() {
   cachedNotifsDoc.clear();
-  if (!LittleFS.exists(NOTIFICATIONS_CONFIG_PATH)) {
-    File file = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "w");
-    if (file) {
-      file.print(R"({"notifications":[]})");
-      file.close();
+  File file = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "r");
+  if (!file || file.size() == 0) {
+    if (file) file.close();
+    File wFile = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "w");
+    if (wFile) {
+      wFile.print(R"({"notifications":[]})");
+      wFile.close();
     }
-  } else {
-    File file = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "r");
-    if (file) {
-      deserializeJson(cachedNotifsDoc, file);
-      file.close();
-    }
+    file = LittleFS.open(NOTIFICATIONS_CONFIG_PATH, "r");
+  }
+  if (file) {
+    deserializeJson(cachedNotifsDoc, file);
+    file.close();
   }
   cachedNotifsLoaded = true;
   Serial.println("[NOTIFS] In-memory notifications cache reloaded from LittleFS.");

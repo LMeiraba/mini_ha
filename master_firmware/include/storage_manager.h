@@ -18,12 +18,26 @@ struct PendingNode {
   String chip;
   String gpios;
   uint8_t slots;
+  uint8_t portNum;
+  String mode;
+  String fw;
   unsigned long lastSeen;
 };
 
 #define MAX_PENDING_NODES 8
 extern PendingNode pendingNodes[MAX_PENDING_NODES];
 extern uint8_t numPendingNodes;
+
+inline void ensureConfigFile(const char* path, const char* defaultContent) {
+  // Use "a+" (append and read) mode so O_CREAT is set in VFS, completely preventing "no permits for creation" errors
+  File f = LittleFS.open(path, "a+");
+  if (f) {
+    if (f.size() == 0) {
+      f.print(defaultContent);
+    }
+    f.close();
+  }
+}
 
 inline bool initLittleFSStorage() {
   if (!LittleFS.begin(true)) {
@@ -32,47 +46,14 @@ inline bool initLittleFSStorage() {
   }
   Serial.println("[STORAGE] LittleFS Mounted Successfully.");
 
-  // Self-healing: Ensure /config directory exists
-  if (!LittleFS.exists("/config")) {
-    LittleFS.mkdir("/config");
-  }
+  // Ensure /config directory exists (mkdir is idempotent in LittleFS)
+  LittleFS.mkdir("/config");
 
-  // Self-healing: If rules.json does not exist, initialize empty registry
-  if (!LittleFS.exists(RULES_CONFIG_PATH)) {
-    Serial.println("[STORAGE] Auto-creating default /config/rules.json...");
-    File f = LittleFS.open(RULES_CONFIG_PATH, "w");
-    if (f) {
-      f.print(R"({"rules":[]})");
-      f.close();
-    }
-  }
-
-  // Self-healing: If nodes.json does not exist, initialize empty registry
-  if (!LittleFS.exists(NODES_CONFIG_PATH)) {
-    Serial.println("[STORAGE] Auto-creating default /config/nodes.json...");
-    File f = LittleFS.open(NODES_CONFIG_PATH, "w");
-    if (f) {
-      f.print(R"({"nodes":[]})");
-      f.close();
-    }
-  }
-
-  // Self-healing: If notifications.json does not exist, initialize empty registry
-  if (!LittleFS.exists("/config/notifications.json")) {
-    Serial.println("[STORAGE] Auto-creating default /config/notifications.json...");
-    File f = LittleFS.open("/config/notifications.json", "w");
-    if (f) {
-      f.print(R"({"notifications":[]})");
-      f.close();
-    }
-  }
-
-  // Self-healing: If system.json does not exist, initialize default network/cloud settings
-  if (!LittleFS.exists(SYSTEM_CONFIG_PATH)) {
-    Serial.println("[STORAGE] Auto-creating default /config/system.json...");
-    File f = LittleFS.open(SYSTEM_CONFIG_PATH, "w");
-    if (f) {
-      f.print(R"({
+  // Self-healing: Initialize default configuration registries without triggering VFS open errors
+  ensureConfigFile(RULES_CONFIG_PATH, R"({"rules":[]})");
+  ensureConfigFile(NODES_CONFIG_PATH, R"({"nodes":[]})");
+  ensureConfigFile("/config/notifications.json", R"({"notifications":[]})");
+  ensureConfigFile(SYSTEM_CONFIG_PATH, R"({
   "ap_ssid": "Mini-HA-Master",
   "ap_pass": "12345678",
   "sta_ssid": "",
@@ -85,25 +66,13 @@ inline bool initLittleFSStorage() {
   "mqtt_pass": "",
   "mqtt_home_id": "home_1"
 })");
-      f.close();
-    }
-  }
-
-  // Self-healing: If users.json does not exist, initialize default user accounts
-  if (!LittleFS.exists(USERS_CONFIG_PATH)) {
-    Serial.println("[STORAGE] Auto-creating default /config/users.json...");
-    File f = LittleFS.open(USERS_CONFIG_PATH, "w");
-    if (f) {
-      f.print(R"({
+  ensureConfigFile(USERS_CONFIG_PATH, R"({
   "users": [
     { "user": "admin", "pass": "admin123", "role": "admin" },
     { "user": "member", "pass": "member123", "role": "member" },
     { "user": "guest", "pass": "guest123", "role": "guest" }
   ]
 })");
-      f.close();
-    }
-  }
 
   return true;
 }
@@ -149,7 +118,7 @@ inline void prunePendingDevices() {
   }
 }
 
-inline void registerPendingDevice(const String& mac, const String& chip, const String& gpios, uint8_t slots) {
+inline void registerPendingDevice(const String& mac, const String& chip, const String& gpios, uint8_t slots, uint8_t portNum = 1, const String& mode = "WIRED", const String& fw = "v0.1.1-beta") {
   File f = LittleFS.open(NODES_CONFIG_PATH, "r");
   if (f) {
     DynamicJsonDocument doc(4096);
@@ -169,7 +138,7 @@ inline void registerPendingDevice(const String& mac, const String& chip, const S
             bindPkt += ":AP:1:AP_SSID:" + apSsid + ":AP_PASS:" + apPass;
           }
           broadcastBusPacket(buildPacket("ALL", "M", "BIND", bindPkt));
-          Serial.printf("[AUTO-BIND] Re-provisioned recognized MAC %s back to Node ID: %s\n", mac.c_str(), existingId.c_str());
+          Serial.printf("[AUTO-BIND] Re-provisioned recognized MAC %s back to Node ID: %s (Port: %d, Mode: %s, FW: %s)\n", mac.c_str(), existingId.c_str(), portNum, mode.c_str(), fw.c_str());
 
           // Re-dispatch component peripherals if previously assigned
           if (node.containsKey("components") && node["components"].is<JsonArray>()) {
@@ -198,6 +167,9 @@ inline void registerPendingDevice(const String& mac, const String& chip, const S
       pendingNodes[i].chip = chip;
       pendingNodes[i].gpios = gpios;
       pendingNodes[i].slots = slots;
+      pendingNodes[i].portNum = portNum;
+      pendingNodes[i].mode = mode;
+      pendingNodes[i].fw = fw;
       pendingNodes[i].lastSeen = millis();
       return; // Already registered
     }
@@ -207,9 +179,12 @@ inline void registerPendingDevice(const String& mac, const String& chip, const S
     pendingNodes[numPendingNodes].chip = chip;
     pendingNodes[numPendingNodes].gpios = gpios;
     pendingNodes[numPendingNodes].slots = slots;
+    pendingNodes[numPendingNodes].portNum = portNum;
+    pendingNodes[numPendingNodes].mode = mode;
+    pendingNodes[numPendingNodes].fw = fw;
     pendingNodes[numPendingNodes].lastSeen = millis();
     numPendingNodes++;
-    Serial.printf("[DISCOVERY] New Unbound Device Cataloged: MAC=%s, Chip=%s, GPIOs=%s\n", 
-      mac.c_str(), chip.c_str(), gpios.c_str());
+    Serial.printf("[DISCOVERY] New Unbound Device Cataloged: MAC=%s, Chip=%s, GPIOs=%s (Port: %d, Mode: %s, FW: %s)\n", 
+      mac.c_str(), chip.c_str(), gpios.c_str(), portNum, mode.c_str(), fw.c_str());
   }
 }

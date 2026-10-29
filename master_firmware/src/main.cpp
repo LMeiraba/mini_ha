@@ -60,9 +60,9 @@ String busRxBuf2 = "";
 unsigned long lastRulePoll = 0;
 unsigned long lastBusPoll = 0;
 
-void handleIncomingBusPacket(const ParsedPacket& pkt);
+void handleIncomingBusPacket(const ParsedPacket& pkt, uint8_t portNum = 1);
 
-void pollBusPort(HardwareSerial& port, String& buf) {
+void pollBusPort(HardwareSerial& port, String& buf, uint8_t portNum) {
   while (port.available()) {
     char c = (char)port.read();
     if (c == '\n') {
@@ -70,7 +70,7 @@ void pollBusPort(HardwareSerial& port, String& buf) {
       if (buf.length() > 0) {
         ParsedPacket pkt = parseProtocolLine(buf);
         if (pkt.isValid) {
-          handleIncomingBusPacket(pkt);
+          handleIncomingBusPacket(pkt, portNum);
         }
       }
       buf = "";
@@ -343,6 +343,20 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
     file.close();
   }
 
+  String nodeChip = "ESP32";
+  String nodeMode = "WIRED";
+  String nodePort = "UART1";
+  String nodeFw = "v0.1.1-beta";
+  for (uint8_t i = 0; i < numPendingNodes; i++) {
+    if (pendingNodes[i].mac == mac) {
+      if (pendingNodes[i].chip.length() > 0) nodeChip = pendingNodes[i].chip;
+      if (pendingNodes[i].mode.length() > 0) nodeMode = pendingNodes[i].mode;
+      nodePort = (pendingNodes[i].portNum == 2) ? "UART2" : ((pendingNodes[i].portNum == 3) ? "WIFI" : "UART1");
+      if (pendingNodes[i].fw.length() > 0) nodeFw = pendingNodes[i].fw;
+      break;
+    }
+  }
+
   JsonArray nodes = doc["nodes"].as<JsonArray>();
   bool found = false;
   for (JsonObject node : nodes) {
@@ -350,6 +364,10 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
       found = true;
       node["mac"] = mac;
       node["name"] = name;
+      node["chip"] = nodeChip;
+      node["mode"] = nodeMode;
+      node["port"] = nodePort;
+      node["fw"] = nodeFw;
       if (apEnabled) {
         node["ap_enabled"] = true;
         node["ap_hidden"] = apHidden;
@@ -397,6 +415,10 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
     n["id"] = newId;
     n["name"] = name;
     n["mac"] = mac;
+    n["chip"] = nodeChip;
+    n["mode"] = nodeMode;
+    n["port"] = nodePort;
+    n["fw"] = nodeFw;
     n["ap_enabled"] = apEnabled;
     n["ap_hidden"] = apHidden;
     n["ap_ssid"] = apSsid;
@@ -417,7 +439,7 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
 }
 
 // Bus Packet Handler (RS-422 and Wireless Mesh)
-void handleIncomingBusPacket(const ParsedPacket& pkt) {
+void handleIncomingBusPacket(const ParsedPacket& pkt, uint8_t portNum) {
   if (pkt.to != "M") return;
 
   // 1. Factory Discovery Announcement
@@ -426,13 +448,17 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
     int cIdx = pkt.payload.indexOf(":CHIP:");
     int gIdx = pkt.payload.indexOf(":GPIOS:");
     int sIdx = pkt.payload.indexOf(":SLOTS:");
+    int modeIdx = pkt.payload.indexOf(":MODE:");
+    int fwIdx = pkt.payload.indexOf(":FW:");
 
     if (cIdx != -1 && gIdx != -1) {
       String mac = pkt.payload.substring(mIdx, cIdx);
       String chip = pkt.payload.substring(cIdx + 6, gIdx);
       String gpios = pkt.payload.substring(gIdx + 7, sIdx);
-      uint8_t slots = pkt.payload.substring(sIdx + 7).toInt();
-      registerPendingDevice(mac, chip, gpios, slots);
+      uint8_t slots = (sIdx != -1) ? pkt.payload.substring(sIdx + 7, (modeIdx != -1) ? modeIdx : pkt.payload.length()).toInt() : 16;
+      String mode = (modeIdx != -1) ? pkt.payload.substring(modeIdx + 6, (pkt.payload.indexOf(':', modeIdx + 6) != -1 ? pkt.payload.indexOf(':', modeIdx + 6) : pkt.payload.length())) : ((portNum == 3) ? "WIFI" : "WIRED");
+      String fw = (fwIdx != -1) ? pkt.payload.substring(fwIdx + 4) : "v0.1.1-beta";
+      registerPendingDevice(mac, chip, gpios, slots, portNum, mode, fw);
     }
   }
   // 2. Periodic Telemetry Reply or Push-on-Change Sensor Delta
@@ -440,6 +466,7 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
     GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
     if (ns) {
       ns->lastSeen = millis();
+      ns->port = portNum;
 
       // Check for component token format: pump=1:tank=142,71:climate=27.4,62
       if (pkt.payload.indexOf('=') != -1) {
@@ -464,9 +491,13 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
             }
             ns->setComponentData(key, v1, v2);
 
-            // Backward compatibility shortcuts
+            // Backward compatibility shortcuts & hardware metadata
             if (key == "heap") {
               ns->freeHeap = (uint32_t)v1;
+            } else if (key == "fw") {
+              ns->fwVersion = valStr;
+            } else if (key == "mode") {
+              ns->mode = valStr;
             } else if (key.indexOf("tank") != -1 || key.indexOf("dist") != -1) {
               ns->distance = (int)v1;
             } else if (key.indexOf("climate") != -1 || key.indexOf("dht") != -1) {
@@ -688,9 +719,9 @@ void loop() {
   maintainMqtt();
 
   // 2. Read incoming packets from isolated full-duplex star ports
-  pollBusPort(BusPort1, busRxBuf1);
+  pollBusPort(BusPort1, busRxBuf1, 1);
 #if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(ESP32C3)
-  pollBusPort(BusPort2, busRxBuf2);
+  pollBusPort(BusPort2, busRxBuf2, 2);
 #endif
 
   // 3. Evaluate Dynamic Rules & Notification Engine every 500ms

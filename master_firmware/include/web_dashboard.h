@@ -490,6 +490,9 @@ inline void setupWebEndpoints() {
       obj["chip"] = pendingNodes[i].chip;
       obj["gpios"] = pendingNodes[i].gpios;
       obj["slots"] = pendingNodes[i].slots;
+      obj["port"] = (pendingNodes[i].portNum == 2) ? "UART2" : ((pendingNodes[i].portNum == 3) ? "WIFI" : "UART1");
+      obj["mode"] = (pendingNodes[i].mode.length() > 0) ? pendingNodes[i].mode : ((pendingNodes[i].portNum == 3) ? "WIFI" : "WIRED");
+      obj["fw"] = (pendingNodes[i].fw.length() > 0) ? pendingNodes[i].fw : "v0.1.1-beta";
     }
     String json;
     serializeJson(doc, json);
@@ -522,6 +525,9 @@ inline void setupWebEndpoints() {
       n["freeHeap"] = nodeStates[i].freeHeap;
       n["hasSeen"] = (nodeStates[i].lastSeen != 0);
       n["lastSeen"] = (nodeStates[i].lastSeen == 0) ? 999999 : ((millis() - nodeStates[i].lastSeen) / 1000);
+      n["port"] = (nodeStates[i].port == 2) ? "UART2" : ((nodeStates[i].port == 3) ? "WIFI" : "UART1");
+      n["mode"] = (nodeStates[i].mode.length() > 0) ? nodeStates[i].mode : ((nodeStates[i].port == 3) ? "WIFI" : "WIRED");
+      n["fw"] = (nodeStates[i].fwVersion.length() > 0) ? nodeStates[i].fwVersion : "v0.1.1-beta";
       JsonArray relays = n.createNestedArray("relays");
       for (int s = 0; s < MAX_COMPONENTS; s++) {
         relays.add(nodeStates[i].relayStates[s] ? 1 : 0);
@@ -1170,7 +1176,7 @@ inline void setupWebEndpoints() {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Mini-HA Supervisor</title>
+  <title>Home Assistant - Mini</title>
   
   <script>
     if (localStorage.getItem('miniha_logged_in') === '1') {
@@ -1743,6 +1749,23 @@ inline void setupWebEndpoints() {
     .node-card:hover {
       border-color: rgba(255, 255, 255, 0.15);
     }
+    .node-interactive-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      transition: all 0.2s ease;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .node-interactive-card:hover {
+      border-color: rgba(56, 189, 248, 0.5);
+      background: rgba(255, 255, 255, 0.03);
+      transform: translateY(-1px);
+    }
     .node-card-head {
       display: flex;
       justify-content: space-between;
@@ -1918,7 +1941,7 @@ inline void setupWebEndpoints() {
           <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
         </div>
         <div>
-          <div style="font-size:16px; font-weight:800; letter-spacing:0.5px;">MINI-HA</div>
+          <div style="font-size:16px; font-weight:800; letter-spacing:0.5px;">Home Assistant - Mini</div>
           <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono); text-transform:uppercase;">Hardware Supervisor</div>
         </div>
       </div>
@@ -1965,8 +1988,8 @@ inline void setupWebEndpoints() {
           <svg class="icon" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/></svg>
         </div>
         <div class="brand-text">
-          <h1>MINI-HA</h1>
-          <span>LOCAL HUB</span>
+          <h1 style="font-size:13px; font-weight:800; letter-spacing:0.3px;">Home Assistant</h1>
+          <span style="font-size:10px; color:var(--primary); font-weight:700; letter-spacing:1px;">MINI</span>
         </div>
       </div>
 
@@ -2021,13 +2044,39 @@ inline void setupWebEndpoints() {
       </nav>
 
       <div class="sidebar-footer">
-        <div class="hub-status-pill">
-          <span style="display:flex; align-items:center; gap:6px;">
-            <span class="status-dot online"></span>
-            <span>RS-422 STAR BUS</span>
-          </span>
-          <span id="sidebarUptime">0h</span>
+        <!-- Master Supervisor Health Telemetry Card -->
+        <div class="sidebar-master-health" style="background:rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.06); border-radius:var(--radius-sm); padding:10px 12px; margin-bottom:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; border-bottom:1px solid rgba(255,255,255,0.05); padding-bottom:6px;">
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span class="status-dot online"></span>
+              <strong style="color:var(--text); font-size:11px; text-transform:uppercase; letter-spacing:0.5px;">Master Hub</strong>
+            </div>
+            <span class="badge badge-success" style="font-size:9px; padding:1px 5px; font-family:var(--font-mono);">v0.1.1-beta</span>
+          </div>
+          <div style="display:flex; flex-direction:column; gap:4px; font-size:10px; font-family:var(--font-mono); color:var(--text-muted);">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="color:var(--text-dim);">CHIP:</span>
+              <span id="sideChip" style="color:var(--text); font-weight:600;">ESP32 Supervisor</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="color:var(--text-dim);">RAM:</span>
+              <span id="sideHeap" style="color:#38bdf8;">-- KB Free</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="color:var(--text-dim);">FLASH:</span>
+              <span id="sideLittleFS" style="color:var(--text-dim);">-- KB used</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="color:var(--text-dim);">UPTIME:</span>
+              <span id="sidebarUptime" style="color:var(--text-bright);">0h 0m</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span style="color:var(--text-dim);">PORTS:</span>
+              <span id="sideBusPorts" style="color:#10b981;">UART1 &amp; UART2</span>
+            </div>
+          </div>
         </div>
+
         <button class="btn btn-secondary btn-sm" onclick="handleLogout()" style="width:100%; justify-content:center;">
           <svg class="icon" style="width:13px; height:13px;" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>
           <span>Sign Out</span>
@@ -2069,40 +2118,24 @@ inline void setupWebEndpoints() {
         <!-- ========================================================================= -->
         <section id="viewDashboard">
 
-          <!-- Master Supervisor & Star-Mesh Health Diagnostic Card -->
-          <div class="card" style="margin-bottom:18px; background:linear-gradient(135deg, rgba(22,27,38,0.85), rgba(15,18,25,0.95)); border:1px solid rgba(255,255,255,0.08);">
+          <!-- Hardware Slaves Status & Mesh Health (Dedicated to Slaves) -->
+          <div class="card" style="margin-bottom:18px;">
             <div class="card-header" style="margin-bottom:12px;">
-              <div style="display:flex; align-items:center; gap:10px;">
-                <span class="status-dot online"></span>
-                <div>
-                  <h3 class="card-title" style="font-size:14px; letter-spacing:0.3px;">Master Supervisor &amp; Star-Mesh Health</h3>
-                  <div style="font-size:11px; color:var(--text-dim); margin-top:2px;">Local hub runtime, LittleFS partition storage &amp; RS-422 star diagnostics</div>
-                </div>
+              <div>
+                <h3 class="card-title">
+                  <svg class="icon" style="color:#38bdf8;" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+                  <span>Hardware Slaves Status &amp; Mesh Health</span>
+                </h3>
+                <p class="card-desc">Click any slave node card to view telemetry, configure components, direct links &amp; AP bridge</p>
               </div>
               <div style="display:flex; align-items:center; gap:8px;">
-                <span class="badge badge-success" style="font-family:var(--font-mono); font-size:10px; font-weight:700;">v0.1.1-beta</span>
-                <span class="badge badge-primary" id="dashHubIp">192.168.4.1</span>
+                <span class="badge badge-primary" id="dashMeshSummary" style="font-family:var(--font-mono); font-size:11px;">0 Slaves Online</span>
               </div>
             </div>
 
-            <div class="node-hardware-strip" style="grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:10px;">
-              <div class="hw-prop"><span class="hw-lbl">Controller Chip</span><span class="hw-val" id="dashChip">ESP32 Supervisor</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Master Free RAM</span><span class="hw-val" id="dashHeap">-- KB Free</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Flash Storage</span><span class="hw-val" id="dashLittleFS">-- KB used</span></div>
-              <div class="hw-prop"><span class="hw-lbl">System Uptime</span><span class="hw-val" id="dashUptime">--</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Bus Star Ports</span><span class="hw-val" id="dashBusCount">UART1 &amp; UART2</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Connected Mesh</span><span class="hw-val" id="dashMeshSummary" style="color:var(--primary);">0 Slaves Online</span></div>
-            </div>
-
-            <!-- Connected Slaves Live Telemetry Strip -->
-            <div style="margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
-              <div style="font-size:11px; font-weight:700; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
-                <span>Connected Slave Microcontrollers Telemetry</span>
-                <span id="dashSlaveCountText" style="font-family:var(--font-mono); font-size:10px; color:var(--text-muted);">0 registered</span>
-              </div>
-              <div id="dashSlavesHealthContainer" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:10px;">
-                <div style="color:var(--text-dim); font-size:11px; padding:6px 0;">No slave microcontrollers bound yet.</div>
-              </div>
+            <!-- Connected Slaves Live Telemetry Grid -->
+            <div id="dashSlavesHealthContainer" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:12px;">
+              <div style="color:var(--text-dim); font-size:12px; padding:10px 0;">No slave microcontrollers bound yet. Connect or bind devices in Hardware Nodes tab.</div>
             </div>
           </div>
 
@@ -2388,7 +2421,7 @@ inline void setupWebEndpoints() {
               <div class="hw-prop"><span class="hw-lbl">RAM Usage</span><span class="hw-val" id="diagHeap">-- KB Free</span></div>
               <div class="hw-prop"><span class="hw-lbl">Flash Storage</span><span class="hw-val" id="diagLittleFS">-- KB (LittleFS)</span></div>
               <div class="hw-prop"><span class="hw-lbl">Uptime</span><span class="hw-val" id="diagUptime">-- s</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Firmware Spec</span><span class="hw-val" id="diagFirmware">v3.2.0 Decoupled</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Firmware Spec</span><span class="hw-val" id="diagFirmware">v0.1.1-beta Decoupled</span></div>
             </div>
           </div>
         </section>
@@ -2400,6 +2433,83 @@ inline void setupWebEndpoints() {
   <!-- ========================================================================= -->
   <!-- MODALS -->
   <!-- ========================================================================= -->
+
+  <!-- SLAVE DETAILS & ACTIONS MODAL -->
+  <div id="slaveDetailsModal" class="modal-backdrop" style="display:none; z-index:9999;">
+    <div class="modal-card" style="max-width:520px;">
+      <div class="modal-head">
+        <div>
+          <h4 class="modal-title" id="slaveModalTitle">Hardware Slave Node</h4>
+          <div style="font-size:11px; color:var(--text-dim); margin-top:2px;">Microcontroller telemetry &amp; hardware routing</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="closeSlaveDetailsModal()">&times;</button>
+      </div>
+
+      <!-- Node Telemetry Overview Card -->
+      <div style="background:rgba(0,0,0,0.3); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:14px; margin:14px 0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="status-dot online" id="slaveModalDot"></span>
+            <strong style="font-size:15px; color:var(--text-bright);" id="slaveModalName">Node Name</strong>
+            <span class="badge" style="font-family:var(--font-mono);" id="slaveModalIdBadge">N01</span>
+          </div>
+          <span class="badge badge-success" id="slaveModalStatusBadge">ONLINE</span>
+        </div>
+
+        <div class="node-hardware-strip" style="grid-template-columns:repeat(2, 1fr); gap:8px;">
+          <div class="hw-prop"><span class="hw-lbl">Chip Architecture</span><span class="hw-val" id="slaveModalChip">ESP32-C3</span></div>
+          <div class="hw-prop"><span class="hw-lbl">Firmware Version</span><span class="hw-val" id="slaveModalFw" style="color:#10b981;">v0.1.1-beta</span></div>
+          <div class="hw-prop"><span class="hw-lbl">Transport &amp; Bus Port</span><span class="hw-val" id="slaveModalTransport" style="color:#38bdf8;">WIRED &bull; UART1</span></div>
+          <div class="hw-prop"><span class="hw-lbl">Free RAM</span><span class="hw-val" id="slaveModalRam">250 KB Free</span></div>
+          <div class="hw-prop"><span class="hw-lbl">Hardware MAC</span><span class="hw-val" id="slaveModalMac">--</span></div>
+          <div class="hw-prop"><span class="hw-lbl">Last Seen</span><span class="hw-val" id="slaveModalSeen">0s ago</span></div>
+        </div>
+      </div>
+
+      <!-- Action Buttons Hub -->
+      <div style="font-size:11px; font-weight:700; color:var(--text-dim); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px;">
+        Hardware Node Management
+      </div>
+      <div style="display:flex; flex-direction:column; gap:8px;">
+        <button class="btn btn-secondary admin-only" onclick="delegateFromSlaveModal('components')" style="justify-content:flex-start; padding:10px 14px; gap:10px;">
+          <svg class="icon" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M12 8v8"/><circle cx="12" cy="8" r="2"/></svg>
+          <div style="text-align:left;">
+            <div style="font-size:13px; font-weight:600; color:var(--text);">Configure Peripherals &amp; Components</div>
+            <div style="font-size:11px; color:var(--text-dim);">Relays, wall toggle switches, buttons, DHT &amp; ultrasonic sensors</div>
+          </div>
+        </button>
+
+        <button class="btn btn-secondary admin-only" onclick="delegateFromSlaveModal('links')" style="justify-content:flex-start; padding:10px 14px; gap:10px;">
+          <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <div style="text-align:left;">
+            <div style="font-size:13px; font-weight:600; color:var(--text);">Direct Hardware Links (Zero Latency)</div>
+            <div style="font-size:11px; color:var(--text-dim);">Instant sub-millisecond edge links running locally on slave silicon</div>
+          </div>
+        </button>
+
+        <button class="btn btn-secondary admin-only" onclick="delegateFromSlaveModal('ap')" style="justify-content:flex-start; padding:10px 14px; gap:10px;">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+          <div style="text-align:left;">
+            <div style="font-size:13px; font-weight:600; color:var(--text);">Wi-Fi SoftAP Repeater Bridge</div>
+            <div style="font-size:11px; color:var(--text-dim);">Broadcast local Wi-Fi to extend mesh to wireless child nodes</div>
+          </div>
+        </button>
+
+        <button class="btn btn-secondary admin-only" onclick="delegateFromSlaveModal('schedules')" style="justify-content:flex-start; padding:10px 14px; gap:10px;">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M12 14v4l2 2"/></svg>
+          <div style="text-align:left;">
+            <div style="font-size:13px; font-weight:600; color:var(--text);">Local Hardware Schedules</div>
+            <div style="font-size:11px; color:var(--text-dim);">Standalone on/off timer schedules stored in slave EEPROM</div>
+          </div>
+        </button>
+      </div>
+
+      <div class="modal-actions" style="margin-top:16px; justify-content:space-between;">
+        <button class="btn btn-danger btn-sm admin-only" onclick="delegateFromSlaveModal('delete')">Delete / Unbind Node</button>
+        <button class="btn btn-secondary" onclick="closeSlaveDetailsModal()">Close</button>
+      </div>
+    </div>
+  </div>
 
   <!-- CUSTOM CONFIRMATION MODAL -->
   <div id="customConfirmModal" class="modal-backdrop" style="display:none; z-index:99999;">
@@ -2889,27 +2999,27 @@ inline void setupWebEndpoints() {
     function updateSystemHealthUI(d) {
       if (!d) return;
       if (d.chip_model || d.chip) {
-        const chipText = (d.chip_model || d.chip) + (d.chip_cores ? ` (${d.chip_cores} Core @ ${d.cpu_freq || 160}MHz)` : '');
-        const el = document.getElementById('dashChip');
-        if (el) el.textContent = chipText;
+        const chipText = (d.chip_model || d.chip) + (d.chip_cores ? ` (${d.chip_cores}C @ ${d.cpu_freq || 160}MHz)` : '');
+        const sideEl = document.getElementById('sideChip');
+        if (sideEl) sideEl.textContent = chipText;
         const diagEl = document.getElementById('diagChip');
         if (diagEl) diagEl.textContent = chipText;
       }
       if (d.free_heap) {
         const freeKb = Math.round(d.free_heap / 1024);
         const totalKb = Math.round((d.total_heap || d.free_heap) / 1024);
-        const ramText = `${freeKb} KB Free / ${totalKb} KB`;
-        const el = document.getElementById('dashHeap');
-        if (el) el.textContent = ramText;
+        const ramText = `${freeKb} KB / ${totalKb} KB`;
+        const sideEl = document.getElementById('sideHeap');
+        if (sideEl) sideEl.textContent = `${freeKb} KB Free`;
         const diagEl = document.getElementById('diagHeap');
         if (diagEl) diagEl.textContent = ramText;
       }
       if (d.littlefs_total) {
         const usedKb = Math.round((d.littlefs_used || 0) / 1024);
         const totKb = Math.round(d.littlefs_total / 1024);
-        const fsText = `${usedKb} KB used / ${totKb} KB`;
-        const el = document.getElementById('dashLittleFS');
-        if (el) el.textContent = fsText;
+        const fsText = `${usedKb} KB / ${totKb} KB`;
+        const sideEl = document.getElementById('sideLittleFS');
+        if (sideEl) sideEl.textContent = `${usedKb} KB used`;
         const diagEl = document.getElementById('diagLittleFS');
         if (diagEl) diagEl.textContent = fsText;
       }
@@ -2918,16 +3028,14 @@ inline void setupWebEndpoints() {
         const hrs = Math.floor(uptimeVal / 3600);
         const mins = Math.floor((uptimeVal % 3600) / 60);
         const uptimeText = `${hrs}h ${mins}m`;
-        const el = document.getElementById('dashUptime');
-        if (el) el.textContent = uptimeText;
-        const diagEl = document.getElementById('diagUptime');
-        if (diagEl) diagEl.textContent = uptimeText;
         const sideEl = document.getElementById('sidebarUptime');
         if (sideEl) sideEl.textContent = uptimeText;
+        const diagEl = document.getElementById('diagUptime');
+        if (diagEl) diagEl.textContent = uptimeText;
       }
-      if (d.ap_ssid) {
-        const el = document.getElementById('dashHubIp');
-        if (el) el.textContent = d.ap_ssid + ' (192.168.4.1)';
+      const busEl = document.getElementById('sideBusPorts');
+      if (busEl) {
+        busEl.textContent = d.port2_name ? 'UART1 & UART2' : 'UART1';
       }
     }
 
@@ -2952,35 +3060,57 @@ inline void setupWebEndpoints() {
       let sensorsHtml = '';
       let slavesHealthHtml = '';
 
+      let totalWired = 0;
+      let totalWireless = 0;
+
       nodesCache.forEach(node => {
-        const state = liveStates[node.id] || { components: {}, relays: [], lastSeen: 999999, hasSeen: false, freeHeap: 0 };
+        const state = liveStates[node.id] || { components: {}, relays: [], lastSeen: 999999, hasSeen: false, freeHeap: 0, port: 'UART1', mode: 'WIRED', fw: 'v0.1.1-beta' };
         const isOnline = (state.hasSeen && state.lastSeen <= 8);
         if (isOnline) onlineNodes++;
 
-        // Render Slave Health Card for Telemetry Strip
+        const chip = node.chip || state.chip || 'ESP32';
+        const fw = state.fw || node.fw || 'v0.1.1-beta';
+        const port = state.port || node.port || 'UART1';
+        const mode = state.mode || node.mode || 'WIRED';
+        if (mode === 'WIRED') totalWired++; else totalWireless++;
+
         const lastSeenText = (!state.hasSeen) ? 'Never seen' : (isOnline ? `${state.lastSeen}s ago` : `${state.lastSeen}s ago (Offline)`);
         const ramText = state.freeHeap ? `${Math.round(state.freeHeap / 1024)} KB Free` : (isOnline ? 'Active' : 'Offline');
+        const comps = node.components || [];
+        const slots = node.slots || [];
+        const compCount = comps.length || slots.length;
+
+        // Render Clickable Slave Health Card for Telemetry Grid
         slavesHealthHtml += `
-          <div style="padding:10px 12px; background:rgba(0,0,0,0.35); border:1px solid ${isOnline ? 'rgba(16,185,129,0.25)' : 'rgba(255,255,255,0.06)'}; border-radius:var(--radius-sm); display:flex; flex-direction:column; gap:5px;">
+          <div class="node-interactive-card" onclick="openSlaveDetailsModal('${node.id}')" title="Click to manage ${escapeHtml(node.name || node.id)}">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-              <div style="display:flex; align-items:center; gap:6px;">
+              <div style="display:flex; align-items:center; gap:8px;">
                 <span class="status-dot ${isOnline ? 'online' : 'offline'}"></span>
-                <strong style="font-size:12px; color:var(--text-bright);">${escapeHtml(node.name || node.id)}</strong>
+                <strong style="font-size:13px; color:var(--text-bright);">${escapeHtml(node.name || node.id)}</strong>
+                <span class="badge" style="font-family:var(--font-mono); font-size:10px;">${escapeHtml(node.id)}</span>
               </div>
               <span class="badge ${isOnline ? 'badge-success' : 'badge-danger'}" style="font-size:9px; padding:2px 6px;">${isOnline ? 'ONLINE' : 'OFFLINE'}</span>
             </div>
-            <div style="font-family:var(--font-mono); font-size:10px; color:var(--text-dim); display:flex; justify-content:space-between;">
-              <span>ID: ${escapeHtml(node.id)}</span>
-              <span>${escapeHtml(node.chip || 'Microcontroller')}</span>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px; font-size:11px; margin:4px 0;">
+              <div style="color:var(--text-muted);">Chip &amp; Version:</div>
+              <div style="color:var(--text); text-align:right; font-family:var(--font-mono);">${escapeHtml(chip)} &bull; <span style="color:#10b981; font-weight:600;">${escapeHtml(fw)}</span></div>
+              
+              <div style="color:var(--text-muted);">Transport &amp; Port:</div>
+              <div style="color:#38bdf8; text-align:right; font-family:var(--font-mono); font-weight:600;">${mode} &bull; ${port}</div>
+
+              <div style="color:var(--text-muted);">RAM Usage:</div>
+              <div style="color:var(--text); text-align:right; font-family:var(--font-mono);">${ramText}</div>
+
+              <div style="color:var(--text-muted);">Last Seen:</div>
+              <div style="color:var(--text-dim); text-align:right;">${lastSeenText}</div>
             </div>
-            <div style="font-size:10px; color:var(--text-muted); display:flex; justify-content:space-between; border-top:1px solid rgba(255,255,255,0.05); padding-top:4px;">
-              <span>RAM: <strong style="color:${state.freeHeap ? '#38bdf8' : 'var(--text-dim)'};">${ramText}</strong></span>
-              <span>Seen: ${lastSeenText}</span>
+
+            <div style="border-top:1px solid rgba(255,255,255,0.05); padding-top:6px; display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-dim);">
+              <span>${compCount} Peripherals Active</span>
+              <span style="color:var(--primary); font-weight:600;">Manage Node &rarr;</span>
             </div>
           </div>`;
-
-        const comps = node.components || [];
-        const slots = node.slots || [];
 
         // 1. Process Peripherals via Decoupled Components Scheme
         comps.forEach((c, idx) => {
@@ -3170,9 +3300,7 @@ inline void setupWebEndpoints() {
 
       // Update Header Badges & Summaries
       const meshSumEl = document.getElementById('dashMeshSummary');
-      if (meshSumEl) meshSumEl.textContent = `${onlineNodes} / ${totalNodes} Slaves Online`;
-      const slaveCountEl = document.getElementById('dashSlaveCountText');
-      if (slaveCountEl) slaveCountEl.textContent = `${onlineNodes} of ${totalNodes} Online`;
+      if (meshSumEl) meshSumEl.textContent = `${onlineNodes} / ${totalNodes} Online (${totalWired} Wired, ${totalWireless} Wireless)`;
 
       const actBadge = document.getElementById('actuatorCountBadge');
       if (actBadge) actBadge.textContent = `${activeRelays} / ${totalRelays} Energized`;
@@ -3184,7 +3312,7 @@ inline void setupWebEndpoints() {
       // Populate Containers
       const slavesContainer = document.getElementById('dashSlavesHealthContainer');
       if (slavesContainer) {
-        slavesContainer.innerHTML = slavesHealthHtml || '<div style="color:var(--text-dim); font-size:11px; padding:6px 0;">No slave microcontrollers bound yet.</div>';
+        slavesContainer.innerHTML = slavesHealthHtml || '<div style="color:var(--text-dim); font-size:11px; padding:6px 0;">No slave microcontrollers bound yet. Connect or bind devices in Hardware Nodes tab.</div>';
       }
 
       const relaysGrid = document.getElementById('dashboardRelaysGrid');
@@ -3220,7 +3348,7 @@ inline void setupWebEndpoints() {
           body: JSON.stringify({ target: nodeId, comp: compId, val: targetState })
         });
         if (!res.ok) throw new Error('Control dispatch error');
-        showToast('Command dispatched', 'info');
+        // Silent optimistic toggle without intrusive popup toast
       } catch (e) {
         showToast('Control dispatch failed', 'error');
         // Revert optimistic update on failure
@@ -3245,7 +3373,7 @@ inline void setupWebEndpoints() {
 
       let html = '';
       nodesCache.forEach(node => {
-        const state = liveStates[node.id] || { relays: [], components: {}, lastSeen: 999999, hasSeen: false, freeHeap: 0 };
+        const state = liveStates[node.id] || { relays: [], components: {}, lastSeen: 999999, hasSeen: false, freeHeap: 0, port: 'UART1', mode: 'WIRED', fw: 'v0.1.1-beta' };
         
         let statusBadge = '';
         if (state.hasSeen && state.lastSeen <= 8) {
@@ -3256,33 +3384,32 @@ inline void setupWebEndpoints() {
           statusBadge = '<span class="badge badge-danger"><span class="status-dot offline"></span>Offline</span>';
         }
 
-        const compCount = (node.components && node.components.length) ? node.components.length : 0;
-        const ramDisplay = state.freeHeap ? (Math.round(state.freeHeap / 1024) + ' KB Free') : 'ESP Active';
+        const compCount = (node.components && node.components.length) ? node.components.length : (node.slots ? node.slots.length : 0);
+        const ramDisplay = state.freeHeap ? (Math.round(state.freeHeap / 1024) + ' KB Free') : (state.hasSeen ? 'Active' : 'Offline');
         const apStatus = node.ap_enabled ? (node.ap_ssid + (node.ap_hidden ? ' (Hidden)' : '')) : 'Disabled';
+        const chip = node.chip || state.chip || 'ESP32';
+        const fw = state.fw || node.fw || 'v0.1.1-beta';
+        const port = state.port || node.port || 'UART1';
+        const mode = state.mode || node.mode || 'WIRED';
 
         html += `
-          <div class="node-card">
+          <div class="node-card" style="cursor:pointer;" onclick="openSlaveDetailsModal('${node.id}')" title="Click to manage ${escapeHtml(node.name || node.id)}">
             <div class="node-card-head">
-              <div>
-                <div class="node-meta-badges">
-                  <strong style="font-size:15px; color:var(--text);">${escapeHtml(node.name || node.id)}</strong>
-                  <span class="badge" style="font-family:var(--font-mono);">${escapeHtml(node.id)}</span>
-                  ${statusBadge}
-                </div>
+              <div class="node-meta-badges">
+                <strong style="font-size:15px; color:var(--text);">${escapeHtml(node.name || node.id)}</strong>
+                <span class="badge" style="font-family:var(--font-mono);">${escapeHtml(node.id)}</span>
+                ${statusBadge}
               </div>
               <div class="node-actions-bar">
-                <button class="btn btn-secondary btn-sm admin-only" onclick="openComponentModal('${node.id}')">Configure Components</button>
-                <button class="btn btn-secondary btn-sm admin-only" onclick="openLinksModal('${node.id}')">Direct Links</button>
-                <button class="btn btn-secondary btn-sm admin-only" onclick="openApModal('${node.id}')">Wi-Fi AP Bridge</button>
-                <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleTabForNode('${node.id}')">Schedules</button>
-                <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')">Delete</button>
+                <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); openSlaveDetailsModal('${node.id}')">Manage Node &rarr;</button>
               </div>
             </div>
 
             <div class="node-hardware-strip">
-              <div class="hw-prop"><span class="hw-lbl">Hardware Chip</span><span class="hw-val">${escapeHtml(node.chip || 'ESP32/ESP8266')}</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Chip Architecture</span><span class="hw-val">${escapeHtml(chip)}</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Firmware Spec</span><span class="hw-val" style="color:#10b981;">${escapeHtml(fw)}</span></div>
+              <div class="hw-prop"><span class="hw-lbl">Transport &amp; Bus</span><span class="hw-val" style="color:#38bdf8;">${escapeHtml(mode)} &bull; ${escapeHtml(port)}</span></div>
               <div class="hw-prop"><span class="hw-lbl">RAM Usage</span><span class="hw-val">${ramDisplay}</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Flash / Storage</span><span class="hw-val">EEPROM Protected</span></div>
               <div class="hw-prop"><span class="hw-lbl">Hardware MAC</span><span class="hw-val">${escapeHtml(node.mac || '--')}</span></div>
               <div class="hw-prop"><span class="hw-lbl">Peripherals</span><span class="hw-val">${compCount} active</span></div>
               <div class="hw-prop"><span class="hw-lbl">AP Bridge</span><span class="hw-val">${escapeHtml(apStatus)}</span></div>
@@ -3325,6 +3452,7 @@ inline void setupWebEndpoints() {
             <tr>
               <th>MAC Address</th>
               <th>Microcontroller</th>
+              <th>Bus Star Port &amp; Link</th>
               <th>Safe GPIO Pins</th>
               <th style="text-align:right;">Action</th>
             </tr>
@@ -3335,7 +3463,8 @@ inline void setupWebEndpoints() {
         html += `
           <tr>
             <td style="font-family:var(--font-mono); font-weight:600;">${escapeHtml(p.mac)}</td>
-            <td><span class="badge badge-primary">${escapeHtml(p.chip || 'ESP32')}</span></td>
+            <td><span class="badge badge-primary">${escapeHtml(p.chip || 'ESP32')}</span> <span class="badge" style="font-size:10px; color:#10b981;">${escapeHtml(p.fw || 'v0.1.1-beta')}</span></td>
+            <td><span class="badge" style="font-size:11px; font-weight:600; color:#38bdf8;">${escapeHtml(p.port || 'UART1')} &bull; ${escapeHtml(p.mode || 'WIRED')}</span></td>
             <td style="font-family:var(--font-mono); font-size:11px; color:var(--text-dim);">${escapeHtml(p.gpios || '--')}</td>
             <td style="text-align:right;">
               <button class="btn btn-sm" onclick="openBindModal('${p.mac}', '${p.chip}')">Bind</button>
@@ -3345,6 +3474,67 @@ inline void setupWebEndpoints() {
 
       html += '</tbody></table>';
       container.innerHTML = html;
+    }
+
+    // Slave Node Details & Management Modal Handlers
+    let activeDetailNodeId = '';
+
+    function openSlaveDetailsModal(nodeId) {
+      activeDetailNodeId = nodeId;
+      const node = nodesCache.find(n => n.id === nodeId) || { id: nodeId, name: nodeId };
+      const state = liveStates[nodeId] || { relays: [], components: {}, lastSeen: 999999, hasSeen: false, freeHeap: 0, port: 'UART1', mode: 'WIRED', fw: 'v0.1.1-beta' };
+      const isOnline = (state.hasSeen && state.lastSeen <= 8);
+
+      document.getElementById('slaveModalTitle').textContent = node.name || node.id;
+      document.getElementById('slaveModalName').textContent = node.name || node.id;
+      document.getElementById('slaveModalIdBadge').textContent = node.id;
+      
+      const dotEl = document.getElementById('slaveModalDot');
+      if (dotEl) dotEl.className = 'status-dot ' + (isOnline ? 'online' : 'offline');
+
+      const statusBadge = document.getElementById('slaveModalStatusBadge');
+      if (statusBadge) {
+        statusBadge.textContent = isOnline ? 'ONLINE' : 'OFFLINE';
+        statusBadge.className = 'badge ' + (isOnline ? 'badge-success' : 'badge-danger');
+      }
+
+      const chip = node.chip || state.chip || 'ESP32';
+      const fw = state.fw || node.fw || 'v0.1.1-beta';
+      const port = state.port || node.port || 'UART1';
+      const mode = state.mode || node.mode || 'WIRED';
+      const ramText = state.freeHeap ? `${Math.round(state.freeHeap / 1024)} KB Free` : (isOnline ? 'Active' : 'Offline');
+      const seenText = (!state.hasSeen) ? 'Never seen' : (isOnline ? `${state.lastSeen}s ago` : `${state.lastSeen}s ago (Offline)`);
+
+      document.getElementById('slaveModalChip').textContent = chip;
+      document.getElementById('slaveModalFw').textContent = fw;
+      document.getElementById('slaveModalTransport').textContent = `${mode} • ${port}`;
+      document.getElementById('slaveModalRam').textContent = ramText;
+      document.getElementById('slaveModalMac').textContent = node.mac || '--';
+      document.getElementById('slaveModalSeen').textContent = seenText;
+
+      document.getElementById('slaveDetailsModal').style.display = 'flex';
+    }
+
+    function closeSlaveDetailsModal() {
+      document.getElementById('slaveDetailsModal').style.display = 'none';
+      activeDetailNodeId = '';
+    }
+
+    function delegateFromSlaveModal(action) {
+      const nid = activeDetailNodeId;
+      if (!nid) return;
+      closeSlaveDetailsModal();
+      if (action === 'components') {
+        openComponentModal(nid);
+      } else if (action === 'links') {
+        openLinksModal(nid);
+      } else if (action === 'ap') {
+        openApModal(nid);
+      } else if (action === 'schedules') {
+        openScheduleTabForNode(nid);
+      } else if (action === 'delete') {
+        deleteNode(nid);
+      }
     }
 
     // =========================================================================

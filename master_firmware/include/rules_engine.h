@@ -122,6 +122,11 @@ inline bool evaluateSingleCondition(JsonObject cond) {
   String op = cond["op"].as<String>();
   float targetVal = cond["val"].as<float>();
 
+  // Any state change / flip event condition (triggers on edge toggle)
+  if (key.endsWith(".change") || op == "changed") {
+    return true;
+  }
+
   GenericNodeTelemetry* ns = getOrCreateNodeState(node);
   if (!ns) return false;
 
@@ -155,10 +160,16 @@ inline void evaluateDynamicRules() {
     logic.toUpperCase();
 
     bool conditionMet = false;
+    bool hasChangeEvent = false;
 
     // Check multiple conditions (or legacy single cond)
     if (rule.containsKey("conditions") && rule["conditions"].is<JsonArray>() && rule["conditions"].as<JsonArray>().size() > 0) {
       JsonArray conditions = rule["conditions"].as<JsonArray>();
+      for (JsonObject cond : conditions) {
+        String k = cond["key"].as<String>();
+        String o = cond["op"].as<String>();
+        if (k.endsWith(".change") || o == "changed") { hasChangeEvent = true; break; }
+      }
       if (logic == "OR") {
         conditionMet = false;
         for (JsonObject cond : conditions) {
@@ -177,6 +188,9 @@ inline void evaluateDynamicRules() {
         }
       }
     } else if (rule.containsKey("cond")) {
+      String k = rule["cond"]["key"].as<String>();
+      String o = rule["cond"]["op"].as<String>();
+      if (k.endsWith(".change") || o == "changed") hasChangeEvent = true;
       conditionMet = evaluateSingleCondition(rule["cond"].as<JsonObject>());
     }
 
@@ -202,6 +216,11 @@ inline void evaluateDynamicRules() {
           int val = act.containsKey("val") ? act["val"].as<int>() : (act.containsKey("state") ? act["state"].as<int>() : 1);
           String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
           executeAction(target, comp, val, reason);
+        }
+
+        // For edge-flip events, reset active state so subsequent flips trigger immediately
+        if (hasChangeEvent) {
+          ruleActiveState[rIdx] = false;
         }
       }
     } else {

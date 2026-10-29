@@ -2901,7 +2901,40 @@ inline void setupWebEndpoints() {
                   </button>
                 </div>
               </div>`;
-          } else if (cType === 2) { // Ultrasonic Sensor
+          } else if (cType === 4) { // Wall Rocker / Toggle Switch
+            let swVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
+            sensorsHtml += `
+              <div class="control-card">
+                <div class="control-card-header">
+                  <div>
+                    <div class="control-name">${escapeHtml(compName)}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; Toggle Switch (GPIO ${c.pin1})</div>
+                  </div>
+                  <span class="badge ${swVal == 1 ? 'badge-primary' : ''}">${swVal == 1 ? 'FLIPPED UP' : 'FLIPPED DOWN'}</span>
+                </div>
+                <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
+                  <span class="status-dot ${swVal == 1 ? 'online' : ''}"></span>
+                  <span style="font-size:12px; font-weight:600; font-family:var(--font-mono); color:${swVal == 1 ? '#38bdf8' : 'var(--text-dim)'};">${swVal == 1 ? 'POSITION 1 (HIGH)' : 'POSITION 0 (LOW)'}</span>
+                </div>
+                <div style="font-size:10px; color:var(--text-dim); margin-top:6px;">Edge-triggered &bull; Any flip toggles linked relays</div>
+              </div>`;
+          } else if (cType === 2 || cType === 3) { // Push Button / Touch
+            let bVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
+            sensorsHtml += `
+              <div class="control-card">
+                <div class="control-card-header">
+                  <div>
+                    <div class="control-name">${escapeHtml(compName)}</div>
+                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; ${cType === 3 ? 'Capacitive Touch' : 'Push Button'} (GPIO ${c.pin1})</div>
+                  </div>
+                  <span class="badge">${cType === 3 ? 'Touch' : 'Button'}</span>
+                </div>
+                <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
+                  <span class="status-dot ${bVal == 1 ? 'online' : ''}"></span>
+                  <span style="font-size:12px; font-weight:600; font-family:var(--font-mono);">${bVal == 1 ? 'PRESSED / ACTIVE' : 'RELEASED'}</span>
+                </div>
+              </div>`;
+          } else if (cType === 5 || (cType === 2 && c.pin2 !== undefined && c.pin2 !== 255)) { // Ultrasonic Sensor
             let dist = (compState && compState.v1 !== undefined) ? compState.v1 : state.dist;
             let level = (compState && compState.v2 !== undefined) ? compState.v2 : -1;
             if (level === -1 && dist >= 0) {
@@ -2929,7 +2962,7 @@ inline void setupWebEndpoints() {
                   </div>
                 </div>
               </div>`;
-          } else if (cType === 3) { // DHT Sensor
+          } else if (cType === 6 || (cType === 3 && c.pin2 !== undefined && c.pin2 !== 255)) { // DHT Sensor
             let t = (compState && compState.v1 !== undefined) ? compState.v1 : state.temp;
             let h = (compState && compState.v2 !== undefined) ? compState.v2 : state.hum;
             if (t > 0) latestTemp = t;
@@ -2955,23 +2988,7 @@ inline void setupWebEndpoints() {
                   </div>
                 </div>
               </div>`;
-          } else if (cType === 4 || cType === 5) { // Button / Touch
-            let bVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
-            sensorsHtml += `
-              <div class="control-card">
-                <div class="control-card-header">
-                  <div>
-                    <div class="control-name">${escapeHtml(compName)}</div>
-                    <div class="control-sub">${escapeHtml(node.name || node.id)} &bull; ${cType === 5 ? 'Touch Pin' : 'Digital Button'} (GPIO ${c.pin1})</div>
-                  </div>
-                  <span class="badge">${cType === 5 ? 'Touch' : 'Button'}</span>
-                </div>
-                <div style="margin-top:10px; display:flex; align-items:center; gap:8px;">
-                  <span class="status-dot ${bVal == 1 ? 'online' : ''}"></span>
-                  <span style="font-size:12px; font-weight:600; font-family:var(--font-mono);">${bVal == 1 ? 'PRESSED / ACTIVE' : 'RELEASED'}</span>
-                </div>
-              </div>`;
-          } else if (cType === 6) { // Analog ADC
+          } else if (cType === 7) { // Analog ADC
             let aVal = (compState && compState.v1 !== undefined) ? compState.v1 : 0;
             sensorsHtml += `
               <div class="control-card">
@@ -3375,11 +3392,12 @@ inline void setupWebEndpoints() {
               <label>Component Type</label>
               <select onchange="updateCompType(${idx}, this.value)" style="font-size:11px;">
                 <option value="1" ${type===1?'selected':''}>Relay Actuator</option>
-                <option value="2" ${type===2?'selected':''}>Ultrasonic (HC-SR04)</option>
-                <option value="3" ${type===3?'selected':''}>DHT Temp/Humidity</option>
-                <option value="4" ${type===4?'selected':''}>Digital Push Button</option>
-                <option value="5" ${type===5?'selected':''}>Capacitive Touch</option>
-                <option value="6" ${type===6?'selected':''}>Analog Sensor (ADC)</option>
+                <option value="2" ${type===2?'selected':''}>Push Button (Momentary)</option>
+                <option value="3" ${type===3?'selected':''}>Capacitive Touch (Momentary)</option>
+                <option value="4" ${type===4?'selected':''}>Toggle / Rocker Switch (Edge-Trigger / Flip)</option>
+                <option value="5" ${type===5?'selected':''}>Ultrasonic (HC-SR04)</option>
+                <option value="6" ${type===6?'selected':''}>DHT Temp/Humidity</option>
+                <option value="7" ${type===7?'selected':''}>Analog Sensor (ADC)</option>
               </select>
             </div>
             <div>
@@ -3393,8 +3411,8 @@ inline void setupWebEndpoints() {
               </select>
             </div>
             <div>
-              <label>${type===2 ? 'Echo Pin' : 'Sec Pin'}</label>
-              <select ${type===2 ? '' : 'disabled'} onchange="currentModalComponents[${idx}].pin2=parseInt(this.value)" style="font-size:11px;">
+              <label>${(type===5 || type===2) ? 'Echo Pin' : 'Sec Pin'}</label>
+              <select ${(type===5 || type===2) ? '' : 'disabled'} onchange="currentModalComponents[${idx}].pin2=parseInt(this.value)" style="font-size:11px;">
                 <option value="255">None</option>
                 ${renderPinOptions(pin2)}
               </select>
@@ -3497,12 +3515,12 @@ inline void setupWebEndpoints() {
       const node = nodesCache.find(n => n.id === activeLinkNodeId);
       const comps = (node && node.components) ? node.components : [];
 
-      const inputComps = comps.map((c, idx) => ({ c, idx })).filter(item => item.c.type == 4 || item.c.type == 5 || item.c.type == 2);
+      const inputComps = comps.map((c, idx) => ({ c, idx })).filter(item => item.c.type == 2 || item.c.type == 3 || item.c.type == 4 || (item.c.type == 5 && (!item.c.pin2 || item.c.pin2 == 255)));
       const outputComps = comps.map((c, idx) => ({ c, idx })).filter(item => item.c.type == 1);
 
       if (inputComps.length === 0 || outputComps.length === 0) {
         container.innerHTML = `<div style="padding:12px; background:rgba(245,158,11,0.1); border:1px solid var(--warning-border); border-radius:var(--radius-sm); font-size:12px; color:var(--warning);">
-          <strong>Hardware Link Prerequisites:</strong> To bind instant zero-latency links, this node needs at least one digital input (Push Button / Touch Switch) and at least one Relay Actuator configured.<br>
+          <strong>Hardware Link Prerequisites:</strong> To bind instant zero-latency links, this node needs at least one digital input (Push Button / Touch Switch / Wall Toggle Switch) and at least one Relay Actuator configured.<br>
           Please configure peripherals first in <em>Configure Components</em>.
         </div>`;
         return;
@@ -3518,9 +3536,10 @@ inline void setupWebEndpoints() {
         let trigChks = '';
         inputComps.forEach(item => {
           const checked = (rule.trigs && rule.trigs.includes(item.idx)) ? 'checked' : '';
+          const typeBadge = item.c.type == 4 ? '[Toggle Switch]' : (item.c.type == 3 ? '[Touch]' : '[Button]');
           trigChks += `<label style="display:inline-flex; align-items:center; gap:4px; margin-right:10px; font-size:11px; cursor:pointer;">
             <input type="checkbox" value="${item.idx}" ${checked} onchange="toggleLinkTrig(${rIdx}, ${item.idx}, this.checked)" style="width:auto; margin:0;">
-            <span>${escapeHtml(item.c.name || ('Input ' + item.idx))}</span>
+            <span><strong style="color:var(--primary); font-size:10px;">${typeBadge}</strong> ${escapeHtml(item.c.name || ('Input ' + item.idx))}</span>
           </label>`;
         });
 
@@ -3593,7 +3612,7 @@ inline void setupWebEndpoints() {
     function addLinkRow() {
       const node = nodesCache.find(n => n.id === activeLinkNodeId);
       const comps = (node && node.components) ? node.components : [];
-      const inputComps = comps.map((c, idx) => ({ c, idx })).filter(item => item.c.type == 4 || item.c.type == 5 || item.c.type == 2);
+      const inputComps = comps.map((c, idx) => ({ c, idx })).filter(item => item.c.type == 2 || item.c.type == 3 || item.c.type == 4 || (item.c.type == 5 && (!item.c.pin2 || item.c.pin2 == 255)));
       const outputComps = comps.map((c, idx) => ({ c, idx })).filter(item => item.c.type == 1);
 
       if (inputComps.length === 0 || outputComps.length === 0) {
@@ -3758,8 +3777,9 @@ inline void setupWebEndpoints() {
       if (node && node.components && node.components.length > 0) {
         const c = node.components[0];
         const cid = c.id || 'comp';
-        if (c.type == 2) return cid + '.level';
-        if (c.type == 3) return cid + '.temp';
+        if (c.type == 4) return cid + '.change';
+        if (c.type == 5 || c.type == 2) return cid + '.level';
+        if (c.type == 6 || c.type == 3) return cid + '.temp';
         return cid + '.state';
       }
       return 'LVL';
@@ -3787,14 +3807,19 @@ inline void setupWebEndpoints() {
         if (type === 1) {
           html += `<option value="${cid}.state" ${selectedKey===cid+'.state'?'selected':''}>${escapeHtml(cname)} → Relay State [${cid}.state]</option>`;
         } else if (type === 2) {
+          html += `<option value="${cid}.state" ${selectedKey===cid+'.state'?'selected':''}>${escapeHtml(cname)} → Button Pressed (0/1) [${cid}.state]</option>`;
+        } else if (type === 3) {
+          html += `<option value="${cid}.state" ${selectedKey===cid+'.state'?'selected':''}>${escapeHtml(cname)} → Touch Active (0/1) [${cid}.state]</option>`;
+        } else if (type === 4) {
+          html += `<option value="${cid}.change" ${selectedKey===cid+'.change'?'selected':''}>${escapeHtml(cname)} → Switch Flipped / State Change [${cid}.change]</option>`;
+          html += `<option value="${cid}.state" ${selectedKey===cid+'.state'?'selected':''}>${escapeHtml(cname)} → Switch Position (0/1) [${cid}.state]</option>`;
+        } else if (type === 5 || (type === 2 && c.pin2 !== undefined && c.pin2 !== 255)) {
           html += `<option value="${cid}.level" ${selectedKey===cid+'.level'?'selected':''}>${escapeHtml(cname)} → Tank Level % [${cid}.level]</option>`;
           html += `<option value="${cid}.dist" ${selectedKey===cid+'.dist'?'selected':''}>${escapeHtml(cname)} → Distance cm [${cid}.dist]</option>`;
-        } else if (type === 3) {
+        } else if (type === 6 || (type === 3 && c.pin2 !== undefined && c.pin2 !== 255)) {
           html += `<option value="${cid}.temp" ${selectedKey===cid+'.temp'?'selected':''}>${escapeHtml(cname)} → Temperature °C [${cid}.temp]</option>`;
           html += `<option value="${cid}.hum" ${selectedKey===cid+'.hum'?'selected':''}>${escapeHtml(cname)} → Humidity % [${cid}.hum]</option>`;
-        } else if (type === 4 || type === 5) {
-          html += `<option value="${cid}.state" ${selectedKey===cid+'.state'?'selected':''}>${escapeHtml(cname)} → Switch State [${cid}.state]</option>`;
-        } else if (type === 6 || type === 7) {
+        } else if (type === 7) {
           html += `<option value="${cid}.raw" ${selectedKey===cid+'.raw'?'selected':''}>${escapeHtml(cname)} → Analog Raw [${cid}.raw]</option>`;
         } else {
           html += `<option value="${cid}" ${selectedKey===cid?'selected':''}>${escapeHtml(cname)} [${cid}]</option>`;
@@ -3927,6 +3952,7 @@ inline void setupWebEndpoints() {
               <select onchange="currentRuleActs[${idx}].state=parseInt(this.value)" style="font-size:11px;">
                 <option value="1" ${state===1?'selected':''}>Turn ON (Energize)</option>
                 <option value="0" ${state===0?'selected':''}>Turn OFF (De-energize)</option>
+                <option value="2" ${state===2?'selected':''}>Toggle State (Flip)</option>
               </select>
             </div>
             <div>

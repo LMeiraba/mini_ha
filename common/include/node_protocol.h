@@ -42,13 +42,14 @@ enum NodeChipModel : uint8_t {
 // Declarative Hardware Component Types (Decoupled from raw pin count)
 enum ComponentType : uint8_t {
   COMP_UNUSED = 0,
-  COMP_RELAY,           // Output pin (pin1), activeLow (flags & 1)
-  COMP_BUTTON,          // Input pin (pin1), pullup (flags & 1)
-  COMP_TOUCH,           // Touch pin (pin1)
-  COMP_ULTRASONIC,      // Trig pin (pin1), Echo pin (pin2), tankDepth (param1)
-  COMP_DHT,             // Data pin (pin1), DHT11 (flags=0) vs DHT22 (flags=1)
-  COMP_DS18B20,         // OneWire pin (pin1)
-  COMP_ANALOG_ADC       // ADC pin (pin1)
+  COMP_RELAY = 1,           // Output pin (pin1), activeLow (flags & 1)
+  COMP_BUTTON = 2,          // Momentary Push Button: pin1, pullup, triggers on press / active LOW
+  COMP_TOUCH = 3,           // Momentary Capacitive Touch: pin1, triggers on touch / active HIGH
+  COMP_TOGGLE_SWITCH = 4,   // Wall Rocker / Toggle Switch: pin1, triggers on ANY state change (flip UP/DOWN)
+  COMP_ULTRASONIC = 5,      // Trig pin (pin1), Echo pin (pin2), tankDepth (param1)
+  COMP_DHT = 6,             // Data pin (pin1), DHT11 (flags=0) vs DHT22 (flags=1)
+  COMP_ANALOG_ADC = 7,      // ADC pin (pin1)
+  COMP_DS18B20 = 8          // OneWire pin (pin1)
 };
 
 // Legacy Slot Pin Aliases for backward compatibility

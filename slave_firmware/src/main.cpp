@@ -140,8 +140,8 @@ void applyHardwareConfiguration() {
       pinMode(c.pin1, OUTPUT);
       bool activeLow = (c.flags & 1);
       digitalWrite(c.pin1, activeLow ? HIGH : LOW); // Default OFF
-    } else if ((c.type == COMP_BUTTON || c.type == COMP_TOUCH) && isSafeGpio(c.pin1)) {
-      bool pullup = (c.flags & 1) || (c.type == COMP_BUTTON);
+    } else if ((c.type == COMP_BUTTON || c.type == COMP_TOUCH || c.type == COMP_TOGGLE_SWITCH) && isSafeGpio(c.pin1)) {
+      bool pullup = (c.flags & 1) || (c.type == COMP_BUTTON) || (c.type == COMP_TOGGLE_SWITCH);
       pinMode(c.pin1, pullup ? INPUT_PULLUP : INPUT);
       lastInputStates[i] = digitalRead(c.pin1);
       compValues[i] = lastInputStates[i];
@@ -243,7 +243,7 @@ void evaluateLocalSchedules() {
 void checkPhysicalInputs() {
   for (int i = 0; i < MAX_COMPONENTS; i++) {
     ComponentConfig& c = config.components[i];
-    if (c.type != COMP_BUTTON && c.type != COMP_TOUCH) continue;
+    if (c.type != COMP_BUTTON && c.type != COMP_TOUCH && c.type != COMP_TOGGLE_SWITCH) continue;
     if (!isSafeGpio(c.pin1)) continue;
 
     int current = digitalRead(c.pin1);
@@ -252,9 +252,10 @@ void checkPhysicalInputs() {
     bool triggered = false;
     if (c.type == COMP_TOUCH && current == HIGH && last == LOW) triggered = true;
     if (c.type == COMP_BUTTON && current == LOW && last == HIGH) triggered = true;
+    if (c.type == COMP_TOGGLE_SWITCH && current != last) triggered = true; // Toggle / Rocker switch: triggers on ANY flip
     if ((c.flags & 2) && current != last) triggered = true; // Two-way wall rocker switch (toggle on any flip)
 
-    if (triggered && (millis() - lastToggleTime[i] > 350)) {
+    if (triggered && (millis() - lastToggleTime[i] > 200)) {
       lastToggleTime[i] = millis();
 
       // Instant sub-millisecond local link ties!
@@ -379,7 +380,7 @@ void processIncomingPacket(const ParsedPacket& pkt) {
         rep += cid + "=" + String((int)compValues[i]) + "," + String((int)compSecondary[i]);
       } else if (c.type == COMP_DHT) {
         rep += cid + "=" + String(compValues[i], 1) + "," + String(compSecondary[i], 0);
-      } else if (c.type == COMP_BUTTON || c.type == COMP_TOUCH) {
+      } else if (c.type == COMP_BUTTON || c.type == COMP_TOUCH || c.type == COMP_TOGGLE_SWITCH) {
         rep += cid + "=" + String((int)compValues[i]);
       } else if (c.type == COMP_ANALOG_ADC) {
         rep += cid + "=" + String((int)compValues[i]);
@@ -401,7 +402,11 @@ void processIncomingPacket(const ParsedPacket& pkt) {
         if (stIdx != -1) {
           int slot = pkt.payload.substring(5, stIdx).toInt();
           int st = pkt.payload.substring(stIdx + 7).toInt();
-          setComponentOutput(slot, (st == 1), true);
+          if (st == 2) {
+            toggleComponentOutput(slot, true);
+          } else {
+            setComponentOutput(slot, (st == 1), true);
+          }
         }
       } else {
         String compId = firstToken;
@@ -409,7 +414,11 @@ void processIncomingPacket(const ParsedPacket& pkt) {
         for (int i = 0; i < MAX_COMPONENTS; i++) {
           if (config.components[i].type == COMP_RELAY) {
             if (String(config.components[i].id) == compId || String(i) == compId) {
-              setComponentOutput(i, (state == 1), true);
+              if (state == 2) {
+                toggleComponentOutput(i, true);
+              } else {
+                setComponentOutput(i, (state == 1), true);
+              }
               break;
             }
           }

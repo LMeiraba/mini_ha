@@ -247,6 +247,7 @@ void checkPhysicalInputs() {
     bool triggered = false;
     if (c.type == COMP_TOUCH && current == HIGH && last == LOW) triggered = true;
     if (c.type == COMP_BUTTON && current == LOW && last == HIGH) triggered = true;
+    if ((c.flags & 2) && current != last) triggered = true; // Two-way wall rocker switch (toggle on any flip)
 
     if (triggered && (millis() - lastToggleTime[i] > 350)) {
       lastToggleTime[i] = millis();
@@ -527,6 +528,15 @@ void processIncomingPacket(const ParsedPacket& pkt) {
           sendPacketToMaster("ACK", "AP_CONFIGURED:DISABLED");
         }
       }
+    } else if (pkt.payload.startsWith("LINK:CLEAR")) {
+      for (int l = 0; l < MAX_LINKS; l++) {
+        config.links[l].triggerComp = 255;
+        config.links[l].targetComp = 255;
+        config.links[l].action = LINK_NONE;
+      }
+      config.numConfiguredLinks = 0;
+      saveConfig();
+      sendPacketToMaster("ACK", "LINKS_CLEARED");
     } else if (pkt.payload.startsWith("LINK:")) {
       int idx  = pkt.payload.substring(5, pkt.payload.indexOf(":TRIG:")).toInt();
       int trig = pkt.payload.substring(pkt.payload.indexOf(":TRIG:") + 6, pkt.payload.indexOf(":TGT:")).toInt();

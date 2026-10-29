@@ -580,6 +580,12 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
       }
     }
   }
+  // 5. Slave Acknowledgment
+  else if (pkt.verb == "ACK") {
+    GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
+    if (ns) ns->lastSeen = millis();
+    Serial.printf("[ACK] Node %s: %s\n", pkt.from.c_str(), pkt.payload.c_str());
+  }
 }
 
 void setup() {
@@ -681,8 +687,8 @@ void loop() {
     evaluateDynamicRules();
   }
 
-  // 4. Broadcast Poll to active slaves on RS-422 bus every 3 seconds
-  if (millis() - lastBusPoll > 3000) {
+  // 4. Broadcast Poll to active slaves on RS-422 bus every 500ms (sub-second real-time responsiveness)
+  if (millis() - lastBusPoll > 500) {
     lastBusPoll = millis();
     broadcastBusPacket(buildPacket("ALL", "M", "REQ", "POLL"));
   }

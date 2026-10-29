@@ -327,9 +327,14 @@ void maintainMqtt() {
 }
 
 // Bind & Provision Discovered Slaves
-void triggerProvisionNode(const String& mac, const String& newId, const String& name) {
-  Serial.printf("[PROV] Dispatching BIND packet: MAC=%s -> ID=%s (%s)\n", mac.c_str(), newId.c_str(), name.c_str());
-  broadcastBusPacket(buildPacket("NEW", "M", "BIND", "MAC:" + mac + ":SET_ID:" + newId));
+void triggerProvisionNode(const String& mac, const String& newId, const String& name, bool apEnabled, const String& apSsid, const String& apPass) {
+  String bindPayload = "MAC:" + mac + ":SET_ID:" + newId;
+  if (apEnabled) {
+    bindPayload += ":AP:1:AP_SSID:" + apSsid + ":AP_PASS:" + apPass;
+  }
+  Serial.printf("[PROV] Dispatching BIND packet: MAC=%s -> ID=%s (%s) | AP: %s\n",
+                mac.c_str(), newId.c_str(), name.c_str(), apEnabled ? apSsid.c_str() : "OFF");
+  broadcastBusPacket(buildPacket("NEW", "M", "BIND", bindPayload));
 
   File file = LittleFS.open(NODES_CONFIG_PATH, "r");
   DynamicJsonDocument doc(4096);
@@ -345,6 +350,17 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
       found = true;
       node["mac"] = mac;
       node["name"] = name;
+      if (apEnabled) {
+        node["ap_enabled"] = true;
+        node["ap_ssid"] = apSsid;
+        node["ap_pass"] = apPass;
+      }
+      if (node.containsKey("ap_enabled") && node["ap_enabled"].as<bool>()) {
+        delay(40);
+        String apS = node.containsKey("ap_ssid") ? node["ap_ssid"].as<String>() : ("MiniHA_" + newId);
+        String apP = node.containsKey("ap_pass") ? node["ap_pass"].as<String>() : "";
+        broadcastBusPacket(buildPacket(newId, "M", "CFG", "AP:1:" + apS + ":" + apP));
+      }
       if (node.containsKey("components")) {
         int idx = 0;
         for (JsonObject comp : node["components"].as<JsonArray>()) {
@@ -379,6 +395,9 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
     n["id"] = newId;
     n["name"] = name;
     n["mac"] = mac;
+    n["ap_enabled"] = apEnabled;
+    n["ap_ssid"] = apSsid;
+    n["ap_pass"] = apPass;
     n.createNestedArray("components");
     n.createNestedArray("slots");
     n.createNestedArray("links");

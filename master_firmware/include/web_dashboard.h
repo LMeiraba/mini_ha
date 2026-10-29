@@ -11,7 +11,7 @@
 // =========================================================================
 
 extern WebServer webServer;
-void triggerProvisionNode(const String& mac, const String& newId, const String& name);
+void triggerProvisionNode(const String& mac, const String& newId, const String& name, bool apEnabled = false, const String& apSsid = "", const String& apPass = "");
 
 #ifndef SYSTEM_CONFIG_PATH
   #define SYSTEM_CONFIG_PATH "/config/system.json"
@@ -650,8 +650,60 @@ inline void setupWebEndpoints() {
     String mac = doc["mac"].as<String>();
     String newId = doc["id"].as<String>();
     String name = doc.containsKey("name") ? doc["name"].as<String>() : newId;
-    triggerProvisionNode(mac, newId, name);
+    bool apEn = doc.containsKey("ap_enabled") ? doc["ap_enabled"].as<bool>() : false;
+    String apSsid = doc.containsKey("ap_ssid") ? doc["ap_ssid"].as<String>() : ("MiniHA_" + newId);
+    String apPass = doc.containsKey("ap_pass") ? doc["ap_pass"].as<String>() : "";
+    triggerProvisionNode(mac, newId, name, apEn, apSsid, apPass);
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Provisioning triggered\"}");
+  });
+
+  // 14f. Configure Downstream Wi-Fi SoftAP Bridge API
+  webServer.on("/api/nodes/ap", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    if (!webServer.hasArg("plain")) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"No body\"}");
+      return;
+    }
+    DynamicJsonDocument doc(512);
+    deserializeJson(doc, webServer.arg("plain"));
+    String targetId = doc["id"].as<String>();
+    bool apEn = doc["ap_enabled"].as<bool>();
+    String apSsid = doc.containsKey("ap_ssid") ? doc["ap_ssid"].as<String>() : ("MiniHA_" + targetId);
+    String apPass = doc.containsKey("ap_pass") ? doc["ap_pass"].as<String>() : "";
+
+    File f = LittleFS.open(NODES_CONFIG_PATH, "r");
+    DynamicJsonDocument nodesDoc(4096);
+    if (f) {
+      deserializeJson(nodesDoc, f);
+      f.close();
+    }
+    JsonArray nodes = nodesDoc["nodes"].as<JsonArray>();
+    bool nodeFound = false;
+    for (JsonObject node : nodes) {
+      if (node["id"].as<String>() == targetId) {
+        nodeFound = true;
+        node["ap_enabled"] = apEn;
+        node["ap_ssid"] = apSsid;
+        node["ap_pass"] = apPass;
+        break;
+      }
+    }
+    if (!nodeFound) {
+      webServer.send(404, "application/json; charset=utf-8", "{\"error\":\"Node not found\"}");
+      return;
+    }
+    File outF = LittleFS.open(NODES_CONFIG_PATH, "w");
+    if (outF) {
+      serializeJson(nodesDoc, outF);
+      outF.close();
+    }
+
+    extern void broadcastBusPacket(const String& pkt);
+    String p = "AP:" + String(apEn ? 1 : 0) + ":" + apSsid + ":" + apPass;
+    broadcastBusPacket(buildPacket(targetId, "M", "CFG", p));
+
+    mqttSchemaNeedsPublish = true;
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"AP bridge configuration saved and dispatched\"}");
   });
 
   // 14b. Configure & Dispatch Node GPIO Slots API
@@ -1755,16 +1807,57 @@ inline void setupWebEndpoints() {
 
   <!-- MODAL: BIND NODE -->
   <div id="bindModal" class="modal-overlay">
-    <div class="modal">
+    <div class="modal" style="max-width:480px; width:95%;">
       <div style="font-size:14px; font-weight:700; margin-bottom:12px;">Bind Mesh Slave</div>
       <div style="font-size:11px; color:var(--text-muted); margin-bottom:10px; font-family:var(--font-mono);" id="bindMacLabel">MAC: --</div>
       <label>Assign Node ID</label>
       <input type="text" id="bindNodeId" value="N01" required>
       <label>Friendly Name</label>
       <input type="text" id="bindNodeName" placeholder="e.g. Living Room, Tank" required>
+
+      <div style="margin:12px 0 8px; padding:10px 12px; background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm);">
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:0; font-weight:600; font-size:12px;">
+          <input type="checkbox" id="bindApEn" onchange="toggleBindApFields()" style="width:auto; margin:0;">
+          <span>Provision as Wi-Fi AP Bridge (Allows wireless slaves to connect)</span>
+        </label>
+        <div id="bindApFields" style="display:none; margin-top:8px;">
+          <label style="font-size:11px; margin:4px 0 2px;">Downstream Wi-Fi SSID</label>
+          <input type="text" id="bindApSsid" placeholder="e.g. MiniHA-Repeater-01" style="margin:0 0 6px; padding:6px;">
+          <label style="font-size:11px; margin:4px 0 2px;">Wi-Fi Password (leave empty for open)</label>
+          <input type="password" id="bindApPass" placeholder="Min 8 characters (or blank for open)" style="margin:0; padding:6px;">
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button class="btn btn-secondary btn-sm" onclick="closeModal('bindModal')">Cancel</button>
         <button class="btn btn-sm" onclick="submitBindNode()">Bind Node</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CONFIGURE DOWNSTREAM WI-FI AP BRIDGE -->
+  <div id="apModal" class="modal-overlay">
+    <div class="modal" style="max-width:480px; width:95%;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-size:15px; font-weight:700;" id="apModalTitle">Configure Downstream Wi-Fi AP Bridge</div>
+        <button onclick="closeModal('apModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
+        <strong>Wi-Fi Repeater / AP Bridge</strong>: When enabled, this wired slave broadcasts a local Wi-Fi Access Point. Nearby wireless slaves that cannot reach the Master hub directly can connect to this node's Wi-Fi network and communicate seamlessly with the Master over RS-422.
+      </div>
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin:8px 0 12px; font-weight:600; font-size:13px;">
+        <input type="checkbox" id="apModalEn" onchange="toggleApModalFields()" style="width:auto; margin:0;">
+        <span>Enable Downstream SoftAP Bridge</span>
+      </label>
+      <div id="apModalFields">
+        <label>Downstream Wi-Fi SSID</label>
+        <input type="text" id="apModalSsid" placeholder="e.g. MiniHA-Repeater-N01">
+        <label>Downstream Password</label>
+        <input type="password" id="apModalPass" placeholder="Min 8 characters (or leave empty for open)">
+      </div>
+      <div class="modal-actions" style="margin-top:16px;">
+        <button class="btn btn-secondary btn-sm" onclick="closeModal('apModal')">Cancel</button>
+        <button class="btn btn-sm" onclick="saveNodeApConfig()">Save &amp; Push to Slave</button>
       </div>
     </div>
   </div>
@@ -2074,6 +2167,7 @@ inline void setupWebEndpoints() {
             <div style="display:flex; align-items:center; gap:10px;">
               ${statusBadge}
               <button class="btn btn-secondary btn-sm admin-only" onclick="openComponentModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Configure Components</button>
+              <button class="btn btn-secondary btn-sm admin-only" onclick="openApModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Wi-Fi AP Bridge</button>
               <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleTabForNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Schedules</button>
               <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Delete</button>
             </div>
@@ -2082,6 +2176,7 @@ inline void setupWebEndpoints() {
             <span>MAC: ${node.mac || '--'}</span>
             <span>Chip: ${node.chip || 'ESP32/ESP8266'}</span>
             <span>Peripherals: ${totalItems} active</span>
+            <span>AP Bridge: ${node.ap_enabled ? ('<strong style="color:var(--success);">' + (node.ap_ssid || 'Active') + '</strong>') : 'Off'}</span>
           </div>`;
 
         if (compCount > 0) {
@@ -2506,21 +2601,84 @@ inline void setupWebEndpoints() {
       c.innerHTML = html + '</table>';
     }
 
+    function toggleBindApFields() {
+      const en = document.getElementById('bindApEn').checked;
+      document.getElementById('bindApFields').style.display = en ? 'block' : 'none';
+      if (en && !document.getElementById('bindApSsid').value) {
+        const id = document.getElementById('bindNodeId').value.trim() || 'N01';
+        document.getElementById('bindApSsid').value = 'MiniHA_AP_' + id;
+      }
+    }
+
+    function toggleApModalFields() {
+      const en = document.getElementById('apModalEn').checked;
+      document.getElementById('apModalFields').style.display = en ? 'block' : 'none';
+    }
+
+    let activeApNodeId = null;
+    function openApModal(nodeId) {
+      activeApNodeId = nodeId;
+      const node = configuredNodes.find(n => n.id === nodeId);
+      if (!node) return;
+
+      document.getElementById('apModalTitle').innerText = `Configure Wi-Fi AP Bridge: ${node.name || nodeId} (${nodeId})`;
+      const en = !!node.ap_enabled;
+      document.getElementById('apModalEn').checked = en;
+      document.getElementById('apModalSsid').value = node.ap_ssid || ('MiniHA_AP_' + nodeId);
+      document.getElementById('apModalPass').value = node.ap_pass || '';
+      toggleApModalFields();
+      document.getElementById('apModal').style.display = 'flex';
+    }
+
+    async function saveNodeApConfig() {
+      if (!activeApNodeId) return;
+      const en = document.getElementById('apModalEn').checked;
+      const ssid = document.getElementById('apModalSsid').value.trim();
+      const pass = document.getElementById('apModalPass').value;
+
+      if (en && !ssid) {
+        showToast('Please specify an AP SSID', 'error');
+        return;
+      }
+
+      const res = await fetch('/api/nodes/ap', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: activeApNodeId, ap_enabled: en, ap_ssid: ssid, ap_pass: pass })
+      });
+
+      if (res.ok) {
+        closeModal('apModal');
+        showToast('AP Bridge configuration saved and pushed to slave!', 'success');
+        refreshData();
+      } else {
+        showToast('Failed to save AP configuration', 'error');
+      }
+    }
+
     function openBindModal(mac) {
       activeBindMac = mac;
       document.getElementById('bindMacLabel').innerText = 'Device MAC: ' + mac;
+      if (document.getElementById('bindApEn')) document.getElementById('bindApEn').checked = false;
+      if (document.getElementById('bindApFields')) document.getElementById('bindApFields').style.display = 'none';
+      if (document.getElementById('bindApSsid')) document.getElementById('bindApSsid').value = '';
+      if (document.getElementById('bindApPass')) document.getElementById('bindApPass').value = '';
       document.getElementById('bindModal').style.display = 'flex';
     }
 
     async function submitBindNode() {
       const id = document.getElementById('bindNodeId').value.trim();
       const name = document.getElementById('bindNodeName').value.trim();
+      const apEn = document.getElementById('bindApEn') ? document.getElementById('bindApEn').checked : false;
+      const apSsid = document.getElementById('bindApSsid') ? document.getElementById('bindApSsid').value.trim() : '';
+      const apPass = document.getElementById('bindApPass') ? document.getElementById('bindApPass').value : '';
+
       if (!id || !name) return showToast('Fill all fields', 'error');
 
       await fetch('/api/bind', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mac: activeBindMac, id: id, name: name })
+        body: JSON.stringify({ mac: activeBindMac, id: id, name: name, ap_enabled: apEn, ap_ssid: apSsid, ap_pass: apPass })
       });
       closeModal('bindModal');
       showToast('Node binding dispatched', 'success');

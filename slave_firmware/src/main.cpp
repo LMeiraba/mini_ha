@@ -310,6 +310,7 @@ void sendAnnouncement() {
                    ":GPIOS:" + String(SAFE_GPIOS_CSV) + 
                    ":COMPS:" + String(MAX_COMPONENTS) + 
                    ":MODE:" + String(config.transportMode == MODE_WIRELESS ? "WIFI" : "WIRED") +
+                   ":AP:" + String(config.apEnabled ? 1 : 0) +
                    ":FW:3.2.0";
   Serial.println("[BUS TX] Sending ANN to Master: " + payload);
   sendPacketToMaster("ANN", payload);
@@ -347,7 +348,8 @@ void processIncomingPacket(const ParsedPacket& pkt) {
       }
       count++;
     }
-    if (rep.length() == 0) rep = "IDLE";
+    if (count > 0) rep += ":";
+    rep += "ap=" + String(config.apEnabled ? 1 : 0);
     sendPacketToMaster("REP", rep);
   }
   // Verb 2: SET (e.g. SET:<comp_id>:<0|1> or SET:SLOT:<id>:STATE:<0|1>)
@@ -382,17 +384,55 @@ void processIncomingPacket(const ParsedPacket& pkt) {
     if (pkt.payload.indexOf("MAC:" + myMac) != -1) {
       int idIdx = pkt.payload.indexOf(":SET_ID:");
       if (idIdx != -1) {
-        String newId = pkt.payload.substring(idIdx + 8);
+        int endId = pkt.payload.indexOf(':', idIdx + 8);
+        String newId = (endId == -1) ? pkt.payload.substring(idIdx + 8) : pkt.payload.substring(idIdx + 8, endId);
         strncpy(config.nodeId, newId.c_str(), sizeof(config.nodeId) - 1);
         config.nodeId[sizeof(config.nodeId) - 1] = '\0';
         if (config.transportMode != MODE_WIRELESS) {
           config.transportMode = MODE_WIRED;
         }
+
+        // Provision Downstream Wi-Fi SoftAP Bridge if provided in BIND packet
+        int apIdx = pkt.payload.indexOf(":AP:");
+        if (apIdx != -1) {
+          int apEnd = pkt.payload.indexOf(':', apIdx + 4);
+          int en = (apEnd == -1) ? pkt.payload.substring(apIdx + 4).toInt() : pkt.payload.substring(apIdx + 4, apEnd).toInt();
+          config.apEnabled = (en == 1) ? 1 : 0;
+          int sIdx = pkt.payload.indexOf(":AP_SSID:");
+          if (sIdx != -1) {
+            int sEnd = pkt.payload.indexOf(':', sIdx + 9);
+            String apS = (sEnd == -1) ? pkt.payload.substring(sIdx + 9) : pkt.payload.substring(sIdx + 9, sEnd);
+            strncpy(config.apSsid, apS.c_str(), sizeof(config.apSsid) - 1);
+            config.apSsid[sizeof(config.apSsid) - 1] = '\0';
+          }
+          int pIdx = pkt.payload.indexOf(":AP_PASS:");
+          if (pIdx != -1) {
+            String apP = pkt.payload.substring(pIdx + 9);
+            strncpy(config.apPass, apP.c_str(), sizeof(config.apPass) - 1);
+            config.apPass[sizeof(config.apPass) - 1] = '\0';
+          }
+        }
+
         saveConfig();
         stopCaptivePortal();
+
+        // If Downstream SoftAP is provisioned, activate bridge server immediately!
+        if (config.apEnabled) {
+          Serial.printf("[AP] Activating Downstream SoftAP '%s'...\n", config.apSsid);
+          if (config.transportMode == MODE_WIRELESS) WiFi.mode(WIFI_AP_STA);
+          else WiFi.mode(WIFI_AP);
+          if (strlen(config.apPass) >= 8) WiFi.softAP(config.apSsid, config.apPass);
+          else WiFi.softAP(config.apSsid);
+          if (!bridgeServer) {
+            bridgeServer = new WiFiServer(DEFAULT_MESH_PORT);
+            bridgeServer->begin();
+          }
+        }
+
         sendPacketToMaster("ACK", "BOUND_OK");
-        Serial.printf("[BIND] Slave successfully bound as Node ID: %s | Mode: %s\n",
-                      config.nodeId, config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED");
+        Serial.printf("[BIND] Slave successfully bound as Node ID: %s | Mode: %s | AP: %s\n",
+                      config.nodeId, config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED",
+                      config.apEnabled ? config.apSsid : "DISABLED");
       }
     }
   }
@@ -426,6 +466,55 @@ void processIncomingPacket(const ParsedPacket& pkt) {
         saveConfig();
         applyHardwareConfiguration();
         sendPacketToMaster("ACK", "COMP_CONFIGURED:" + String(cIdx));
+      }
+    } else if (pkt.payload.startsWith("AP:")) {
+      // CFG:AP:<1|0>:<ssid>:<pass>
+      int c1 = pkt.payload.indexOf(':', 3);
+      if (c1 != -1) {
+        int en = pkt.payload.substring(3, c1).toInt();
+        int c2 = pkt.payload.indexOf(':', c1 + 1);
+        String apSsid = (c2 != -1) ? pkt.payload.substring(c1 + 1, c2) : pkt.payload.substring(c1 + 1);
+        String apPass = (c2 != -1) ? pkt.payload.substring(c2 + 1) : "";
+
+        config.apEnabled = (en == 1) ? 1 : 0;
+        if (apSsid.length() > 0) {
+          strncpy(config.apSsid, apSsid.c_str(), sizeof(config.apSsid) - 1);
+          config.apSsid[sizeof(config.apSsid) - 1] = '\0';
+        }
+        strncpy(config.apPass, apPass.c_str(), sizeof(config.apPass) - 1);
+        config.apPass[sizeof(config.apPass) - 1] = '\0';
+        saveConfig();
+
+        if (config.apEnabled) {
+          Serial.printf("[AP] Starting downstream SoftAP '%s' for child nodes...\n", config.apSsid);
+          if (config.transportMode == MODE_WIRELESS) WiFi.mode(WIFI_AP_STA);
+          else WiFi.mode(WIFI_AP);
+          if (strlen(config.apPass) >= 8) WiFi.softAP(config.apSsid, config.apPass);
+          else WiFi.softAP(config.apSsid);
+          if (!bridgeServer) {
+            bridgeServer = new WiFiServer(DEFAULT_MESH_PORT);
+            bridgeServer->begin();
+          }
+          sendPacketToMaster("ACK", "AP_CONFIGURED:ENABLED:" + String(config.apSsid));
+        } else {
+          Serial.println("[AP] Disabling downstream SoftAP...");
+          WiFi.softAPdisconnect(true);
+          if (config.transportMode == MODE_WIRED) {
+            #if defined(ESP8266)
+              WiFi.mode(WIFI_OFF);
+              WiFi.forceSleepBegin();
+            #else
+              WiFi.mode(WIFI_OFF);
+            #endif
+          } else {
+            WiFi.mode(WIFI_STA);
+          }
+          if (bridgeServer) {
+            delete bridgeServer;
+            bridgeServer = nullptr;
+          }
+          sendPacketToMaster("ACK", "AP_CONFIGURED:DISABLED");
+        }
       }
     } else if (pkt.payload.startsWith("LINK:")) {
       int idx  = pkt.payload.substring(5, pkt.payload.indexOf(":TRIG:")).toInt();

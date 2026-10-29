@@ -181,27 +181,28 @@ inline void evaluateDynamicRules() {
     }
 
     if (conditionMet) {
+      // Edge trigger: Execute actions once when condition transitions to TRUE
       if (!ruleActiveState[rIdx]) {
         ruleActiveState[rIdx] = true;
-      }
 
-      // Execute multiple actions
-      if (rule.containsKey("actions") && rule["actions"].is<JsonArray>()) {
-        JsonArray actions = rule["actions"].as<JsonArray>();
-        for (JsonObject act : actions) {
+        // Execute multiple actions
+        if (rule.containsKey("actions") && rule["actions"].is<JsonArray>()) {
+          JsonArray actions = rule["actions"].as<JsonArray>();
+          for (JsonObject act : actions) {
+            String target = act["target"].as<String>();
+            String comp = act.containsKey("comp") ? act["comp"].as<String>() : (act.containsKey("slot") ? String(act["slot"].as<int>()) : "0");
+            int val = act.containsKey("val") ? act["val"].as<int>() : (act.containsKey("state") ? act["state"].as<int>() : 1);
+            String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
+            executeAction(target, comp, val, reason);
+          }
+        } else if (rule.containsKey("act")) {
+          JsonObject act = rule["act"].as<JsonObject>();
           String target = act["target"].as<String>();
           String comp = act.containsKey("comp") ? act["comp"].as<String>() : (act.containsKey("slot") ? String(act["slot"].as<int>()) : "0");
           int val = act.containsKey("val") ? act["val"].as<int>() : (act.containsKey("state") ? act["state"].as<int>() : 1);
           String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
           executeAction(target, comp, val, reason);
         }
-      } else if (rule.containsKey("act")) {
-        JsonObject act = rule["act"].as<JsonObject>();
-        String target = act["target"].as<String>();
-        String comp = act.containsKey("comp") ? act["comp"].as<String>() : (act.containsKey("slot") ? String(act["slot"].as<int>()) : "0");
-        int val = act.containsKey("val") ? act["val"].as<int>() : (act.containsKey("state") ? act["state"].as<int>() : 1);
-        String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
-        executeAction(target, comp, val, reason);
       }
     } else {
       ruleActiveState[rIdx] = false;

@@ -435,8 +435,8 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
       registerPendingDevice(mac, chip, gpios, slots);
     }
   }
-  // 2. Periodic Telemetry Reply
-  else if (pkt.verb == "REP") {
+  // 2. Periodic Telemetry Reply or Push-on-Change Sensor Delta
+  else if (pkt.verb == "REP" || pkt.verb == "DATA") {
     GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
     if (ns) {
       ns->lastSeen = millis();
@@ -529,6 +529,10 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
         }
         curPos = nextColon + 1;
       }
+
+      // Real-time Event-Driven Rule & Alert Evaluation on Telemetry / Delta Update
+      evaluateDynamicRules();
+      evaluateNotificationRules();
     }
   }
   // 3. Instant Slot State Event
@@ -555,6 +559,10 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
           publishMqttState();
         }
       }
+
+      // Real-time Event-Driven Rule & Alert Evaluation on Relay / Actuator State Change
+      evaluateDynamicRules();
+      evaluateNotificationRules();
     }
   }
   // 4. Physical Input Trigger Event
@@ -578,6 +586,10 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
           ns->setComponentData("slot" + String(slot), state);
         }
       }
+
+      // Real-time Event-Driven Rule & Alert Evaluation on Physical Button / Switch Input (<5ms response)
+      evaluateDynamicRules();
+      evaluateNotificationRules();
     }
   }
   // 5. Slave Acknowledgment

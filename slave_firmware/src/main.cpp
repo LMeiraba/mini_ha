@@ -48,10 +48,13 @@ unsigned long lastEpochSyncMillis = 0;
 DHT* dhtSensors[MAX_COMPONENTS] = {nullptr};
 float compValues[MAX_COMPONENTS] = {0.0};
 float compSecondary[MAX_COMPONENTS] = {0.0};
+float lastReportedValues[MAX_COMPONENTS] = { -9999.0f };
+float lastReportedSecondary[MAX_COMPONENTS] = { -9999.0f };
 bool compOutputStates[MAX_COMPONENTS] = {false};
 int lastInputStates[MAX_COMPONENTS] = {LOW};
 unsigned long lastToggleTime[MAX_COMPONENTS] = {0};
-unsigned long lastSensorPoll = 0;
+unsigned long lastFastSensorPoll = 0;
+unsigned long lastSlowSensorPoll = 0;
 unsigned long lastAnnounceTime = 0;
 
 // Buffers & Networking
@@ -124,6 +127,8 @@ void applyHardwareConfiguration() {
     }
     compValues[i] = 0;
     compSecondary[i] = 0;
+    lastReportedValues[i] = -9999.0f;
+    lastReportedSecondary[i] = -9999.0f;
     compOutputStates[i] = false;
     lastInputStates[i] = LOW;
     lastToggleTime[i] = 0;
@@ -273,9 +278,10 @@ void checkPhysicalInputs() {
     compValues[i] = current;
   }
 
-  // Periodic multi-sensor readings
-  if (millis() - lastSensorPoll > 1000) {
-    lastSensorPoll = millis();
+  // Periodic multi-sensor readings with push-on-change delta reporting
+  // 1. Fast polling sensors (Ultrasonic distance, ADC) every 200ms
+  if (millis() - lastFastSensorPoll >= 200) {
+    lastFastSensorPoll = millis();
 
     for (int i = 0; i < MAX_COMPONENTS; i++) {
       ComponentConfig& c = config.components[i];
@@ -284,19 +290,50 @@ void checkPhysicalInputs() {
         digitalWrite(c.pin1, HIGH); delayMicroseconds(10);
         digitalWrite(c.pin1, LOW);
         long dur = pulseIn(c.pin2, HIGH, 25000);
-        float dist = (dur > 0) ? (dur * 0.034 / 2) : -1;
+        float dist = (dur > 0) ? (dur * 0.034f / 2.0f) : -1.0f;
         compValues[i] = dist;
         float depth = (c.param1 > 0) ? (float)c.param1 : 200.0f;
         compSecondary[i] = (dist >= 0) ? max(0, min(100, (int)(((depth - dist) / depth) * 100))) : 0;
-      } else if (c.type == COMP_DHT && dhtSensors[i]) {
+
+        // Push-on-Change: Send DATA to Master if distance delta >= 2cm or initial report
+        if (dist >= 0 && (fabs(dist - lastReportedValues[i]) >= 2.0f || lastReportedValues[i] < -9000.0f)) {
+          lastReportedValues[i] = dist;
+          lastReportedSecondary[i] = compSecondary[i];
+          String cid = (strlen(c.id) > 0) ? String(c.id) : String(i);
+          sendPacketToMaster("DATA", cid + "=" + String((int)dist) + "," + String((int)compSecondary[i]));
+        }
+      } else if (c.type == COMP_ANALOG_ADC && isSafeGpio(c.pin1)) {
+        compValues[i] = analogRead(c.pin1);
+        // Push-on-Change: Send DATA to Master if ADC delta >= 25 or initial report
+        if (fabs(compValues[i] - lastReportedValues[i]) >= 25.0f || lastReportedValues[i] < -9000.0f) {
+          lastReportedValues[i] = compValues[i];
+          String cid = (strlen(c.id) > 0) ? String(c.id) : String(i);
+          sendPacketToMaster("DATA", cid + "=" + String((int)compValues[i]));
+        }
+      }
+    }
+  }
+
+  // 2. Slow polling sensors (DHT11/DHT22) every 1500ms
+  if (millis() - lastSlowSensorPoll >= 1500) {
+    lastSlowSensorPoll = millis();
+
+    for (int i = 0; i < MAX_COMPONENTS; i++) {
+      ComponentConfig& c = config.components[i];
+      if (c.type == COMP_DHT && dhtSensors[i]) {
         float h = dhtSensors[i]->readHumidity();
         float t = dhtSensors[i]->readTemperature();
         if (!isnan(t) && !isnan(h)) {
           compValues[i] = t;
           compSecondary[i] = h;
+          // Push-on-Change: Send DATA if temperature delta >= 0.5°C or humidity delta >= 2% or initial report
+          if (fabs(t - lastReportedValues[i]) >= 0.5f || fabs(h - lastReportedSecondary[i]) >= 2.0f || lastReportedValues[i] < -9000.0f) {
+            lastReportedValues[i] = t;
+            lastReportedSecondary[i] = h;
+            String cid = (strlen(c.id) > 0) ? String(c.id) : String(i);
+            sendPacketToMaster("DATA", cid + "=" + String(t, 1) + "," + String(h, 0));
+          }
         }
-      } else if (c.type == COMP_ANALOG_ADC && isSafeGpio(c.pin1)) {
-        compValues[i] = analogRead(c.pin1);
       } else if (c.type == COMP_RELAY) {
         compValues[i] = compOutputStates[i] ? 1 : 0;
       }

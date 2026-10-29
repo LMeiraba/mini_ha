@@ -17,10 +17,60 @@ struct GenericNodeTelemetry {
   int distance = -1;
   float temp = 0.0;
   float hum = 0.0;
-  bool relayStates[MAX_GPIO_SLOTS] = {false};
-  float slotValues[MAX_GPIO_SLOTS] = {0.0};
-  float slotSecondary[MAX_GPIO_SLOTS] = {0.0};
+  bool relayStates[MAX_COMPONENTS] = {false};
+  float slotValues[MAX_COMPONENTS] = {0.0};
+  float slotSecondary[MAX_COMPONENTS] = {0.0};
+  
+  // Dynamic component entity storage
+  String compKeys[MAX_COMPONENTS];
+  float compVal1[MAX_COMPONENTS] = {0.0};
+  float compVal2[MAX_COMPONENTS] = {0.0};
+  uint8_t numComps = 0;
   unsigned long lastSeen = 0;
+
+  void setComponentData(const String& key, float v1, float v2 = 0.0) {
+    for (uint8_t i = 0; i < numComps; i++) {
+      if (compKeys[i] == key) {
+        compVal1[i] = v1;
+        compVal2[i] = v2;
+        return;
+      }
+    }
+    if (numComps < MAX_COMPONENTS) {
+      compKeys[numComps] = key;
+      compVal1[numComps] = v1;
+      compVal2[numComps] = v2;
+      numComps++;
+    }
+  }
+
+  float getMetricValue(const String& metricKey) {
+    String prefix = metricKey;
+    String suffix = "";
+    int dotIdx = metricKey.indexOf('.');
+    if (dotIdx != -1) {
+      prefix = metricKey.substring(0, dotIdx);
+      suffix = metricKey.substring(dotIdx + 1);
+    }
+
+    for (uint8_t i = 0; i < numComps; i++) {
+      if (compKeys[i] == prefix || compKeys[i] == metricKey) {
+        if (suffix == "hum" || suffix == "level" || suffix == "pct") {
+          return compVal2[i];
+        }
+        return compVal1[i];
+      }
+    }
+
+    if (metricKey == "LVL" || metricKey == "DIST") return distance;
+    if (metricKey == "TMP" || metricKey == "TEMP") return temp;
+    if (metricKey == "HUM") return hum;
+    if (metricKey.startsWith("SLOT_")) {
+      int s = metricKey.substring(5).toInt();
+      if (s >= 0 && s < MAX_COMPONENTS) return slotValues[s];
+    }
+    return 0.0;
+  }
 };
 
 #define MAX_TRACKED_NODES 16
@@ -39,6 +89,7 @@ inline GenericNodeTelemetry* getOrCreateNodeState(const String& nodeId) {
   return nullptr;
 }
 
+void executeAction(const String& targetNode, const String& compId, int state, const String& reason);
 void executeAction(const String& targetNode, int slot, int state, const String& reason);
 extern void publishMqttNotification(const String& title, const String& msg, const String& level);
 
@@ -90,23 +141,7 @@ inline void evaluateDynamicRules() {
         break;
       }
 
-      float currentVal = 0;
-      if (key == "LVL" || key == "DIST") currentVal = ns->distance;
-      else if (key == "TMP") currentVal = ns->temp;
-      else if (key == "HUM") currentVal = ns->hum;
-      else if (key.startsWith("SLOT_")) {
-        String sub = key.substring(5);
-        if (sub.endsWith("_TMP")) {
-          int s = sub.substring(0, sub.indexOf('_')).toInt();
-          if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->slotValues[s];
-        } else if (sub.endsWith("_HUM")) {
-          int s = sub.substring(0, sub.indexOf('_')).toInt();
-          if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->slotSecondary[s];
-        } else {
-          int s = sub.toInt();
-          if (s >= 0 && s < MAX_GPIO_SLOTS) currentVal = ns->slotValues[s];
-        }
-      }
+      float currentVal = ns->getMetricValue(key);
 
       // Check condition
       bool condResult = false;
@@ -136,10 +171,10 @@ inline void evaluateDynamicRules() {
       JsonArray actions = rule["actions"].as<JsonArray>();
       for (JsonObject act : actions) {
         String target = act["target"].as<String>();
-        int slot = act.containsKey("slot") ? act["slot"].as<int>() : 0;
+        String comp = act.containsKey("comp") ? act["comp"].as<String>() : (act.containsKey("slot") ? String(act["slot"].as<int>()) : "0");
         int val = act.containsKey("val") ? act["val"].as<int>() : 1;
         String reason = act.containsKey("reason") ? act["reason"].as<String>() : rule["name"].as<String>();
-        executeAction(target, slot, val, reason);
+        executeAction(target, comp, val, reason);
       }
     } else {
       ruleActiveState[rIdx] = false;

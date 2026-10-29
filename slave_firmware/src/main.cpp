@@ -29,9 +29,6 @@
 // =========================================================================
 
 NodeStorageConfig config;
-bool outputStates[MAX_GPIO_SLOTS];
-int lastInputStates[MAX_GPIO_SLOTS];
-unsigned long lastToggleTime[MAX_GPIO_SLOTS];
 
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
   #if ARDUINO_USB_CDC_ON_BOOT
@@ -47,13 +44,13 @@ unsigned long lastToggleTime[MAX_GPIO_SLOTS];
 uint32_t currentEpoch = 0;
 unsigned long lastEpochSyncMillis = 0;
 
-// Sensor Peripherals & Multi-Sensor Telemetry Cache
-DHT* dhtSensors[MAX_GPIO_SLOTS] = {nullptr};
-float slotValues[MAX_GPIO_SLOTS] = {0.0};
-float slotSecondary[MAX_GPIO_SLOTS] = {0.0};
-int cachedDistance = -1;
-float cachedTemperature = 0.0;
-float cachedHumidity = 0.0;
+// Hardware Components & Telemetry Metric Cache
+DHT* dhtSensors[MAX_COMPONENTS] = {nullptr};
+float compValues[MAX_COMPONENTS] = {0.0};
+float compSecondary[MAX_COMPONENTS] = {0.0};
+bool compOutputStates[MAX_COMPONENTS] = {false};
+int lastInputStates[MAX_COMPONENTS] = {LOW};
+unsigned long lastToggleTime[MAX_COMPONENTS] = {0};
 unsigned long lastSensorPoll = 0;
 unsigned long lastAnnounceTime = 0;
 
@@ -75,8 +72,8 @@ const byte DNS_PORT = 53;
 void applyHardwareConfiguration();
 void saveConfig();
 void sendAnnouncement();
-void setOutputSlot(uint8_t slot, bool state, bool pushNotify = true);
-void toggleOutputSlot(uint8_t slot, bool pushNotify = true);
+void setComponentOutput(uint8_t compIdx, bool state, bool pushNotify = true);
+void toggleComponentOutput(uint8_t compIdx, bool pushNotify = true);
 void startCaptivePortal();
 void stopCaptivePortal();
 
@@ -103,14 +100,14 @@ void loadConfigFromStorage() {
     config.apEnabled = 0;
     strncpy(config.apSsid, "SlaveNet-01", sizeof(config.apSsid) - 1);
     strncpy(config.apPass, "12345678", sizeof(config.apPass) - 1);
-    config.numConfiguredSlots = 0;
+    config.numConfiguredComponents = 0;
     config.numConfiguredLinks = 0;
     config.numConfiguredSchedules = 0;
     saveConfig();
   } else {
-    Serial.printf("[STORAGE] Loaded config for Node: %s | Mode: %s (Slots: %d, Links: %d, Scheds: %d)\n", 
+    Serial.printf("[STORAGE] Loaded config for Node: %s | Mode: %s (Comps: %d, Links: %d, Scheds: %d)\n", 
       config.nodeId, (config.transportMode == MODE_WIRELESS ? "WIRELESS" : "WIRED"),
-      config.numConfiguredSlots, config.numConfiguredLinks, config.numConfiguredSchedules);
+      config.numConfiguredComponents, config.numConfiguredLinks, config.numConfiguredSchedules);
   }
 }
 
@@ -120,41 +117,41 @@ void saveConfig() {
 }
 
 void applyHardwareConfiguration() {
-  for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
+  for (int i = 0; i < MAX_COMPONENTS; i++) {
     if (dhtSensors[i]) {
       delete dhtSensors[i];
       dhtSensors[i] = nullptr;
     }
-    slotValues[i] = 0;
-    slotSecondary[i] = 0;
-    outputStates[i] = false;
+    compValues[i] = 0;
+    compSecondary[i] = 0;
+    compOutputStates[i] = false;
     lastInputStates[i] = LOW;
     lastToggleTime[i] = 0;
 
-    uint8_t pin = config.slots[i].gpio;
-    uint8_t type = config.slots[i].type;
+    ComponentConfig& c = config.components[i];
+    if (c.type == COMP_UNUSED) continue;
 
-    if (type == SLOT_UNUSED || !isSafeGpio(pin)) continue;
-
-    if (type == SLOT_OUTPUT_RELAY) {
-      pinMode(pin, OUTPUT);
-      digitalWrite(pin, config.slots[i].activeLow ? HIGH : LOW); // Default OFF
-    } else if (type == SLOT_INPUT_TOUCH || type == SLOT_INPUT_BUTTON) {
-      pinMode(pin, (type == SLOT_INPUT_BUTTON) ? INPUT_PULLUP : INPUT);
-      lastInputStates[i] = digitalRead(pin);
-      slotValues[i] = lastInputStates[i];
-    } else if (type == SLOT_SENSOR_ULTRASONIC_TRIG) {
-      pinMode(pin, OUTPUT);
-      digitalWrite(pin, LOW);
-      slotValues[i] = -1;
-    } else if (type == SLOT_SENSOR_ULTRASONIC_ECHO) {
-      pinMode(pin, INPUT);
-    } else if (type == SLOT_SENSOR_DHT11 || type == SLOT_SENSOR_DHT22) {
-      dhtSensors[i] = new DHT(pin, (type == SLOT_SENSOR_DHT11) ? DHT11 : DHT22);
+    if (c.type == COMP_RELAY && isSafeGpio(c.pin1)) {
+      pinMode(c.pin1, OUTPUT);
+      bool activeLow = (c.flags & 1);
+      digitalWrite(c.pin1, activeLow ? HIGH : LOW); // Default OFF
+    } else if ((c.type == COMP_BUTTON || c.type == COMP_TOUCH) && isSafeGpio(c.pin1)) {
+      bool pullup = (c.flags & 1) || (c.type == COMP_BUTTON);
+      pinMode(c.pin1, pullup ? INPUT_PULLUP : INPUT);
+      lastInputStates[i] = digitalRead(c.pin1);
+      compValues[i] = lastInputStates[i];
+    } else if (c.type == COMP_ULTRASONIC && isSafeGpio(c.pin1) && isSafeGpio(c.pin2)) {
+      pinMode(c.pin1, OUTPUT); // Trig
+      digitalWrite(c.pin1, LOW);
+      pinMode(c.pin2, INPUT);  // Echo
+      compValues[i] = -1;
+    } else if (c.type == COMP_DHT && isSafeGpio(c.pin1)) {
+      bool isDht22 = (c.flags & 2);
+      dhtSensors[i] = new DHT(c.pin1, isDht22 ? DHT22 : DHT11);
       dhtSensors[i]->begin();
     }
   }
-  Serial.println("[HAL] Applied multi-sensor hardware configuration successfully.");
+  Serial.println("[HAL] Applied peripheral components hardware configuration.");
 }
 
 // Unified packet transmitter: Sends to Serial and/or active TCP connection
@@ -175,23 +172,26 @@ void sendPacketToMaster(const String& verb, const String& payload) {
   }
 }
 
-void setOutputSlot(uint8_t slot, bool state, bool pushNotify) {
-  if (slot >= MAX_GPIO_SLOTS) return;
-  if (config.slots[slot].type != SLOT_OUTPUT_RELAY) return;
+void setComponentOutput(uint8_t compIdx, bool state, bool pushNotify) {
+  if (compIdx >= MAX_COMPONENTS) return;
+  ComponentConfig& c = config.components[compIdx];
+  if (c.type != COMP_RELAY || !isSafeGpio(c.pin1)) return;
 
-  outputStates[slot] = state;
-  uint8_t pin = config.slots[slot].gpio;
-  bool level = config.slots[slot].activeLow ? (!state) : state;
-  digitalWrite(pin, level ? HIGH : LOW);
-  lastToggleTime[slot] = millis();
+  compOutputStates[compIdx] = state;
+  bool activeLow = (c.flags & 1);
+  bool level = activeLow ? (!state) : state;
+  digitalWrite(c.pin1, level ? HIGH : LOW);
+  compValues[compIdx] = state ? 1 : 0;
+  lastToggleTime[compIdx] = millis();
 
   if (pushNotify) {
-    sendPacketToMaster("EVT", "SLOT:" + String(slot) + ":STATE:" + String(state ? 1 : 0));
+    String cid = (strlen(c.id) > 0) ? String(c.id) : String(compIdx);
+    sendPacketToMaster("EVT", "COMP:" + cid + ":STATE:" + String(state ? 1 : 0));
   }
 }
 
-void toggleOutputSlot(uint8_t slot, bool pushNotify) {
-  setOutputSlot(slot, !outputStates[slot], pushNotify);
+void toggleComponentOutput(uint8_t compIdx, bool pushNotify) {
+  setComponentOutput(compIdx, !compOutputStates[compIdx], pushNotify);
 }
 
 // Standalone Local Schedule Evaluation (Runs in silicon even if Master is disconnected!)
@@ -218,17 +218,17 @@ void evaluateLocalSchedules() {
       if (curTimeFloat >= onTimeFloat && curTimeFloat < offTimeFloat) shouldBeActive = true;
     }
 
-    uint16_t mask = config.schedules[s].targetSlotsMask;
-    if (mask == 0 && config.schedules[s].targetSlot < MAX_GPIO_SLOTS) {
-      mask = (1 << config.schedules[s].targetSlot);
+    uint16_t mask = config.schedules[s].targetCompsMask;
+    if (mask == 0 && config.schedules[s].targetComp < MAX_COMPONENTS) {
+      mask = (1 << config.schedules[s].targetComp);
     }
 
-    for (uint8_t target = 0; target < MAX_GPIO_SLOTS; target++) {
-      if ((mask & (1 << target)) != 0 && config.slots[target].type == SLOT_OUTPUT_RELAY) {
-        if (shouldBeActive && !outputStates[target]) {
-          setOutputSlot(target, true, true);
-        } else if (!shouldBeActive && outputStates[target]) {
-          setOutputSlot(target, false, true);
+    for (uint8_t comp = 0; comp < MAX_COMPONENTS; comp++) {
+      if ((mask & (1 << comp)) != 0 && config.components[comp].type == COMP_RELAY) {
+        if (shouldBeActive && !compOutputStates[comp]) {
+          setComponentOutput(comp, true, true);
+        } else if (!shouldBeActive && compOutputStates[comp]) {
+          setComponentOutput(comp, false, true);
         }
       }
     }
@@ -236,97 +236,68 @@ void evaluateLocalSchedules() {
 }
 
 void checkPhysicalInputs() {
-  for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
-    uint8_t type = config.slots[i].type;
-    if (type != SLOT_INPUT_TOUCH && type != SLOT_INPUT_BUTTON) continue;
+  for (int i = 0; i < MAX_COMPONENTS; i++) {
+    ComponentConfig& c = config.components[i];
+    if (c.type != COMP_BUTTON && c.type != COMP_TOUCH) continue;
+    if (!isSafeGpio(c.pin1)) continue;
 
-    int current = digitalRead(config.slots[i].gpio);
+    int current = digitalRead(c.pin1);
     int last = lastInputStates[i];
 
     bool triggered = false;
-    if (type == SLOT_INPUT_TOUCH && current == HIGH && last == LOW) triggered = true;
-    if (type == SLOT_INPUT_BUTTON && current == LOW && last == HIGH) triggered = true;
+    if (c.type == COMP_TOUCH && current == HIGH && last == LOW) triggered = true;
+    if (c.type == COMP_BUTTON && current == LOW && last == HIGH) triggered = true;
 
     if (triggered && (millis() - lastToggleTime[i] > 350)) {
       lastToggleTime[i] = millis();
 
-      // Execute instantaneous local link ties!
+      // Instant sub-millisecond local link ties!
       for (int l = 0; l < MAX_LINKS; l++) {
-        if (config.links[l].triggerSlot == i && config.links[l].action != LINK_NONE) {
-          uint8_t target = config.links[l].targetSlot;
+        if (config.links[l].triggerComp == i && config.links[l].action != LINK_NONE) {
+          uint8_t target = config.links[l].targetComp;
           if (config.links[l].action == LINK_TOGGLE) {
-            toggleOutputSlot(target, true);
+            toggleComponentOutput(target, true);
           } else if (config.links[l].action == LINK_TURN_ON) {
-            setOutputSlot(target, true, true);
+            setComponentOutput(target, true, true);
           } else if (config.links[l].action == LINK_TURN_OFF) {
-            setOutputSlot(target, false, true);
+            setComponentOutput(target, false, true);
           }
         }
       }
 
-      sendPacketToMaster("INPUT", "SLOT:" + String(i) + ":STATE:" + String(current));
+      String cid = (strlen(c.id) > 0) ? String(c.id) : String(i);
+      sendPacketToMaster("INPUT", "COMP:" + cid + ":STATE:" + String(current));
     }
     lastInputStates[i] = current;
-    slotValues[i] = current;
+    compValues[i] = current;
   }
 
   // Periodic multi-sensor readings
   if (millis() - lastSensorPoll > 1000) {
     lastSensorPoll = millis();
 
-    // 1. Read all Ultrasonic Trig slots
-    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
-      if (config.slots[i].type == SLOT_SENSOR_ULTRASONIC_TRIG) {
-        int echoSlot = -1;
-        for (int e = i + 1; e < MAX_GPIO_SLOTS; e++) {
-          if (config.slots[e].type == SLOT_SENSOR_ULTRASONIC_ECHO) {
-            echoSlot = e;
-            break;
-          }
-        }
-        if (echoSlot == -1) {
-          for (int e = 0; e < MAX_GPIO_SLOTS; e++) {
-            if (config.slots[e].type == SLOT_SENSOR_ULTRASONIC_ECHO) {
-              echoSlot = e;
-              break;
-            }
-          }
-        }
-
-        if (echoSlot != -1) {
-          uint8_t trigPin = config.slots[i].gpio;
-          uint8_t echoPin = config.slots[echoSlot].gpio;
-          digitalWrite(trigPin, LOW); delayMicroseconds(2);
-          digitalWrite(trigPin, HIGH); delayMicroseconds(10);
-          digitalWrite(trigPin, LOW);
-          long dur = pulseIn(echoPin, HIGH, 25000);
-          float dist = (dur > 0) ? (dur * 0.034 / 2) : -1;
-          slotValues[i] = dist;
-          if (cachedDistance == -1 || i == 0) cachedDistance = (int)dist;
-        }
-      }
-    }
-
-    // 2. Read all DHT sensors
-    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
-      if (dhtSensors[i]) {
+    for (int i = 0; i < MAX_COMPONENTS; i++) {
+      ComponentConfig& c = config.components[i];
+      if (c.type == COMP_ULTRASONIC && isSafeGpio(c.pin1) && isSafeGpio(c.pin2)) {
+        digitalWrite(c.pin1, LOW); delayMicroseconds(2);
+        digitalWrite(c.pin1, HIGH); delayMicroseconds(10);
+        digitalWrite(c.pin1, LOW);
+        long dur = pulseIn(c.pin2, HIGH, 25000);
+        float dist = (dur > 0) ? (dur * 0.034 / 2) : -1;
+        compValues[i] = dist;
+        float depth = (c.param1 > 0) ? (float)c.param1 : 200.0f;
+        compSecondary[i] = (dist >= 0) ? max(0, min(100, (int)(((depth - dist) / depth) * 100))) : 0;
+      } else if (c.type == COMP_DHT && dhtSensors[i]) {
         float h = dhtSensors[i]->readHumidity();
         float t = dhtSensors[i]->readTemperature();
         if (!isnan(t) && !isnan(h)) {
-          slotValues[i] = t;
-          slotSecondary[i] = h;
-          if (cachedTemperature == 0.0 || i == 0) {
-            cachedTemperature = t;
-            cachedHumidity = h;
-          }
+          compValues[i] = t;
+          compSecondary[i] = h;
         }
-      }
-    }
-
-    // 3. Update relay slot values
-    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
-      if (config.slots[i].type == SLOT_OUTPUT_RELAY) {
-        slotValues[i] = outputStates[i] ? 1 : 0;
+      } else if (c.type == COMP_ANALOG_ADC && isSafeGpio(c.pin1)) {
+        compValues[i] = analogRead(c.pin1);
+      } else if (c.type == COMP_RELAY) {
+        compValues[i] = compOutputStates[i] ? 1 : 0;
       }
     }
   }
@@ -337,9 +308,9 @@ void sendAnnouncement() {
   String payload = "MAC:" + mac + 
                    ":CHIP:" + String(CHIP_NAME_STR) + 
                    ":GPIOS:" + String(SAFE_GPIOS_CSV) + 
-                   ":SLOTS:" + String(MAX_GPIO_SLOTS) + 
+                   ":COMPS:" + String(MAX_COMPONENTS) + 
                    ":MODE:" + String(config.transportMode == MODE_WIRELESS ? "WIFI" : "WIRED") +
-                   ":FW:3.1.0";
+                   ":FW:3.2.0";
   Serial.println("[BUS TX] Sending ANN to Master: " + payload);
   sendPacketToMaster("ANN", payload);
 }
@@ -356,38 +327,52 @@ void processIncomingPacket(const ParsedPacket& pkt) {
 
   // Verb 1: REQ (e.g. REQ:POLL)
   if (pkt.verb == "REQ" && pkt.payload == "POLL") {
-    String stateStr = "";
-    int maxSlots = config.numConfiguredSlots > 0 ? config.numConfiguredSlots : MAX_GPIO_SLOTS;
-    if (maxSlots > MAX_GPIO_SLOTS) maxSlots = MAX_GPIO_SLOTS;
-    for (int i = 0; i < maxSlots; i++) {
-      stateStr += (i > 0 ? ":" : "") + String(outputStates[i] ? 1 : 0);
-    }
-    String rep = "LVL:" + String(cachedDistance) + 
-                 ":TMP:" + String(cachedTemperature, 1) + 
-                 ":HUM:" + String(cachedHumidity, 1) + 
-                 ":OUT:" + stateStr;
-    for (int i = 0; i < MAX_GPIO_SLOTS; i++) {
-      uint8_t t = config.slots[i].type;
-      if (t == SLOT_SENSOR_ULTRASONIC_TRIG) {
-        rep += ":S" + String(i) + ":" + String((int)slotValues[i]);
-      } else if (t == SLOT_SENSOR_DHT11 || t == SLOT_SENSOR_DHT22) {
-        rep += ":S" + String(i) + "T:" + String(slotValues[i], 1);
-        rep += ":S" + String(i) + "H:" + String(slotSecondary[i], 1);
-      } else if (t == SLOT_INPUT_TOUCH || t == SLOT_INPUT_BUTTON) {
-        rep += ":S" + String(i) + ":" + String((int)slotValues[i]);
+    String rep = "";
+    int count = 0;
+    for (int i = 0; i < MAX_COMPONENTS; i++) {
+      ComponentConfig& c = config.components[i];
+      if (c.type == COMP_UNUSED) continue;
+      if (count > 0) rep += ":";
+      String cid = (strlen(c.id) > 0) ? String(c.id) : ("c" + String(i));
+      if (c.type == COMP_RELAY) {
+        rep += cid + "=" + String(compOutputStates[i] ? 1 : 0);
+      } else if (c.type == COMP_ULTRASONIC) {
+        rep += cid + "=" + String((int)compValues[i]) + "," + String((int)compSecondary[i]);
+      } else if (c.type == COMP_DHT) {
+        rep += cid + "=" + String(compValues[i], 1) + "," + String(compSecondary[i], 0);
+      } else if (c.type == COMP_BUTTON || c.type == COMP_TOUCH) {
+        rep += cid + "=" + String((int)compValues[i]);
+      } else if (c.type == COMP_ANALOG_ADC) {
+        rep += cid + "=" + String((int)compValues[i]);
       }
+      count++;
     }
+    if (rep.length() == 0) rep = "IDLE";
     sendPacketToMaster("REP", rep);
   }
-  // Verb 2: SET (e.g. SET:SLOT:<id>:STATE:<0|1>)
+  // Verb 2: SET (e.g. SET:<comp_id>:<0|1> or SET:SLOT:<id>:STATE:<0|1>)
   else if (pkt.verb == "SET") {
-    if (pkt.payload.startsWith("SLOT:")) {
-      int sIdx = pkt.payload.indexOf("SLOT:") + 5;
-      int stIdx = pkt.payload.indexOf(":STATE:");
-      if (stIdx != -1) {
-        int slot = pkt.payload.substring(sIdx, stIdx).toInt();
-        int st = pkt.payload.substring(stIdx + 7).toInt();
-        setOutputSlot(slot, (st == 1), true);
+    int colon = pkt.payload.indexOf(':');
+    if (colon != -1) {
+      String firstToken = pkt.payload.substring(0, colon);
+      if (firstToken == "SLOT") {
+        int stIdx = pkt.payload.indexOf(":STATE:");
+        if (stIdx != -1) {
+          int slot = pkt.payload.substring(5, stIdx).toInt();
+          int st = pkt.payload.substring(stIdx + 7).toInt();
+          setComponentOutput(slot, (st == 1), true);
+        }
+      } else {
+        String compId = firstToken;
+        int state = pkt.payload.substring(colon + 1).toInt();
+        for (int i = 0; i < MAX_COMPONENTS; i++) {
+          if (config.components[i].type == COMP_RELAY) {
+            if (String(config.components[i].id) == compId || String(i) == compId) {
+              setComponentOutput(i, (state == 1), true);
+              break;
+            }
+          }
+        }
       }
     }
   }
@@ -411,22 +396,36 @@ void processIncomingPacket(const ParsedPacket& pkt) {
       }
     }
   }
-  // Verb 4: CFG (Declarative slot / link / schedule configuration from Master)
+  // Verb 4: CFG (Declarative component / link / schedule configuration from Master)
   else if (pkt.verb == "CFG") {
-    if (pkt.payload.startsWith("SLOT:")) {
-      int pSlot = pkt.payload.substring(5, pkt.payload.indexOf(":GPIO:")).toInt();
-      int pGpio = pkt.payload.substring(pkt.payload.indexOf(":GPIO:") + 6, pkt.payload.indexOf(":TYPE:")).toInt();
-      int pType = pkt.payload.substring(pkt.payload.indexOf(":TYPE:") + 6, pkt.payload.indexOf(":INV:")).toInt();
-      int pInv  = pkt.payload.substring(pkt.payload.indexOf(":INV:") + 5).toInt();
-
-      if (pSlot >= 0 && pSlot < MAX_GPIO_SLOTS && isSafeGpio(pGpio)) {
-        config.slots[pSlot].gpio = pGpio;
-        config.slots[pSlot].type = pType;
-        config.slots[pSlot].activeLow = pInv;
-        config.numConfiguredSlots = max((int)config.numConfiguredSlots, pSlot + 1);
+    if (pkt.payload.startsWith("COMP:")) {
+      // CFG:COMP:<idx>:<type>:<pin1>:<pin2>:<flags>:<param1>:<id>
+      int parts[6];
+      int cur = 5;
+      for (int p = 0; p < 6; p++) {
+        int nextColon = pkt.payload.indexOf(':', cur);
+        if (nextColon == -1) {
+          parts[p] = pkt.payload.substring(cur).toInt();
+          cur = pkt.payload.length();
+        } else {
+          parts[p] = pkt.payload.substring(cur, nextColon).toInt();
+          cur = nextColon + 1;
+        }
+      }
+      String compId = (cur < pkt.payload.length()) ? pkt.payload.substring(cur) : "";
+      int cIdx = parts[0];
+      if (cIdx >= 0 && cIdx < MAX_COMPONENTS) {
+        config.components[cIdx].type = parts[1];
+        config.components[cIdx].pin1 = parts[2];
+        config.components[cIdx].pin2 = parts[3];
+        config.components[cIdx].flags = parts[4];
+        config.components[cIdx].param1 = parts[5];
+        memset(config.components[cIdx].id, 0, sizeof(config.components[cIdx].id));
+        strncpy(config.components[cIdx].id, compId.c_str(), sizeof(config.components[cIdx].id) - 1);
+        config.numConfiguredComponents = max((int)config.numConfiguredComponents, cIdx + 1);
         saveConfig();
         applyHardwareConfiguration();
-        sendPacketToMaster("ACK", "SLOT_CONFIGURED:" + String(pSlot));
+        sendPacketToMaster("ACK", "COMP_CONFIGURED:" + String(cIdx));
       }
     } else if (pkt.payload.startsWith("LINK:")) {
       int idx  = pkt.payload.substring(5, pkt.payload.indexOf(":TRIG:")).toInt();
@@ -435,8 +434,8 @@ void processIncomingPacket(const ParsedPacket& pkt) {
       int act  = pkt.payload.substring(pkt.payload.indexOf(":ACT:") + 5).toInt();
 
       if (idx >= 0 && idx < MAX_LINKS) {
-        config.links[idx].triggerSlot = trig;
-        config.links[idx].targetSlot = tgt;
+        config.links[idx].triggerComp = trig;
+        config.links[idx].targetComp = tgt;
         config.links[idx].action = act;
         config.numConfiguredLinks = max((int)config.numConfiguredLinks, idx + 1);
         saveConfig();
@@ -454,8 +453,8 @@ void processIncomingPacket(const ParsedPacket& pkt) {
       int sIdx = p[0];
       if (sIdx >= 0 && sIdx < MAX_SCHEDULES) {
         config.schedules[sIdx].enabled = p[1];
-        config.schedules[sIdx].targetSlot = (p[2] < MAX_GPIO_SLOTS) ? p[2] : 0;
-        config.schedules[sIdx].targetSlotsMask = p[2];
+        config.schedules[sIdx].targetComp = (p[2] < MAX_COMPONENTS) ? p[2] : 0;
+        config.schedules[sIdx].targetCompsMask = p[2];
         config.schedules[sIdx].action = p[3];
         config.schedules[sIdx].onHour = p[4];
         config.schedules[sIdx].onMinute = p[5];

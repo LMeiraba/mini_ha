@@ -6,30 +6,30 @@
   #define CURRENT_CHIP MODEL_ESP8266
   #define CHIP_NAME_STR "ESP8266"
   #define BOOT_BUTTON_PIN 0  // D3 / FLASH button
-  // Safe GPIOs excluding strapping pins (0, 2, 15) and Serial (1, 3):
-  // D1(5), D2(4), D5(14), D6(12), D7(13), D0(16)
-  const uint8_t SAFE_GPIOS[] = {4, 5, 12, 13, 14, 16};
-  const uint8_t NUM_SAFE_GPIOS = 6;
-  const char* SAFE_GPIOS_CSV = "4,5,12,13,14,16";
+  // Usable GPIOs on ESP8266: D3(0), D4(2), D2(4), D1(5), D6(12), D7(13), D5(14), D8(15), D0(16)
+  const uint8_t SAFE_GPIOS[] = {0, 2, 4, 5, 12, 13, 14, 15, 16};
+  const uint8_t NUM_SAFE_GPIOS = 9;
+  const char* SAFE_GPIOS_CSV = "0,2,4,5,12,13,14,15,16";
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(ESP32C3)
   #include <WiFi.h>
   #define CURRENT_CHIP MODEL_ESP32C3
   #define CHIP_NAME_STR "ESP32C3"
   #define BOOT_BUTTON_PIN 9  // Onboard BOOT button
-  // Safe GPIOs on ESP32-C3 (excluding strapping 2, 8, 9 and native USB 18, 19)
-  const uint8_t SAFE_GPIOS[] = {0, 1, 3, 4, 5, 6, 7, 10};
-  const uint8_t NUM_SAFE_GPIOS = 8;
-  const char* SAFE_GPIOS_CSV = "0,1,3,4,5,6,7,10";
+  // Usable GPIOs on ESP32-C3: ADC/IO 0,1,3,4,5,6,7, IO 8,10, secondary UART/IO 20,21
+  const uint8_t SAFE_GPIOS[] = {0, 1, 3, 4, 5, 6, 7, 8, 10, 20, 21};
+  const uint8_t NUM_SAFE_GPIOS = 11;
+  const char* SAFE_GPIOS_CSV = "0,1,3,4,5,6,7,8,10,20,21";
 
 #elif defined(ESP32)
   #include <WiFi.h>
   #define CURRENT_CHIP MODEL_ESP32
   #define CHIP_NAME_STR "ESP32"
   #define BOOT_BUTTON_PIN 0  // Onboard BOOT button
-  const uint8_t SAFE_GPIOS[] = {4, 5, 12, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33};
-  const uint8_t NUM_SAFE_GPIOS = 17;
-  const char* SAFE_GPIOS_CSV = "4,5,12,13,14,16,17,18,19,21,22,23,25,26,27,32,33";
+  // Usable GPIOs on ESP32 DevKit: Bidirectional IO + Input-only ADC (34,35,36,39)
+  const uint8_t SAFE_GPIOS[] = {4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33, 34, 35, 36, 39};
+  const uint8_t NUM_SAFE_GPIOS = 22;
+  const char* SAFE_GPIOS_CSV = "4,5,12,13,14,15,16,17,18,19,21,22,23,25,26,27,32,33,34,35,36,39";
 
 #else
   #define CURRENT_CHIP MODEL_UNKNOWN

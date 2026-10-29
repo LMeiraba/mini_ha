@@ -13,10 +13,11 @@
 // =========================================================================
 
 #define PROTOCOL_MAX_LINE       128
-#define MAX_GPIO_SLOTS          16    // Max virtual slots per node
+#define MAX_COMPONENTS          16    // Max peripheral components per node
+#define MAX_GPIO_SLOTS          16    // Backward compatibility alias
 #define MAX_LINKS               16    // Max local sensor-actuator link rules per node
 #define MAX_SCHEDULES           8     // Max standalone local schedule slots per node
-#define PROTOCOL_SCHEMA_VERSION 0x0006
+#define PROTOCOL_SCHEMA_VERSION 0x0007
 #define SCHEMA_MAGIC            (0xAA550000 | PROTOCOL_SCHEMA_VERSION)
 #define DEFAULT_MESH_PORT       8266
 
@@ -38,40 +39,54 @@ enum NodeChipModel : uint8_t {
   MODEL_WCH_CH32V = 7
 };
 
-// Declarative Virtual Slot Types (Assigned dynamically by Master)
+// Declarative Hardware Component Types (Decoupled from raw pin count)
+enum ComponentType : uint8_t {
+  COMP_UNUSED = 0,
+  COMP_RELAY,           // Output pin (pin1), activeLow (flags & 1)
+  COMP_BUTTON,          // Input pin (pin1), pullup (flags & 1)
+  COMP_TOUCH,           // Touch pin (pin1)
+  COMP_ULTRASONIC,      // Trig pin (pin1), Echo pin (pin2), tankDepth (param1)
+  COMP_DHT,             // Data pin (pin1), DHT11 (flags=0) vs DHT22 (flags=1)
+  COMP_DS18B20,         // OneWire pin (pin1)
+  COMP_ANALOG_ADC       // ADC pin (pin1)
+};
+
+// Legacy Slot Pin Aliases for backward compatibility
 enum SlotPinType : uint8_t {
   SLOT_UNUSED = 0,
-  SLOT_OUTPUT_RELAY,          // Binary output actuator (relay, light, valve)
-  SLOT_INPUT_TOUCH,           // Momentary touch sensor (e.g. TTP224)
-  SLOT_INPUT_BUTTON,          // Momentary button with internal pullup
-  SLOT_SENSOR_ULTRASONIC_TRIG,// Ultrasonic trigger pulse output
-  SLOT_SENSOR_ULTRASONIC_ECHO,// Ultrasonic echo duration input
-  SLOT_SENSOR_DHT11,          // Single-wire DHT11 Temp/Humidity
-  SLOT_SENSOR_DHT22,          // Single-wire DHT22 Temp/Humidity
-  SLOT_SENSOR_DS18B20,        // OneWire temperature
-  SLOT_ANALOG_IN              // ADC voltage/pressure input
+  SLOT_OUTPUT_RELAY = 1,
+  SLOT_INPUT_TOUCH = 3,
+  SLOT_INPUT_BUTTON = 2,
+  SLOT_SENSOR_ULTRASONIC_TRIG = 4,
+  SLOT_SENSOR_ULTRASONIC_ECHO = 10,
+  SLOT_SENSOR_DHT11 = 5,
+  SLOT_SENSOR_DHT22 = 11,
+  SLOT_SENSOR_DS18B20 = 6,
+  SLOT_ANALOG_IN = 7
 };
 
 // Sub-millisecond Local Sensor-Actuator Ties (Instant local response)
 enum LinkRuleAction : uint8_t {
   LINK_NONE = 0,
-  LINK_TOGGLE,                // Toggle output slot
-  LINK_TURN_ON,               // Force output slot ON
-  LINK_TURN_OFF               // Force output slot OFF
+  LINK_TOGGLE,                // Toggle output component
+  LINK_TURN_ON,               // Force output component ON
+  LINK_TURN_OFF               // Force output component OFF
 };
 
-// Single Pin Slot Descriptor
-struct GpioSlotDef {
-  uint8_t gpio;               // Physical GPIO pin number on the MCU
-  uint8_t type;               // SlotPinType
-  uint8_t activeLow;          // 1 = active low (most relays), 0 = active high
-  uint8_t reserved;           // For alignment / future expansion
+// Peripheral Component Definition
+struct ComponentConfig {
+  uint8_t type;               // ComponentType
+  uint8_t pin1;               // Primary GPIO pin (Relay pin, DHT data pin, Trig pin, Button pin)
+  uint8_t pin2;               // Secondary GPIO pin (Echo pin for Ultrasonic, 255 if unused)
+  uint8_t flags;              // bit 0: activeLow / pullup, bit 1: DHT22 (1) vs DHT11 (0)
+  uint16_t param1;            // Custom parameter: e.g. tank depth in cm (default 200)
+  char id[12];                // Unique key: e.g. "pump", "tank", "climate"
 };
 
 // Single Sensor-Actuator Link Rule
 struct LinkRuleDef {
-  uint8_t triggerSlot;        // Input slot that triggers event (e.g. Touch Slot 4)
-  uint8_t targetSlot;         // Output slot to actuate (e.g. Relay Slot 0)
+  uint8_t triggerComp;        // Input component that triggers event
+  uint8_t targetComp;         // Output component to actuate
   uint8_t action;             // LinkRuleAction (e.g. LINK_TOGGLE)
   uint8_t reserved;
 };
@@ -79,19 +94,19 @@ struct LinkRuleDef {
 // Standalone Local Time Schedule (Runs locally on slave even if Master is dead/disconnected!)
 struct LocalScheduleDef {
   uint8_t enabled;            // 1 = Active, 0 = Disabled
-  uint8_t targetSlot;         // Output slot to actuate (legacy single slot)
+  uint8_t targetComp;         // Output component to actuate (legacy single)
   uint8_t action;             // LinkRuleAction (e.g. LINK_TURN_ON or LINK_TURN_OFF)
   uint8_t onHour;             // 0-23
   uint8_t onMinute;           // 0-59
   uint8_t offHour;            // 0-23
   uint8_t offMinute;          // 0-59
   uint8_t daysOfWeekMask;     // Bitmask: bit 0 = Sun, bit 1 = Mon ... bit 6 = Sat (0x7F = Everyday)
-  uint16_t targetSlotsMask;   // Bitmask of target slots to actuate (multi-actuator: bit 0 = Slot 0, bit 1 = Slot 1...)
+  uint16_t targetCompsMask;   // Bitmask of target components to actuate (multi-actuator: bit 0 = Comp 0...)
 };
 
 // Complete Persistent Storage Layout (Stored in Slave EEPROM / Flash Sector)
 struct NodeStorageConfig {
-  uint32_t magic;             // SCHEMA_MAGIC (0xAA550004)
+  uint32_t magic;             // SCHEMA_MAGIC (0xAA550007)
   char nodeId[16];            // Assigned Node ID (e.g. "N01", "N01-esp32c3") or "UNBOUND"
   
   uint8_t transportMode;      // 0 = MODE_WIRED, 1 = MODE_WIRELESS
@@ -104,10 +119,10 @@ struct NodeStorageConfig {
   char apSsid[33];            // Downstream SoftAP SSID (e.g. "SlaveNet-01")
   char apPass[65];            // Downstream SoftAP Password
 
-  uint8_t numConfiguredSlots; // Count of active slots
-  uint8_t numConfiguredLinks; // Count of active links
-  uint8_t numConfiguredSchedules; // Count of active local schedules
-  GpioSlotDef slots[MAX_GPIO_SLOTS];
+  uint8_t numConfiguredComponents; // Count of active components
+  uint8_t numConfiguredLinks;      // Count of active links
+  uint8_t numConfiguredSchedules;  // Count of active local schedules
+  ComponentConfig components[MAX_COMPONENTS];
   LinkRuleDef links[MAX_LINKS];
   LocalScheduleDef schedules[MAX_SCHEDULES];
 };

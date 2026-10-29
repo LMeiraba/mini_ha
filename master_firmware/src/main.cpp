@@ -117,6 +117,11 @@ unsigned long lastMqttStatePublish = 0;
 bool mqttSchemaNeedsPublish = false;
 
 // Action Dispatcher for Dynamic Rules Engine & Web UI
+void executeAction(const String& targetNode, const String& compId, int state, const String& reason) {
+  Serial.printf("[ACTION] Target %s Comp %s -> %d | Reason: %s\n", targetNode.c_str(), compId.c_str(), state, reason.c_str());
+  broadcastBusPacket(buildPacket(targetNode, "M", "SET", compId + ":" + String(state)));
+}
+
 void executeAction(const String& targetNode, int slot, int state, const String& reason) {
   Serial.printf("[ACTION] Target %s Slot %d -> %d | Reason: %s\n", targetNode.c_str(), slot, state, reason.c_str());
   broadcastBusPacket(buildPacket(targetNode, "M", "SET", "SLOT:" + String(slot) + ":STATE:" + String(state)));
@@ -157,8 +162,15 @@ void publishMqttState() {
     n["dist"] = nodeStates[i].distance;
 
     JsonObject slotsObj = n.createNestedObject("slots");
-    for (int s = 0; s < MAX_GPIO_SLOTS; s++) {
+    for (int s = 0; s < MAX_COMPONENTS; s++) {
       slotsObj[String(s + 1)] = nodeStates[i].relayStates[s] ? 1 : 0;
+    }
+
+    JsonObject compsObj = n.createNestedObject("components");
+    for (uint8_t c = 0; c < nodeStates[i].numComps; c++) {
+      JsonObject co = compsObj.createNestedObject(nodeStates[i].compKeys[c]);
+      co["v1"] = nodeStates[i].compVal1[c];
+      co["v2"] = nodeStates[i].compVal2[c];
     }
   }
 
@@ -226,10 +238,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
   // 2. Control Action with Cryptographic Token Verification
   if (topicStr.endsWith("/set")) {
-    if (doc.containsKey("target") && doc.containsKey("slot") && doc.containsKey("state")) {
+    if (doc.containsKey("target") && doc.containsKey("state") && (doc.containsKey("comp") || doc.containsKey("slot"))) {
       String token = doc.containsKey("token") ? doc["token"].as<String>() : "";
       String target = doc["target"].as<String>();
-      int slot = doc["slot"].as<int>();
       int state = doc["state"].as<int>();
 
       String username = "";
@@ -240,11 +251,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         return;
       }
 
-      executeAction(target, slot, state, "MQTT by '" + username + "'");
-
       GenericNodeTelemetry* ns = getOrCreateNodeState(target);
-      if (ns && slot >= 1 && slot <= MAX_GPIO_SLOTS) {
-        ns->relayStates[slot - 1] = (state == 1);
+      if (doc.containsKey("comp")) {
+        String comp = doc["comp"].as<String>();
+        executeAction(target, comp, state, "MQTT by '" + username + "'");
+        if (ns) ns->setComponentData(comp, state);
+      } else {
+        int slot = doc["slot"].as<int>();
+        executeAction(target, slot, state, "MQTT by '" + username + "'");
+        if (ns && slot >= 1 && slot <= MAX_COMPONENTS) {
+          ns->relayStates[slot - 1] = (state == 1);
+        }
       }
       publishMqttState();
     }
@@ -328,6 +345,21 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
       found = true;
       node["mac"] = mac;
       node["name"] = name;
+      if (node.containsKey("components")) {
+        int idx = 0;
+        for (JsonObject comp : node["components"].as<JsonArray>()) {
+          delay(40);
+          int type = comp["type"].as<int>();
+          int pin1 = comp.containsKey("pin1") ? comp["pin1"].as<int>() : 255;
+          int pin2 = comp.containsKey("pin2") ? comp["pin2"].as<int>() : 255;
+          int flags = comp.containsKey("flags") ? comp["flags"].as<int>() : 0;
+          int param1 = comp.containsKey("param1") ? comp["param1"].as<int>() : 0;
+          String compId = comp.containsKey("id") ? comp["id"].as<String>() : ("c" + String(idx));
+          String p = "COMP:" + String(idx) + ":" + String(type) + ":" + String(pin1) + ":" + String(pin2) + ":" + String(flags) + ":" + String(param1) + ":" + compId;
+          broadcastBusPacket(buildPacket(newId, "M", "CFG", p));
+          idx++;
+        }
+      }
       if (node.containsKey("slots")) {
         for (JsonObject slot : node["slots"].as<JsonArray>()) {
           delay(40);
@@ -347,6 +379,7 @@ void triggerProvisionNode(const String& mac, const String& newId, const String& 
     n["id"] = newId;
     n["name"] = name;
     n["mac"] = mac;
+    n.createNestedArray("components");
     n.createNestedArray("slots");
     n.createNestedArray("links");
     n.createNestedArray("schedules");
@@ -384,6 +417,42 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
     GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
     if (ns) {
       ns->lastSeen = millis();
+
+      // Check for component token format: pump=1:tank=142,71:climate=27.4,62
+      if (pkt.payload.indexOf('=') != -1) {
+        int curPos = 0;
+        int len = pkt.payload.length();
+        while (curPos < len) {
+          int nextColon = pkt.payload.indexOf(':', curPos);
+          if (nextColon == -1) nextColon = len;
+          String token = pkt.payload.substring(curPos, nextColon);
+          int eqIdx = token.indexOf('=');
+          if (eqIdx != -1) {
+            String key = token.substring(0, eqIdx);
+            String valStr = token.substring(eqIdx + 1);
+            int commaIdx = valStr.indexOf(',');
+            float v1 = 0.0;
+            float v2 = 0.0;
+            if (commaIdx != -1) {
+              v1 = valStr.substring(0, commaIdx).toFloat();
+              v2 = valStr.substring(commaIdx + 1).toFloat();
+            } else {
+              v1 = valStr.toFloat();
+            }
+            ns->setComponentData(key, v1, v2);
+
+            // Backward compatibility shortcuts
+            if (key.indexOf("tank") != -1 || key.indexOf("dist") != -1) {
+              ns->distance = (int)v1;
+            } else if (key.indexOf("climate") != -1 || key.indexOf("dht") != -1) {
+              ns->temp = v1;
+              ns->hum = v2;
+            }
+          }
+          curPos = nextColon + 1;
+        }
+      }
+
       int lvlIdx = pkt.payload.indexOf("LVL:");
       int tmpIdx = pkt.payload.indexOf(":TMP:");
       int humIdx = pkt.payload.indexOf(":HUM:");
@@ -402,7 +471,7 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
         String outs = pkt.payload.substring(outIdx + 5);
         int slotIdx = 0;
         int lastColon = -1;
-        while (slotIdx < MAX_GPIO_SLOTS) {
+        while (slotIdx < MAX_COMPONENTS) {
           int nextColon = outs.indexOf(':', lastColon + 1);
           String valStr = (nextColon == -1) ? outs.substring(lastColon + 1) : outs.substring(lastColon + 1, nextColon);
           bool st = (valStr.toInt() == 1);
@@ -425,13 +494,13 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
 
         if (tag.endsWith("T")) {
           int s = tag.substring(0, tag.length() - 1).toInt();
-          if (s >= 0 && s < MAX_GPIO_SLOTS) ns->slotValues[s] = valStr.toFloat();
+          if (s >= 0 && s < MAX_COMPONENTS) ns->slotValues[s] = valStr.toFloat();
         } else if (tag.endsWith("H")) {
           int s = tag.substring(0, tag.length() - 1).toInt();
-          if (s >= 0 && s < MAX_GPIO_SLOTS) ns->slotSecondary[s] = valStr.toFloat();
+          if (s >= 0 && s < MAX_COMPONENTS) ns->slotSecondary[s] = valStr.toFloat();
         } else {
           int s = tag.toInt();
-          if (s >= 0 && s < MAX_GPIO_SLOTS) ns->slotValues[s] = valStr.toFloat();
+          if (s >= 0 && s < MAX_COMPONENTS) ns->slotValues[s] = valStr.toFloat();
         }
         curPos = nextColon + 1;
       }
@@ -442,14 +511,22 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
     GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
     if (ns) {
       ns->lastSeen = millis();
+      int compIdx = pkt.payload.indexOf("COMP:");
       int sIdx = pkt.payload.indexOf("SLOT:");
       int stIdx = pkt.payload.indexOf(":STATE:");
-      if (sIdx != -1 && stIdx != -1) {
+
+      if (compIdx != -1 && stIdx != -1) {
+        String cid = pkt.payload.substring(compIdx + 5, stIdx);
+        int state = pkt.payload.substring(stIdx + 7).toInt();
+        ns->setComponentData(cid, state);
+        publishMqttState();
+      } else if (sIdx != -1 && stIdx != -1) {
         int slot = pkt.payload.substring(sIdx + 5, stIdx).toInt();
         int state = pkt.payload.substring(stIdx + 7).toInt();
-        if (slot >= 0 && slot < MAX_GPIO_SLOTS) {
+        if (slot >= 0 && slot < MAX_COMPONENTS) {
           ns->relayStates[slot] = (state == 1);
           ns->slotValues[slot] = (state == 1) ? 1.0 : 0.0;
+          ns->setComponentData("slot" + String(slot), state);
           publishMqttState();
         }
       }
@@ -460,13 +537,20 @@ void handleIncomingBusPacket(const ParsedPacket& pkt) {
     GenericNodeTelemetry* ns = getOrCreateNodeState(pkt.from);
     if (ns) {
       ns->lastSeen = millis();
+      int compIdx = pkt.payload.indexOf("COMP:");
       int sIdx = pkt.payload.indexOf("SLOT:");
       int stIdx = pkt.payload.indexOf(":STATE:");
-      if (sIdx != -1 && stIdx != -1) {
+
+      if (compIdx != -1 && stIdx != -1) {
+        String cid = pkt.payload.substring(compIdx + 5, stIdx);
+        int state = pkt.payload.substring(stIdx + 7).toInt();
+        ns->setComponentData(cid, state);
+      } else if (sIdx != -1 && stIdx != -1) {
         int slot = pkt.payload.substring(sIdx + 5, stIdx).toInt();
         int state = pkt.payload.substring(stIdx + 7).toInt();
-        if (slot >= 0 && slot < MAX_GPIO_SLOTS) {
+        if (slot >= 0 && slot < MAX_COMPONENTS) {
           ns->slotValues[slot] = state;
+          ns->setComponentData("slot" + String(slot), state);
         }
       }
     }

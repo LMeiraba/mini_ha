@@ -515,14 +515,20 @@ inline void setupWebEndpoints() {
       n["hum"] = nodeStates[i].hum;
       n["lastSeen"] = (millis() - nodeStates[i].lastSeen) / 1000;
       JsonArray relays = n.createNestedArray("relays");
-      for (int s = 0; s < MAX_GPIO_SLOTS; s++) {
+      for (int s = 0; s < MAX_COMPONENTS; s++) {
         relays.add(nodeStates[i].relayStates[s] ? 1 : 0);
       }
       JsonArray slotVals = n.createNestedArray("slotVals");
       JsonArray slotSec = n.createNestedArray("slotSec");
-      for (int s = 0; s < MAX_GPIO_SLOTS; s++) {
+      for (int s = 0; s < MAX_COMPONENTS; s++) {
         slotVals.add(nodeStates[i].slotValues[s]);
         slotSec.add(nodeStates[i].slotSecondary[s]);
+      }
+      JsonObject compsObj = n.createNestedObject("components");
+      for (uint8_t c = 0; c < nodeStates[i].numComps; c++) {
+        JsonObject co = compsObj.createNestedObject(nodeStates[i].compKeys[c]);
+        co["v1"] = nodeStates[i].compVal1[c];
+        co["v2"] = nodeStates[i].compVal2[c];
       }
     }
     String json;
@@ -540,12 +546,19 @@ inline void setupWebEndpoints() {
     DynamicJsonDocument doc(512);
     deserializeJson(doc, webServer.arg("plain"));
     String target = doc["target"].as<String>();
-    int slot = doc["slot"].as<int>();
     int val = doc["val"].as<int>();
-    executeAction(target, slot, val, "Web UI Control");
-    GenericNodeTelemetry* ns = getOrCreateNodeState(target);
-    if (ns && slot >= 1 && slot <= MAX_GPIO_SLOTS) {
-      ns->relayStates[slot - 1] = (val == 1);
+    if (doc.containsKey("comp")) {
+      String comp = doc["comp"].as<String>();
+      executeAction(target, comp, val, "Web UI Control");
+      GenericNodeTelemetry* ns = getOrCreateNodeState(target);
+      if (ns) ns->setComponentData(comp, val);
+    } else {
+      int slot = doc["slot"].as<int>();
+      executeAction(target, slot, val, "Web UI Control");
+      GenericNodeTelemetry* ns = getOrCreateNodeState(target);
+      if (ns && slot >= 0 && slot < MAX_COMPONENTS) {
+        ns->relayStates[slot] = (val == 1);
+      }
     }
     publishMqttState();
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Command dispatched\"}");
@@ -699,6 +712,73 @@ inline void setupWebEndpoints() {
 
     mqttSchemaNeedsPublish = true;
     webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Slots saved and dispatched\"}");
+  });
+
+  // 14b-2. Configure & Dispatch Node Components API (Decoupled Peripheral Schema)
+  webServer.on("/api/nodes/components", HTTP_POST, []() {
+    if (!requireRole(ROLE_ADMIN)) return;
+    if (!webServer.hasArg("plain")) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"No body\"}");
+      return;
+    }
+    DynamicJsonDocument doc(4096);
+    DeserializationError err = deserializeJson(doc, webServer.arg("plain"));
+    if (err) {
+      webServer.send(400, "application/json; charset=utf-8", "{\"error\":\"Invalid JSON\"}");
+      return;
+    }
+
+    String targetId = doc["id"].as<String>();
+    JsonArray newComponents = doc["components"].as<JsonArray>();
+
+    File f = LittleFS.open(NODES_CONFIG_PATH, "r");
+    DynamicJsonDocument nodesDoc(4096);
+    if (f) {
+      deserializeJson(nodesDoc, f);
+      f.close();
+    }
+
+    JsonArray nodes = nodesDoc["nodes"].as<JsonArray>();
+    bool nodeFound = false;
+    for (JsonObject node : nodes) {
+      if (node["id"].as<String>() == targetId) {
+        nodeFound = true;
+        node["components"] = newComponents;
+        break;
+      }
+    }
+
+    if (!nodeFound) {
+      webServer.send(404, "application/json; charset=utf-8", "{\"error\":\"Node not found\"}");
+      return;
+    }
+
+    File outF = LittleFS.open(NODES_CONFIG_PATH, "w");
+    if (outF) {
+      serializeJson(nodesDoc, outF);
+      outF.close();
+    }
+
+    // Dispatch hardware component packets over bus to the slave:
+    // CFG:COMP:<idx>:<type>:<pin1>:<pin2>:<flags>:<param1>:<id>
+    extern void broadcastBusPacket(const String& pkt);
+    int idx = 0;
+    for (JsonObject comp : newComponents) {
+      if (idx >= MAX_COMPONENTS) break;
+      delay(30);
+      int type = comp["type"].as<int>();
+      int pin1 = comp.containsKey("pin1") ? comp["pin1"].as<int>() : 255;
+      int pin2 = comp.containsKey("pin2") ? comp["pin2"].as<int>() : 255;
+      int flags = comp.containsKey("flags") ? comp["flags"].as<int>() : (comp.containsKey("activeLow") && comp["activeLow"].as<int>() ? 1 : 0);
+      int param1 = comp.containsKey("param1") ? comp["param1"].as<int>() : 0;
+      String compId = comp.containsKey("id") ? comp["id"].as<String>() : ("c" + String(idx));
+      String p = "COMP:" + String(idx) + ":" + String(type) + ":" + String(pin1) + ":" + String(pin2) + ":" + String(flags) + ":" + String(param1) + ":" + compId;
+      broadcastBusPacket(buildPacket(targetId, "M", "CFG", p));
+      idx++;
+    }
+
+    mqttSchemaNeedsPublish = true;
+    webServer.send(200, "application/json; charset=utf-8", "{\"status\":\"Components saved and dispatched\"}");
   });
 
   // 14d. Configure & Dispatch Node Standalone Schedules API (Downtime-Safe)
@@ -1689,7 +1769,27 @@ inline void setupWebEndpoints() {
     </div>
   </div>
 
-  <!-- MODAL: CONFIGURE HARDWARE GPIO SLOTS -->
+  <!-- MODAL: CONFIGURE PERIPHERAL HARDWARE COMPONENTS -->
+  <div id="componentModal" class="modal-overlay">
+    <div class="modal" style="max-width:700px; width:95%;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+        <div style="font-size:15px; font-weight:700;" id="compModalTitle">Configure Peripheral Components</div>
+        <button onclick="closeModal('componentModal')" style="background:none; border:none; color:var(--text-dim); font-size:18px; cursor:pointer;">&times;</button>
+      </div>
+      <div style="font-size:12px; color:var(--text-muted); line-height:1.5; margin-bottom:12px; background:var(--card-elevated); padding:10px 12px; border-radius:var(--radius-sm); border:1px solid var(--card-border);">
+        <strong>Peripheral Hardware Components</strong>: Map real physical devices (Relays, Ultrasonic sensors, DHT temperature/humidity sensors, buttons, ADC) to MCU pins. Each peripheral driver runs locally in silicon and generates friendly named metrics.
+      </div>
+      <div style="font-size:11px; color:var(--text-dim); margin-bottom:8px;" id="compSafeHint">Safe GPIO Pins: --</div>
+      <div id="componentsList" style="max-height:340px; overflow-y:auto; margin-bottom:14px; display:flex; flex-direction:column; gap:10px;"></div>
+      <button class="btn btn-secondary btn-sm" onclick="addComponentRow()" style="margin-bottom:14px;">+ Add Peripheral Component</button>
+      <div class="modal-actions">
+        <button class="btn btn-secondary btn-sm" onclick="closeModal('componentModal')">Cancel</button>
+        <button class="btn btn-sm" onclick="saveComponents()">Save & Push to Node</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CONFIGURE HARDWARE GPIO SLOTS (LEGACY COMPAT) -->
   <div id="gpioModal" class="modal-overlay">
     <div class="modal" style="max-width:640px; width:95%;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -1952,7 +2052,7 @@ inline void setupWebEndpoints() {
 
       let html = '';
       configuredNodes.forEach(node => {
-        const state = liveStates[node.id] || { relays: [], dist: -1, temp: 0, hum: 0, lastSeen: 999 };
+        const state = liveStates[node.id] || { relays: [], dist: -1, temp: 0, hum: 0, components: {}, lastSeen: 999 };
         
         let statusBadge = '<span style="color:var(--text-dim); display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot"></span>Offline</span>';
         if (state.lastSeen <= 10) {
@@ -1961,7 +2061,9 @@ inline void setupWebEndpoints() {
           statusBadge = `<span style="color:var(--warning); display:inline-flex; align-items:center; gap:5px; font-size:11px;"><span class="status-dot warning"></span>${state.lastSeen}s ago</span>`;
         }
 
+        const compCount = (node.components && node.components.length) ? node.components.length : 0;
         const slotCount = (node.slots && node.slots.length) ? node.slots.length : 0;
+        const totalItems = compCount > 0 ? compCount : slotCount;
 
         html += `<div class="node-box" style="margin-bottom:14px;">
           <div class="node-header" style="flex-wrap:wrap; gap:8px;">
@@ -1971,7 +2073,7 @@ inline void setupWebEndpoints() {
             </div>
             <div style="display:flex; align-items:center; gap:10px;">
               ${statusBadge}
-              <button class="btn btn-secondary btn-sm admin-only" onclick="openGpioModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Configure GPIOs</button>
+              <button class="btn btn-secondary btn-sm admin-only" onclick="openComponentModal('${node.id}')" style="padding:3px 8px; font-size:11px;">Configure Components</button>
               <button class="btn btn-secondary btn-sm admin-only" onclick="openScheduleTabForNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Schedules</button>
               <button class="btn btn-danger btn-sm admin-only" onclick="deleteNode('${node.id}')" style="padding:3px 8px; font-size:11px;">Delete</button>
             </div>
@@ -1979,10 +2081,93 @@ inline void setupWebEndpoints() {
           <div style="display:flex; gap:12px; font-size:11px; color:var(--text-dim); font-family:var(--font-mono); margin:4px 0 10px; border-bottom:1px solid var(--card-border-subtle); padding-bottom:6px;">
             <span>MAC: ${node.mac || '--'}</span>
             <span>Chip: ${node.chip || 'ESP32/ESP8266'}</span>
-            <span>Slots: ${slotCount} active</span>
+            <span>Peripherals: ${totalItems} active</span>
           </div>`;
 
-        if (slotCount > 0) {
+        if (compCount > 0) {
+          node.components.forEach((c, idx) => {
+            const compId = c.id || ('comp' + idx);
+            const compName = c.name || compId;
+            const cType = parseInt(c.type) || 1;
+            const compState = (state.components && state.components[compId]) ? state.components[compId] : null;
+
+            if (cType === 1) { // Relay Actuator
+              let isRelayOn = false;
+              if (compState && compState.v1 !== undefined) {
+                isRelayOn = (compState.v1 == 1);
+              } else if (state.relays && state.relays[idx] !== undefined) {
+                isRelayOn = (state.relays[idx] == 1);
+              }
+              const canControl = (currentSession.role === 'admin' || currentSession.role === 'member');
+              html += `<div class="slot-row">
+                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Relay GPIO ${c.pin1}) [${compId}.state]</small></span>
+                <button class="toggle-btn ${isRelayOn ? 'active' : ''}" ${canControl ? '' : 'disabled'} onclick="toggleComponent('${node.id}', '${compId}', ${isRelayOn})">
+                  <span class="toggle-slider"></span>
+                </button>
+              </div>`;
+            } else if (cType === 4) { // Ultrasonic Sensor (HC-SR04)
+              let dist = -1;
+              let pct = 0;
+              const depth = (c.param1 > 0) ? c.param1 : 200;
+              if (compState && compState.v1 !== undefined) {
+                dist = compState.v1;
+                pct = compState.v2 !== undefined ? compState.v2 : ((dist >= 0) ? Math.max(0, Math.min(100, Math.round(((depth - dist) / depth) * 100))) : 0);
+              } else if (state.dist !== undefined) {
+                dist = state.dist;
+                pct = (dist >= 0) ? Math.max(0, Math.min(100, Math.round(((depth - dist) / depth) * 100))) : 0;
+              }
+              const distText = dist >= 0 ? `${Math.round(dist)} cm` : '--';
+              html += `<div class="slot-row" style="flex-direction:column; align-items:stretch; gap:6px;">
+                <div class="tank-header">
+                  <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(HC-SR04 Trig:${c.pin1} Echo:${c.pin2}) [${compId}.dist]</small></span>
+                  <span style="font-family:var(--font-mono); font-size:11px; font-weight:700;">${distText} (${pct}%)</span>
+                </div>
+                <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
+              </div>`;
+            } else if (cType === 5) { // DHT Sensor
+              let curT = 0.0;
+              let curH = 0.0;
+              if (compState && compState.v1 !== undefined) {
+                curT = compState.v1;
+                curH = compState.v2 !== undefined ? compState.v2 : 0.0;
+              } else {
+                curT = state.temp || 0.0;
+                curH = state.hum || 0.0;
+              }
+              html += `<div class="slot-row">
+                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(DHT on GPIO ${c.pin1}) [${compId}.temp / .hum]</small></span>
+                <div class="sensor-readings">
+                  <div class="sensor-pill">
+                    <span class="pill-label">TEMP</span>
+                    <span class="pill-val">${curT.toFixed(1)}</span>
+                    <span class="pill-unit">&deg;C</span>
+                  </div>
+                  <div class="sensor-pill">
+                    <span class="pill-label">HUM</span>
+                    <span class="pill-val">${curH.toFixed(0)}</span>
+                    <span class="pill-unit">%</span>
+                  </div>
+                </div>
+              </div>`;
+            } else if (cType === 2 || cType === 3) { // Wall Switch / Button
+              const isInputActive = compState ? (compState.v1 == 1) : false;
+              html += `<div class="slot-row">
+                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(${cType === 2 ? 'Touch' : 'Button'} GPIO ${c.pin1}) [${compId}.state]</small></span>
+                <span class="badge" style="background:${isInputActive ? 'var(--success)' : 'var(--card-elevated)'}; color:${isInputActive ? '#000' : 'var(--text-dim)'}; font-size:10px; font-weight:700;">
+                  ${isInputActive ? 'ACTIVE / PRESSED' : 'IDLE / OPEN'}
+                </span>
+              </div>`;
+            } else if (cType === 7) { // ADC Sensor
+              const adcVal = compState ? compState.v1 : 0;
+              html += `<div class="slot-row">
+                <span style="font-weight:600;">${compName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(ADC GPIO ${c.pin1}) [${compId}.raw]</small></span>
+                <span style="font-family:var(--font-mono); font-size:12px; font-weight:700;">${adcVal}</span>
+              </div>`;
+            } else {
+              html += `<div class="slot-row"><span style="font-weight:600;">${compName}</span><span style="font-size:11px; color:var(--text-dim);">GPIO ${c.pin1}</span></div>`;
+            }
+          });
+        } else if (slotCount > 0) {
           node.slots.forEach(slot => {
             const slotName = slot.name || `Slot ${slot.slot}`;
             if (slot.type === 1) { // Relay
@@ -2023,35 +2208,31 @@ inline void setupWebEndpoints() {
                 </div>
                 <div class="tank-bar-container"><div class="tank-bar-fill" style="width:${pct}%"></div></div>
               </div>`;
-            } else if (slot.type === 5) { // Ultrasonic Echo
-              html += `<div class="slot-row" style="opacity:0.65;">
-                <span style="font-size:12px; font-weight:500;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(Echo GPIO ${slot.gpio})</small></span>
-                <span style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono);">PAIRED ECHO</span>
-              </div>`;
-            } else if (slot.type === 2 || slot.type === 3) { // Touch or Button
-              const isInputActive = (state.slotVals && state.slotVals[slot.slot] !== undefined && state.slotVals[slot.slot] == 1);
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(${slot.type === 2 ? 'Touch' : 'Button'} GPIO ${slot.gpio})</small></span>
-                <span class="badge" style="background:${isInputActive ? 'var(--success)' : 'var(--card-elevated)'}; color:${isInputActive ? '#000' : 'var(--text-dim)'}; font-size:10px; font-weight:700;">
-                  ${isInputActive ? 'ACTIVE / PRESSED' : 'IDLE / OPEN'}
-                </span>
-              </div>`;
-            } else if (slot.type === 9) { // Analog ADC
-              const adcVal = (state.slotVals && state.slotVals[slot.slot] !== undefined) ? state.slotVals[slot.slot] : 0;
-              html += `<div class="slot-row">
-                <span style="font-weight:600;">${slotName} <small style="color:var(--text-dim); font-family:var(--font-mono); font-size:10px;">(ADC GPIO ${slot.gpio})</small></span>
-                <span style="font-family:var(--font-mono); font-size:12px; font-weight:700;">${adcVal}</span>
-              </div>`;
             } else {
               html += `<div class="slot-row"><span style="font-weight:600;">${slotName}</span><span style="font-size:11px; color:var(--text-dim);">GPIO ${slot.gpio} (Active)</span></div>`;
             }
           });
         } else {
-          html += '<div style="color:var(--text-dim); font-size:12px; padding:6px 0;">No hardware GPIO pins configured yet. Click <strong>Configure GPIOs</strong> above to assign physical pins to relays, switches, or sensors.</div>';
+          html += '<div style="color:var(--text-dim); font-size:12px; padding:6px 0;">No peripheral components configured yet. Click <strong>Configure Components</strong> above to assign relays, sensors, and inputs.</div>';
         }
         html += `</div>`;
       });
       c.innerHTML = html;
+    }
+
+    async function toggleComponent(nodeId, compId, curState) {
+      const val = curState ? 0 : 1;
+      if (!liveStates[nodeId]) liveStates[nodeId] = { components: {} };
+      if (!liveStates[nodeId].components) liveStates[nodeId].components = {};
+      liveStates[nodeId].components[compId] = { v1: val, v2: 0 };
+      renderEntities();
+
+      await fetch('/api/control', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: nodeId, comp: compId, val: val })
+      });
+      setTimeout(refreshData, 300);
     }
 
     async function toggleRelay(nodeId, slot, curState) {
@@ -2070,121 +2251,220 @@ inline void setupWebEndpoints() {
     }
 
     // =========================================================================
-    // HARDWARE GPIO SLOTS CONFIGURATION
+    // PERIPHERAL HARDWARE COMPONENTS CONFIGURATION (DECOUPLED SCHEMA)
     // =========================================================================
-    let activeGpioNodeId = null;
-    let currentGpioSlots = [];
+    let activeCompNodeId = null;
+    let currentComponents = [];
 
-    function openGpioModal(nodeId) {
-      activeGpioNodeId = nodeId;
+    function openComponentModal(nodeId) {
+      activeCompNodeId = nodeId;
       const node = configuredNodes.find(n => n.id === nodeId);
       if (!node) return;
 
-      document.getElementById('gpioModalTitle').innerText = `Configure Hardware GPIOs: ${node.name || nodeId} (${nodeId})`;
+      document.getElementById('compModalTitle').innerText = `Configure Peripherals: ${node.name || nodeId} (${nodeId})`;
       const pendingMatch = (typeof pendingNodesCache !== 'undefined' ? pendingNodesCache : []).find(p => p.mac === node.mac);
-      const safeGpios = (pendingMatch && pendingMatch.gpios) ? pendingMatch.gpios : '0, 1, 3, 4, 5, 6, 7, 10';
-      document.getElementById('gpioSafeHint').innerText = `Safe GPIO Pins on this chip (${node.chip || 'Board'}): ${safeGpios}`;
+      const safeGpios = (pendingMatch && pendingMatch.gpios) ? pendingMatch.gpios : '0, 1, 3, 4, 5, 6, 7, 8, 10, 20, 21';
+      document.getElementById('compSafeHint').innerText = `Safe GPIO Pins on this chip (${node.chip || 'MCU'}): ${safeGpios}`;
 
-      currentGpioSlots = JSON.parse(JSON.stringify(node.slots || []));
-      renderGpioSlotRows();
-      document.getElementById('gpioModal').style.display = 'flex';
+      if (node.components && node.components.length > 0) {
+        currentComponents = JSON.parse(JSON.stringify(node.components));
+      } else if (node.slots && node.slots.length > 0) {
+        currentComponents = node.slots.map((s, idx) => {
+          let cType = s.type;
+          if (cType === 6 || cType === 7) cType = 5;
+          return {
+            id: s.name ? s.name.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) : ('comp' + idx),
+            name: s.name || ('Slot ' + s.slot),
+            type: cType,
+            pin1: s.gpio,
+            pin2: 255,
+            flags: s.activeLow ? 1 : 0,
+            param1: (s.type === 7 ? 22 : 11)
+          };
+        });
+      } else {
+        currentComponents = [];
+      }
+
+      renderComponentRows();
+      document.getElementById('componentModal').style.display = 'flex';
     }
 
-    function renderGpioSlotRows() {
-      const list = document.getElementById('gpioSlotsList');
-      if (currentGpioSlots.length === 0) {
-        list.innerHTML = '<div style="color:var(--text-dim); padding:10px; font-size:12px;">No slots configured. Click <strong>+ Add GPIO Slot</strong> below.</div>';
+    function openGpioModal(nodeId) {
+      openComponentModal(nodeId);
+    }
+
+    function renderComponentRows() {
+      const list = document.getElementById('componentsList');
+      if (currentComponents.length === 0) {
+        list.innerHTML = '<div style="color:var(--text-dim); padding:10px; font-size:12px;">No components configured. Click <strong>+ Add Peripheral Component</strong> below.</div>';
         return;
       }
 
       let html = '';
-      currentGpioSlots.forEach((slot, idx) => {
-        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:8px 10px; display:grid; grid-template-columns: 50px 2fr 1fr 2fr 75px 36px; gap:8px; align-items:center;">
-          <div>
-            <label style="font-size:10px; margin:0 0 2px;">Slot</label>
-            <input type="number" id="slotNum_${idx}" value="${slot.slot !== undefined ? slot.slot : idx}" min="0" max="15" style="margin:0; padding:5px;">
-          </div>
-          <div>
-            <label style="font-size:10px; margin:0 0 2px;">Friendly Name</label>
-            <input type="text" id="slotName_${idx}" value="${slot.name || ('Slot ' + idx)}" placeholder="e.g. Pump Relay" style="margin:0; padding:5px;">
-          </div>
-          <div>
-            <label style="font-size:10px; margin:0 0 2px;">GPIO</label>
-            <input type="number" id="slotGpio_${idx}" value="${slot.gpio !== undefined ? slot.gpio : 4}" min="0" max="48" style="margin:0; padding:5px;">
-          </div>
-          <div>
-            <label style="font-size:10px; margin:0 0 2px;">Hardware Type</label>
-            <select id="slotType_${idx}" style="margin:0; padding:5px;">
-              <option value="1" ${slot.type === 1 ? 'selected' : ''}>Relay / Switch (Output)</option>
-              <option value="2" ${slot.type === 2 ? 'selected' : ''}>Wall Switch / Touch (Input)</option>
-              <option value="3" ${slot.type === 3 ? 'selected' : ''}>Push Button (Input Pullup)</option>
-              <option value="4" ${slot.type === 4 ? 'selected' : ''}>Ultrasonic Trig (Output)</option>
-              <option value="5" ${slot.type === 5 ? 'selected' : ''}>Ultrasonic Echo (Input)</option>
-              <option value="6" ${slot.type === 6 ? 'selected' : ''}>DHT11 Temp/Humidity</option>
-              <option value="7" ${slot.type === 7 ? 'selected' : ''}>DHT22 Temp/Humidity</option>
-            </select>
-          </div>
-          <div style="text-align:center;">
-            <label style="font-size:10px; margin:0 0 2px; white-space:nowrap;">Active Low</label>
-            <input type="checkbox" id="slotInv_${idx}" ${slot.activeLow ? 'checked' : ''} style="width:auto; margin:4px auto 0; display:block;">
-          </div>
-          <div style="text-align:right;">
-            <button class="btn btn-danger btn-sm" onclick="removeGpioSlotRow(${idx})" style="padding:4px 6px; font-size:11px; margin-top:14px;">&times;</button>
-          </div>
-        </div>`;
+      currentComponents.forEach((c, idx) => {
+        const type = parseInt(c.type) || 1;
+        html += `<div style="background:var(--card-elevated); border:1px solid var(--card-border); border-radius:var(--radius-sm); padding:10px 12px; display:flex; flex-direction:column; gap:8px;">
+          <div style="display:grid; grid-template-columns: 1.2fr 2fr 2fr 36px; gap:8px; align-items:center;">
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Component ID</label>
+              <input type="text" id="compCid_${idx}" value="${c.id || ('comp' + idx)}" maxlength="11" placeholder="e.g. pump" style="margin:0; padding:5px; font-family:var(--font-mono);">
+            </div>
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Friendly Name</label>
+              <input type="text" id="compName_${idx}" value="${c.name || ('Component ' + (idx + 1))}" placeholder="e.g. Water Pump" style="margin:0; padding:5px;">
+            </div>
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Peripheral Device Type</label>
+              <select id="compType_${idx}" onchange="onComponentTypeChange(${idx})" style="margin:0; padding:5px;">
+                <option value="1" ${type === 1 ? 'selected' : ''}>Relay / Actuator (Output)</option>
+                <option value="4" ${type === 4 ? 'selected' : ''}>Ultrasonic HC-SR04 (Trig+Echo)</option>
+                <option value="5" ${type === 5 ? 'selected' : ''}>DHT Temp/Humidity Sensor</option>
+                <option value="3" ${type === 3 ? 'selected' : ''}>Push Button (Input Pullup)</option>
+                <option value="2" ${type === 2 ? 'selected' : ''}>Wall Switch / Touch (Input)</option>
+                <option value="7" ${type === 7 ? 'selected' : ''}>Analog Sensor (ADC)</option>
+              </select>
+            </div>
+            <div style="text-align:right;">
+              <button class="btn btn-danger btn-sm" onclick="removeComponentRow(${idx})" style="padding:4px 6px; font-size:11px; margin-top:14px;">&times;</button>
+            </div>
+          </div>`;
+
+        if (type === 1) { // Relay
+          html += `<div style="display:flex; align-items:center; gap:14px; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div style="width:140px;">
+              <label style="font-size:10px; margin:0 0 2px;">Relay Pin (GPIO)</label>
+              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 4}" min="0" max="48" style="margin:0; padding:4px;">
+            </div>
+            <label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:11px; margin-top:14px;">
+              <input type="checkbox" id="compFlags_${idx}" ${(c.flags & 1) ? 'checked' : ''} style="width:auto; margin:0;">
+              <span>Active LOW (inverted trigger)</span>
+            </label>
+            <span style="font-size:11px; color:var(--text-dim); margin-left:auto; font-family:var(--font-mono);">Entity: <code>${c.id || 'comp'}.state</code></span>
+          </div>`;
+        } else if (type === 4) { // Ultrasonic HC-SR04
+          html += `<div style="display:grid; grid-template-columns: 1fr 1fr 1fr 1.5fr; gap:10px; align-items:center; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Trig Pin (GPIO)</label>
+              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 5}" min="0" max="48" style="margin:0; padding:4px;">
+            </div>
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Echo Pin (GPIO)</label>
+              <input type="number" id="compPin2_${idx}" value="${c.pin2 !== undefined ? c.pin2 : 18}" min="0" max="48" style="margin:0; padding:4px;">
+            </div>
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Tank Depth (cm)</label>
+              <input type="number" id="compParam1_${idx}" value="${c.param1 > 0 ? c.param1 : 200}" min="10" max="500" style="margin:0; padding:4px;">
+            </div>
+            <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono); text-align:right;">
+              Entities: <code>${c.id || 'comp'}.dist</code> (cm)<br><code>${c.id || 'comp'}.level</code> (%)
+            </div>
+          </div>`;
+        } else if (type === 5) { // DHT
+          html += `<div style="display:grid; grid-template-columns: 1fr 1.2fr 1.5fr; gap:10px; align-items:center; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Data Pin (GPIO)</label>
+              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 4}" min="0" max="48" style="margin:0; padding:4px;">
+            </div>
+            <div>
+              <label style="font-size:10px; margin:0 0 2px;">Sensor Model</label>
+              <select id="compParam1_${idx}" style="margin:0; padding:4px;">
+                <option value="11" ${c.param1 === 11 || !c.param1 ? 'selected' : ''}>DHT11 (Standard)</option>
+                <option value="22" ${c.param1 === 22 ? 'selected' : ''}>DHT22 / AM2302 (Precision)</option>
+              </select>
+            </div>
+            <div style="font-size:10px; color:var(--text-dim); font-family:var(--font-mono); text-align:right;">
+              Entities: <code>${c.id || 'comp'}.temp</code> (&deg;C)<br><code>${c.id || 'comp'}.hum</code> (%)
+            </div>
+          </div>`;
+        } else if (type === 2 || type === 3) { // Button or Switch
+          html += `<div style="display:flex; align-items:center; gap:14px; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div style="width:140px;">
+              <label style="font-size:10px; margin:0 0 2px;">Input Pin (GPIO)</label>
+              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 0}" min="0" max="48" style="margin:0; padding:4px;">
+            </div>
+            <span style="font-size:11px; color:var(--text-dim);">Internal pullup enabled automatically</span>
+            <span style="font-size:11px; color:var(--text-dim); margin-left:auto; font-family:var(--font-mono);">Entity: <code>${c.id || 'comp'}.state</code></span>
+          </div>`;
+        } else if (type === 7) { // ADC
+          html += `<div style="display:flex; align-items:center; gap:14px; background:var(--card); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
+            <div style="width:140px;">
+              <label style="font-size:10px; margin:0 0 2px;">ADC Pin (GPIO)</label>
+              <input type="number" id="compPin1_${idx}" value="${c.pin1 !== undefined ? c.pin1 : 0}" min="0" max="48" style="margin:0; padding:4px;">
+            </div>
+            <span style="font-size:11px; color:var(--text-dim); margin-left:auto; font-family:var(--font-mono);">Entity: <code>${c.id || 'comp'}.raw</code></span>
+          </div>`;
+        }
+
+        html += `</div>`;
       });
       list.innerHTML = html;
     }
 
-    function addGpioSlotRow() {
-      syncCurrentSlotInputs();
-      currentGpioSlots.push({
-        slot: currentGpioSlots.length,
-        name: 'Slot ' + currentGpioSlots.length,
-        gpio: 8,
+    function onComponentTypeChange(idx) {
+      syncCurrentCompInputs();
+      const typeEl = document.getElementById('compType_' + idx);
+      if (typeEl) currentComponents[idx].type = parseInt(typeEl.value);
+      renderComponentRows();
+    }
+
+    function addComponentRow() {
+      syncCurrentCompInputs();
+      const idx = currentComponents.length;
+      currentComponents.push({
+        id: 'comp' + (idx + 1),
+        name: 'Component ' + (idx + 1),
         type: 1,
-        activeLow: 1
+        pin1: 4,
+        pin2: 255,
+        flags: 1,
+        param1: 0
       });
-      renderGpioSlotRows();
+      renderComponentRows();
     }
 
-    function removeGpioSlotRow(idx) {
-      syncCurrentSlotInputs();
-      currentGpioSlots.splice(idx, 1);
-      renderGpioSlotRows();
+    function removeComponentRow(idx) {
+      syncCurrentCompInputs();
+      currentComponents.splice(idx, 1);
+      renderComponentRows();
     }
 
-    function syncCurrentSlotInputs() {
-      currentGpioSlots.forEach((slot, idx) => {
-        const numEl = document.getElementById('slotNum_' + idx);
-        const nameEl = document.getElementById('slotName_' + idx);
-        const gpioEl = document.getElementById('slotGpio_' + idx);
-        const typeEl = document.getElementById('slotType_' + idx);
-        const invEl = document.getElementById('slotInv_' + idx);
-        if (numEl) slot.slot = parseInt(numEl.value) || 0;
-        if (nameEl) slot.name = nameEl.value.trim();
-        if (gpioEl) slot.gpio = parseInt(gpioEl.value) || 0;
-        if (typeEl) slot.type = parseInt(typeEl.value) || 1;
-        if (invEl) slot.activeLow = invEl.checked ? 1 : 0;
+    function syncCurrentCompInputs() {
+      currentComponents.forEach((c, idx) => {
+        const idEl = document.getElementById('compCid_' + idx);
+        const nameEl = document.getElementById('compName_' + idx);
+        const typeEl = document.getElementById('compType_' + idx);
+        const p1El = document.getElementById('compPin1_' + idx);
+        const p2El = document.getElementById('compPin2_' + idx);
+        const flagsEl = document.getElementById('compFlags_' + idx);
+        const paramEl = document.getElementById('compParam1_' + idx);
+
+        if (idEl) c.id = idEl.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 11);
+        if (nameEl) c.name = nameEl.value.trim();
+        if (typeEl) c.type = parseInt(typeEl.value) || 1;
+        if (p1El) c.pin1 = parseInt(p1El.value) || 0;
+        if (p2El) c.pin2 = parseInt(p2El.value) || 255;
+        if (flagsEl) c.flags = flagsEl.checked ? 1 : 0;
+        if (paramEl) c.param1 = parseInt(paramEl.value) || 0;
       });
     }
 
-    async function saveGpioSlots() {
-      syncCurrentSlotInputs();
-      if (!activeGpioNodeId) return;
+    async function saveComponents() {
+      syncCurrentCompInputs();
+      if (!activeCompNodeId) return;
 
-      const res = await fetch('/api/nodes/slots', {
+      const res = await fetch('/api/nodes/components', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: activeGpioNodeId, slots: currentGpioSlots })
+        body: JSON.stringify({ id: activeCompNodeId, components: currentComponents })
       });
 
       if (res.ok) {
-        closeModal('gpioModal');
-        showToast('GPIO slots saved and pushed to node!', 'success');
+        closeModal('componentModal');
+        showToast('Peripheral components saved and pushed to node!', 'success');
         refreshData();
       } else {
-        showToast('Failed to save GPIO slots', 'error');
+        showToast('Failed to save components', 'error');
       }
     }
 
@@ -2298,7 +2578,7 @@ inline void setupWebEndpoints() {
             </div>
             <div style="background:var(--card-elevated); padding:8px 10px; border-radius:var(--radius-sm); border:1px solid var(--card-border-subtle);">
               <span style="font-size:10px; font-weight:700; text-transform:uppercase; color:var(--text-dim); display:block; margin-bottom:4px;">Then (Action)</span>
-              Target <strong>${act.target}</strong> &bull; Slot ${act.slot} &rarr; <strong style="color:${act.val === 1 ? 'var(--success)' : 'var(--text-dim)'}">${act.val === 1 ? 'TURN ON' : 'TURN OFF'}</strong>
+              Target <strong>${act.target}</strong> &bull; ${act.comp || ('Slot ' + act.slot)} &rarr; <strong style="color:${act.val === 1 ? 'var(--success)' : 'var(--text-dim)'}">${act.val === 1 ? 'TURN ON' : 'TURN OFF'}</strong>
             </div>
           </div>
 
@@ -2316,19 +2596,38 @@ inline void setupWebEndpoints() {
       const select = document.getElementById('ruleModalCondKey');
       const node = configuredNodes.find(n => n.id === nodeId);
       let optHtml = '';
-      if (node && node.slots && node.slots.length > 0) {
+      if (node && node.components && node.components.length > 0) {
+        node.components.forEach(c => {
+          const cid = c.id || 'comp';
+          const cName = c.name || cid;
+          const cType = parseInt(c.type) || 1;
+          if (cType === 4) { // Ultrasonic
+            optHtml += `<option value="${cid}.dist">${cName} &rarr; Distance (cm) [${cid}.dist]</option>`;
+            optHtml += `<option value="${cid}.level">${cName} &rarr; Tank Level (%) [${cid}.level]</option>`;
+          } else if (cType === 5) { // DHT
+            optHtml += `<option value="${cid}.temp">${cName} &rarr; Temperature (&deg;C) [${cid}.temp]</option>`;
+            optHtml += `<option value="${cid}.hum">${cName} &rarr; Humidity (%) [${cid}.hum]</option>`;
+          } else if (cType === 1) { // Relay
+            optHtml += `<option value="${cid}.state">${cName} &rarr; Relay State (0/1) [${cid}.state]</option>`;
+          } else if (cType === 2 || cType === 3) { // Button/Touch
+            optHtml += `<option value="${cid}.state">${cName} &rarr; Input State (0/1) [${cid}.state]</option>`;
+          } else if (cType === 7) { // ADC
+            optHtml += `<option value="${cid}.raw">${cName} &rarr; ADC Value [${cid}.raw]</option>`;
+          }
+        });
+      } else if (node && node.slots && node.slots.length > 0) {
         node.slots.forEach(s => {
           const sName = s.name || `Slot ${s.slot}`;
-          if (s.type === 4) { // Ultrasonic Trig
+          if (s.type === 4) {
             optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Distance / Level (cm)</option>`;
-          } else if (s.type === 6 || s.type === 7) { // DHT
+          } else if (s.type === 6 || s.type === 7) {
             optHtml += `<option value="SLOT_${s.slot}_TMP">Slot ${s.slot} (${sName}): Temperature (&deg;C)</option>`;
             optHtml += `<option value="SLOT_${s.slot}_HUM">Slot ${s.slot} (${sName}): Humidity (%)</option>`;
-          } else if (s.type === 1) { // Relay
+          } else if (s.type === 1) {
             optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Relay Output State (0/1)</option>`;
-          } else if (s.type === 2 || s.type === 3) { // Button/Touch
+          } else if (s.type === 2 || s.type === 3) {
             optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Physical Input State (0/1)</option>`;
-          } else if (s.type === 9) { // Analog
+          } else if (s.type === 9) {
             optHtml += `<option value="SLOT_${s.slot}">Slot ${s.slot} (${sName}): Analog Value</option>`;
           }
         });
@@ -2340,20 +2639,26 @@ inline void setupWebEndpoints() {
       if (selectedKey) select.value = selectedKey;
     }
 
-    function updateRuleActSlots(nodeId, selectedSlot) {
+    function updateRuleActSlots(nodeId, selectedSlotOrComp) {
       const select = document.getElementById('ruleModalActSlot');
       const node = configuredNodes.find(n => n.id === nodeId);
       let optHtml = '';
-      if (node && node.slots && node.slots.length > 0) {
+      if (node && node.components && node.components.length > 0) {
+        node.components.filter(c => parseInt(c.type) === 1).forEach((c, idx) => {
+          const cid = c.id || ('comp' + idx);
+          optHtml += `<option value="${cid}">${c.name || cid} [${cid}]</option>`;
+        });
+      }
+      if (!optHtml && node && node.slots && node.slots.length > 0) {
         node.slots.filter(s => s.type === 1).forEach(s => {
           optHtml += `<option value="${s.slot}">Slot ${s.slot}: ${s.name || ('Relay ' + s.slot)}</option>`;
         });
       }
       if (!optHtml) {
-        optHtml = `<option value="0">Slot 0 (Default)</option><option value="1">Slot 1</option>`;
+        optHtml = `<option value="0">Default Actuator</option>`;
       }
       select.innerHTML = optHtml;
-      if (selectedSlot !== undefined) select.value = selectedSlot;
+      if (selectedSlotOrComp !== undefined) select.value = selectedSlotOrComp;
     }
 
     function onRuleCondNodeChange() {
@@ -2391,7 +2696,7 @@ inline void setupWebEndpoints() {
 
         const a = (r.actions && r.actions[0]) ? r.actions[0] : {};
         actSelect.value = a.target || 'LOCAL';
-        updateRuleActSlots(a.target || 'LOCAL', a.slot !== undefined ? a.slot : 0);
+        updateRuleActSlots(a.target || 'LOCAL', a.comp || a.slot || 0);
         document.getElementById('ruleModalActVal').value = (a.val !== undefined) ? a.val : 1;
 
         document.getElementById('ruleModalNotif').checked = !!r.notify;
@@ -2426,7 +2731,7 @@ inline void setupWebEndpoints() {
       const cVal = parseFloat(document.getElementById('ruleModalCondVal').value) || 0;
 
       const aTarget = document.getElementById('ruleModalActTarget').value;
-      const aSlot = parseInt(document.getElementById('ruleModalActSlot').value) || 0;
+      const aSlotVal = document.getElementById('ruleModalActSlot').value || '0';
       const aVal = parseInt(document.getElementById('ruleModalActVal').value) || 1;
 
       const isNotif = document.getElementById('ruleModalNotif').checked;
@@ -2437,7 +2742,7 @@ inline void setupWebEndpoints() {
         name: name,
         enabled: true,
         conditions: [{ node: cNode, key: cKey, op: cOp, val: cVal }],
-        actions: [{ target: aTarget, slot: aSlot, val: aVal, reason: name }],
+        actions: [{ target: aTarget, comp: aSlotVal, slot: parseInt(aSlotVal) || 0, val: aVal, reason: name }],
         notify: isNotif,
         notify_title: nTitle,
         notify_msg: nMsg
@@ -2718,7 +3023,9 @@ inline void setupWebEndpoints() {
         return;
       }
 
-      const relaySlots = (node.slots || []).filter(s => s.type === 1);
+      const relayComps = (node.components && node.components.length > 0)
+        ? node.components.map((c, i) => ({ id: c.id, name: c.name || c.id, compIdx: i, type: parseInt(c.type) })).filter(c => c.type === 1)
+        : (node.slots || []).map(s => ({ id: 'slot' + s.slot, name: s.name || ('Relay ' + s.slot), compIdx: s.slot, type: s.type })).filter(s => s.type === 1);
 
       if (currentSchedules.length === 0) {
         list.innerHTML = '<div style="color:var(--text-dim); padding:16px; background:var(--card-elevated); border-radius:var(--radius-sm); border:1px solid var(--card-border); font-size:13px;">No standalone schedules configured for this node. Click <strong>+ Add Daily Schedule</strong> below.</div>';
@@ -2728,19 +3035,20 @@ inline void setupWebEndpoints() {
       let html = '';
       currentSchedules.forEach((s, idx) => {
         let actCheckboxes = '';
-        if (relaySlots.length > 0) {
-          relaySlots.forEach(rs => {
+        if (relayComps.length > 0) {
+          relayComps.forEach(rc => {
             let isChecked = false;
-            if (s.targetSlots && Array.isArray(s.targetSlots)) isChecked = s.targetSlots.includes(rs.slot);
-            else if (s.targetSlotsMask !== undefined && s.targetSlotsMask > 0) isChecked = !!(s.targetSlotsMask & (1 << rs.slot));
-            else isChecked = (s.targetSlot === rs.slot);
+            if (s.targetCompsMask !== undefined && s.targetCompsMask > 0) isChecked = !!(s.targetCompsMask & (1 << rc.compIdx));
+            else if (s.targetSlotsMask !== undefined && s.targetSlotsMask > 0) isChecked = !!(s.targetSlotsMask & (1 << rc.compIdx));
+            else if (s.targetSlots && Array.isArray(s.targetSlots)) isChecked = s.targetSlots.includes(rc.compIdx);
+            else isChecked = (s.targetSlot === rc.compIdx || s.targetComp === rc.compIdx);
             actCheckboxes += `<label style="display:inline-flex; align-items:center; gap:5px; margin-right:8px; margin-bottom:4px; cursor:pointer; background:var(--card); padding:4px 8px; border-radius:var(--radius-sm); border:1px solid var(--card-border); font-size:11px;">
-              <input type="checkbox" class="sched-chk-${idx}" value="${rs.slot}" ${isChecked ? 'checked' : ''}>
-              <span>Slot ${rs.slot}: ${rs.name || ('Relay ' + rs.slot)}</span>
+              <input type="checkbox" class="sched-chk-${idx}" value="${rc.compIdx}" ${isChecked ? 'checked' : ''}>
+              <span>${rc.name} (${rc.id})</span>
             </label>`;
           });
         } else {
-          actCheckboxes = '<span style="color:var(--warning); font-size:11px;">No Relay output slots configured on this node. Go to Overview &rarr; Configure GPIOs to assign relay pins.</span>';
+          actCheckboxes = '<span style="color:var(--warning); font-size:11px;">No Relay output actuators configured on this node. Go to Overview &rarr; Configure Components to add relays.</span>';
         }
 
         const onH = String(s.onHour || 0).padStart(2, '0');
@@ -2789,14 +3097,18 @@ inline void setupWebEndpoints() {
       }
       syncScheduleInputs();
       const node = configuredNodes.find(n => n.id === activeSchedNodeId);
-      const relaySlots = node ? (node.slots || []).filter(s => s.type === 1) : [];
-      const defaultSlot = (relaySlots.length > 0) ? relaySlots[0].slot : 0;
+      const relayComps = (node && node.components && node.components.length > 0)
+        ? node.components.map((c, i) => ({ id: c.id, compIdx: i, type: parseInt(c.type) })).filter(c => c.type === 1)
+        : (node ? (node.slots || []).filter(s => s.type === 1).map(s => ({ id: 'slot' + s.slot, compIdx: s.slot, type: s.type })) : []);
+      const defaultSlot = (relayComps.length > 0) ? relayComps[0].compIdx : 0;
 
       currentSchedules.push({
         enabled: 1,
         targetSlot: defaultSlot,
+        targetComp: defaultSlot,
         targetSlots: [defaultSlot],
         targetSlotsMask: (1 << defaultSlot),
+        targetCompsMask: (1 << defaultSlot),
         action: 1,
         onHour: 18,
         onMinute: 0,
@@ -2828,6 +3140,23 @@ inline void setupWebEndpoints() {
           s.offHour = parseInt(parts[0]) || 0;
           s.offMinute = parseInt(parts[1]) || 0;
         }
+        const chks = document.querySelectorAll('.sched-chk-' + idx);
+        let mask = 0;
+        const selectedIndices = [];
+        chks.forEach(chk => {
+          if (chk.checked) {
+            const cIdx = parseInt(chk.value);
+            mask |= (1 << cIdx);
+            selectedIndices.push(cIdx);
+          }
+        });
+        s.targetCompsMask = mask;
+        s.targetSlotsMask = mask;
+        s.targetSlots = selectedIndices;
+        s.targetSlot = selectedIndices.length > 0 ? selectedIndices[0] : 0;
+        s.targetComp = s.targetSlot;
+      });
+    }
 
         const chks = document.querySelectorAll(`.sched-chk-${idx}:checked`);
         const targetSlots = [];

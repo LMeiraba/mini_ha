@@ -1527,7 +1527,7 @@ inline void setupWebEndpoints() {
         Sign in to manage RS-422 bus nodes, wireless star-mesh slaves, and cloud bridge routing.
       </div>
 
-      <form onsubmit="handleLogin(event)">
+      <form onsubmit="handleLogin(event); return false;">
         <label>Username</label>
         <input type="text" id="loginUser" required autocomplete="username" autofocus placeholder="admin">
 
@@ -3321,21 +3321,6 @@ inline void setupWebEndpoints() {
         s.targetSlots = selectedIndices;
         s.targetSlot = selectedIndices.length > 0 ? selectedIndices[0] : 0;
         s.targetComp = s.targetSlot;
-      });
-    }
-
-        const chks = document.querySelectorAll(`.sched-chk-${idx}:checked`);
-        const targetSlots = [];
-        let mask = 0;
-        chks.forEach(cb => {
-          const slotVal = parseInt(cb.value);
-          targetSlots.push(slotVal);
-          mask |= (1 << slotVal);
-        });
-        s.targetSlots = targetSlots;
-        s.targetSlotsMask = mask;
-        s.targetSlot = (targetSlots.length > 0) ? targetSlots[0] : 0;
-        s.action = 1;
       });
     }
 

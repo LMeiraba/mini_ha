@@ -59,6 +59,7 @@ inline bool initLittleFSStorage() {
   "sta_ssid": "",
   "sta_pass": "",
   "sta_enabled": false,
+  "sta_hidden": false,
   "mqtt_enabled": false,
   "mqtt_broker": "",
   "mqtt_port": 8883,

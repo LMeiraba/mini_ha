@@ -27,6 +27,7 @@ struct SystemSecurityConfig {
   String staSsid = "";
   String staPass = "";
   bool staEnabled = false;
+  bool staHidden = false;
 
   // Cloud MQTT Bridge (EMQX / Custom Broker)
   bool mqttEnabled = false;
@@ -585,6 +586,7 @@ inline void setupWebEndpoints() {
     doc["ap_ssid"] = sysSecurity.apSsid;
     doc["sta_ssid"] = sysSecurity.staSsid;
     doc["sta_enabled"] = sysSecurity.staEnabled;
+    doc["sta_hidden"] = sysSecurity.staHidden;
     doc["mqtt_enabled"] = sysSecurity.mqttEnabled;
     doc["mqtt_broker"] = sysSecurity.mqttBroker;
     doc["mqtt_port"] = sysSecurity.mqttPort;
@@ -620,6 +622,7 @@ inline void setupWebEndpoints() {
       sysSecurity.staPass = doc["sta_pass"].as<String>();
     }
     if (doc.containsKey("sta_enabled")) sysSecurity.staEnabled = doc["sta_enabled"].as<bool>();
+    if (doc.containsKey("sta_hidden")) sysSecurity.staHidden = doc["sta_hidden"].as<bool>();
 
     if (doc.containsKey("mqtt_enabled")) sysSecurity.mqttEnabled = doc["mqtt_enabled"].as<bool>();
     if (doc.containsKey("mqtt_broker")) sysSecurity.mqttBroker = doc["mqtt_broker"].as<String>();
@@ -638,6 +641,7 @@ inline void setupWebEndpoints() {
       outDoc["sta_ssid"] = sysSecurity.staSsid;
       outDoc["sta_pass"] = sysSecurity.staPass;
       outDoc["sta_enabled"] = sysSecurity.staEnabled;
+      outDoc["sta_hidden"] = sysSecurity.staHidden;
       outDoc["mqtt_enabled"] = sysSecurity.mqttEnabled;
       outDoc["mqtt_broker"] = sysSecurity.mqttBroker;
       outDoc["mqtt_port"] = sysSecurity.mqttPort;
@@ -2202,7 +2206,7 @@ inline void setupWebEndpoints() {
                 <p class="card-desc">Isolated RS-422 hardware star ports & downstream Wi-Fi mesh nodes</p>
               </div>
             </div>
-            <div id="nodesCardsContainer">
+            <div id="nodesCardsContainer" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(290px, 1fr)); gap:12px;">
               <div style="color:var(--text-dim);">Loading nodes...</div>
             </div>
           </div>
@@ -2342,6 +2346,12 @@ inline void setupWebEndpoints() {
                 <label>Wi-Fi Password</label>
                 <input type="password" id="cfgStaPass" placeholder="Leave unchanged or enter new">
               </div>
+            </div>
+            <div style="margin-top:12px;">
+              <label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-size:12px;">
+                <input type="checkbox" id="cfgStaHidden" style="width:auto; margin:0;">
+                <span>Connect to Hidden Wi-Fi (SSID Broadcast Disabled)</span>
+              </label>
             </div>
           </div>
 
@@ -2828,6 +2838,25 @@ inline void setupWebEndpoints() {
     </div>
   </div>
 
+  <!-- DISCONNECTED BLOCKING OVERLAY MODAL -->
+  <div id="hubDisconnectedModal" class="modal-backdrop" style="display:none; z-index:99999; backdrop-filter:blur(8px); background:rgba(0,0,0,0.85); pointer-events:all;">
+    <div class="modal-card" style="max-width:440px; text-align:center; padding:30px 24px; border-color:var(--danger-border); box-shadow:0 0 40px rgba(239,68,68,0.25);">
+      <div style="width:54px; height:54px; border-radius:50%; background:var(--danger-subtle); border:1px solid var(--danger-border); display:flex; align-items:center; justify-content:center; margin:0 auto 16px;">
+        <svg class="icon" style="width:28px; height:28px; color:var(--danger); animation:pulse 1.8s infinite;" viewBox="0 0 24 24">
+          <path d="M1 1l22 22"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" x2="12.01" y1="20" y2="20"/>
+        </svg>
+      </div>
+      <h3 style="font-size:18px; font-weight:700; color:var(--danger); margin:0 0 8px;">Supervisor Disconnected</h3>
+      <p style="font-size:13px; color:var(--text-muted); line-height:1.5; margin:0 0 18px;">
+        Lost connection to <strong>Home Assistant - Mini Hub</strong>. All user actions and inputs are temporarily locked to protect your configuration from being lost.
+      </p>
+      <div style="display:inline-flex; align-items:center; gap:8px; padding:6px 14px; background:rgba(0,0,0,0.4); border:1px solid var(--card-border); border-radius:var(--radius-pill); font-family:var(--font-mono); font-size:11px; color:var(--text-dim);" id="hubDisconnectRetryStatus">
+        <span class="status-dot offline"></span>
+        <span>Reconnecting automatically...</span>
+      </div>
+    </div>
+  </div>
+
   <!-- TOAST NOTIFICATION -->
   <div id="toast"></div>
 
@@ -2963,13 +2992,47 @@ inline void setupWebEndpoints() {
       if (p) p.type = (p.type === 'password') ? 'text' : 'password';
     }
 
+    // Timeout-bounded fetch helper with AbortController to prevent browser freeze
+    function fetchWithTimeout(url, opts = {}, timeoutMs = 2500) {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), timeoutMs);
+      return fetch(url, { ...opts, credentials: 'same-origin', signal: controller.signal })
+        .finally(() => clearTimeout(id));
+    }
+
+    let consecutivePollFailures = 0;
+    let isHubDisconnected = false;
+
+    function handlePollConnectionStatus(success) {
+      const modal = document.getElementById('hubDisconnectedModal');
+      if (success) {
+        if (isHubDisconnected) {
+          isHubDisconnected = false;
+          consecutivePollFailures = 0;
+          if (modal) modal.style.display = 'none';
+          showToast('Connection to Hub restored', 'success');
+        }
+        consecutivePollFailures = 0;
+      } else {
+        consecutivePollFailures++;
+        if (consecutivePollFailures >= 2 && !isHubDisconnected) {
+          isHubDisconnected = true;
+          if (modal) modal.style.display = 'flex';
+        }
+        const statusEl = document.getElementById('hubDisconnectRetryStatus');
+        if (statusEl && isHubDisconnected) {
+          statusEl.innerHTML = `<span class="status-dot offline"></span><span>Disconnected (Attempt ${consecutivePollFailures}) &bull; Reconnecting...</span>`;
+        }
+      }
+    }
+
     // Real-Time Telemetry & Data Polling
     async function refreshData() {
       try {
         const [nRes, sRes, sysRes] = await Promise.all([
-          fetch('/api/nodes'),
-          fetch('/api/state'),
-          fetch('/api/system')
+          fetchWithTimeout('/api/nodes'),
+          fetchWithTimeout('/api/state'),
+          fetchWithTimeout('/api/system')
         ]);
         if (nRes.ok) {
           const nData = await nRes.json();
@@ -2987,12 +3050,14 @@ inline void setupWebEndpoints() {
           updateSystemHealthUI(sysData);
         }
 
+        handlePollConnectionStatus(true);
         renderDashboard();
         renderNodesCards();
         fetchPendingNodes();
         updateRtcClock();
       } catch (e) {
-        console.warn('Refresh error:', e);
+        console.warn('Refresh error / hub unreachable:', e);
+        handlePollConnectionStatus(false);
       }
     }
 
@@ -3367,52 +3432,50 @@ inline void setupWebEndpoints() {
       if (!container) return;
 
       if (!nodesCache || nodesCache.length === 0) {
-        container.innerHTML = '<div style="color:var(--text-dim); padding:16px 0;">No slave hardware nodes bound yet. Bind discovered devices below.</div>';
+        container.innerHTML = '<div style="color:var(--text-dim); padding:16px 0; grid-column:1/-1;">No slave hardware nodes bound yet. Bind discovered devices below.</div>';
         return;
       }
 
       let html = '';
       nodesCache.forEach(node => {
         const state = liveStates[node.id] || { relays: [], components: {}, lastSeen: 999999, hasSeen: false, freeHeap: 0, port: 'UART1', mode: 'WIRED', fw: 'v0.1.1-beta' };
-        
-        let statusBadge = '';
-        if (state.hasSeen && state.lastSeen <= 8) {
-          statusBadge = '<span class="badge badge-success"><span class="status-dot online"></span>Online</span>';
-        } else if (state.hasSeen && state.lastSeen <= 30) {
-          statusBadge = `<span class="badge badge-warning"><span class="status-dot warning"></span>${state.lastSeen}s ago</span>`;
-        } else {
-          statusBadge = '<span class="badge badge-danger"><span class="status-dot offline"></span>Offline</span>';
-        }
-
+        const isOnline = (state.hasSeen && state.lastSeen <= 8);
         const compCount = (node.components && node.components.length) ? node.components.length : (node.slots ? node.slots.length : 0);
-        const ramDisplay = state.freeHeap ? (Math.round(state.freeHeap / 1024) + ' KB Free') : (state.hasSeen ? 'Active' : 'Offline');
-        const apStatus = node.ap_enabled ? (node.ap_ssid + (node.ap_hidden ? ' (Hidden)' : '')) : 'Disabled';
+        const ramText = state.freeHeap ? `${Math.round(state.freeHeap / 1024)} KB Free` : (isOnline ? 'Active' : 'Offline');
+        const lastSeenText = (!state.hasSeen) ? 'Never seen' : (isOnline ? `${state.lastSeen}s ago` : `${state.lastSeen}s ago (Offline)`);
         const chip = node.chip || state.chip || 'ESP32';
         const fw = state.fw || node.fw || 'v0.1.1-beta';
         const port = state.port || node.port || 'UART1';
         const mode = state.mode || node.mode || 'WIRED';
 
         html += `
-          <div class="node-card" style="cursor:pointer;" onclick="openSlaveDetailsModal('${node.id}')" title="Click to manage ${escapeHtml(node.name || node.id)}">
-            <div class="node-card-head">
-              <div class="node-meta-badges">
-                <strong style="font-size:15px; color:var(--text);">${escapeHtml(node.name || node.id)}</strong>
-                <span class="badge" style="font-family:var(--font-mono);">${escapeHtml(node.id)}</span>
-                ${statusBadge}
+          <div class="node-interactive-card" onclick="openSlaveDetailsModal('${node.id}')" title="Click to manage ${escapeHtml(node.name || node.id)}">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <div style="display:flex; align-items:center; gap:8px;">
+                <span class="status-dot ${isOnline ? 'online' : 'offline'}"></span>
+                <strong style="font-size:13px; color:var(--text-bright);">${escapeHtml(node.name || node.id)}</strong>
+                <span class="badge" style="font-family:var(--font-mono); font-size:10px;">${escapeHtml(node.id)}</span>
               </div>
-              <div class="node-actions-bar">
-                <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation(); openSlaveDetailsModal('${node.id}')">Manage Node &rarr;</button>
-              </div>
+              <span class="badge ${isOnline ? 'badge-success' : 'badge-danger'}" style="font-size:9px; padding:2px 6px;">${isOnline ? 'ONLINE' : 'OFFLINE'}</span>
             </div>
 
-            <div class="node-hardware-strip">
-              <div class="hw-prop"><span class="hw-lbl">Chip Architecture</span><span class="hw-val">${escapeHtml(chip)}</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Firmware Spec</span><span class="hw-val" style="color:#10b981;">${escapeHtml(fw)}</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Transport &amp; Bus</span><span class="hw-val" style="color:#38bdf8;">${escapeHtml(mode)} &bull; ${escapeHtml(port)}</span></div>
-              <div class="hw-prop"><span class="hw-lbl">RAM Usage</span><span class="hw-val">${ramDisplay}</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Hardware MAC</span><span class="hw-val">${escapeHtml(node.mac || '--')}</span></div>
-              <div class="hw-prop"><span class="hw-lbl">Peripherals</span><span class="hw-val">${compCount} active</span></div>
-              <div class="hw-prop"><span class="hw-lbl">AP Bridge</span><span class="hw-val">${escapeHtml(apStatus)}</span></div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px; font-size:11px; margin:4px 0;">
+              <div style="color:var(--text-muted);">Chip &amp; Version:</div>
+              <div style="color:var(--text); text-align:right; font-family:var(--font-mono);">${escapeHtml(chip)} &bull; <span style="color:#10b981; font-weight:600;">${escapeHtml(fw)}</span></div>
+              
+              <div style="color:var(--text-muted);">Transport &amp; Port:</div>
+              <div style="color:#38bdf8; text-align:right; font-family:var(--font-mono); font-weight:600;">${mode} &bull; ${port}</div>
+
+              <div style="color:var(--text-muted);">RAM Usage:</div>
+              <div style="color:var(--text); text-align:right; font-family:var(--font-mono);">${ramText}</div>
+
+              <div style="color:var(--text-muted);">Last Seen:</div>
+              <div style="color:var(--text-dim); text-align:right;">${lastSeenText}</div>
+            </div>
+
+            <div style="border-top:1px solid rgba(255,255,255,0.05); padding-top:6px; display:flex; justify-content:space-between; align-items:center; font-size:10px; color:var(--text-dim);">
+              <span>${compCount} Peripherals Active</span>
+              <span style="color:var(--primary); font-weight:600;">Manage Node &rarr;</span>
             </div>
           </div>`;
       });
@@ -5006,6 +5069,7 @@ inline void setupWebEndpoints() {
         const res = await fetch('/api/system');
         const d = await res.json();
         document.getElementById('cfgStaSSID').value = d.sta_ssid || '';
+        document.getElementById('cfgStaHidden').checked = !!d.sta_hidden;
         document.getElementById('cfgMqttEn').checked = !!d.mqtt_enabled;
         document.getElementById('cfgMqttBroker').value = d.mqtt_broker || '';
         document.getElementById('cfgMqttPort').value = d.mqtt_port || 8883;
@@ -5019,6 +5083,7 @@ inline void setupWebEndpoints() {
         sta_ssid: document.getElementById('cfgStaSSID').value.trim(),
         sta_pass: document.getElementById('cfgStaPass').value,
         sta_enabled: document.getElementById('cfgStaSSID').value.trim().length > 0,
+        sta_hidden: document.getElementById('cfgStaHidden').checked,
         mqtt_enabled: document.getElementById('cfgMqttEn').checked,
         mqtt_broker: document.getElementById('cfgMqttBroker').value.trim(),
         mqtt_port: parseInt(document.getElementById('cfgMqttPort').value) || 8883,

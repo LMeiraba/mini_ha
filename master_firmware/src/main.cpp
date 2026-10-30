@@ -39,13 +39,25 @@
 WebServer webServer(80);
 DNSServer dnsServer;
 
-// Unified Star Hub Dispatcher: Broadcasts full-duplex out all physical isolated UART star ports.
-// (Each wired slave has its own dedicated physical UART line - zero bus contention)
+// Direct Wireless TCP Mesh Server (Port 8266)
+// Listens simultaneously across SoftAP (192.168.4.1) and Home Wi-Fi Router (STA IP)
+#define MAX_MESH_CLIENTS 4
+WiFiServer meshServer(DEFAULT_MESH_PORT);
+WiFiClient meshClients[MAX_MESH_CLIENTS];
+String meshRxBuf[MAX_MESH_CLIENTS];
+
+// Unified Star Hub Dispatcher: Broadcasts full-duplex out all physical isolated UART star ports
+// and active direct Wi-Fi mesh socket clients.
 void broadcastBusPacket(const String& pkt) {
   BusPort1.println(pkt);
 #if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(ESP32C3)
   BusPort2.println(pkt);
 #endif
+  for (uint8_t c = 0; c < MAX_MESH_CLIENTS; c++) {
+    if (meshClients[c] && meshClients[c].connected()) {
+      meshClients[c].println(pkt);
+    }
+  }
 }
 
 // Global State & Telemetry Storage
@@ -94,6 +106,7 @@ void loadSystemSecurity() {
     if (doc.containsKey("sta_ssid")) sysSecurity.staSsid = doc["sta_ssid"].as<String>();
     if (doc.containsKey("sta_pass")) sysSecurity.staPass = doc["sta_pass"].as<String>();
     if (doc.containsKey("sta_enabled")) sysSecurity.staEnabled = doc["sta_enabled"].as<bool>();
+    if (doc.containsKey("sta_hidden")) sysSecurity.staHidden = doc["sta_hidden"].as<bool>();
     if (doc.containsKey("mqtt_enabled")) sysSecurity.mqttEnabled = doc["mqtt_enabled"].as<bool>();
     if (doc.containsKey("mqtt_broker")) sysSecurity.mqttBroker = doc["mqtt_broker"].as<String>();
     if (doc.containsKey("mqtt_port")) sysSecurity.mqttPort = doc["mqtt_port"].as<uint16_t>();
@@ -651,9 +664,13 @@ void setup() {
   // If home Wi-Fi credentials exist, try connecting as STA for 8 seconds.
   bool connectedSTA = false;
   if (sysSecurity.staEnabled && sysSecurity.staSsid.length() > 0) {
-    Serial.printf("[WIFI] Connecting to Home Wi-Fi: %s...\n", sysSecurity.staSsid.c_str());
+    Serial.printf("[WIFI] Connecting to Home Wi-Fi: %s (Hidden: %d)...\n", sysSecurity.staSsid.c_str(), sysSecurity.staHidden ? 1 : 0);
     WiFi.mode(WIFI_AP_STA);
-    WiFi.begin(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
+    if (sysSecurity.staHidden) {
+      WiFi.begin(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str(), 0, nullptr, true);
+    } else {
+      WiFi.begin(sysSecurity.staSsid.c_str(), sysSecurity.staPass.c_str());
+    }
 
     unsigned long startAttempt = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
@@ -701,6 +718,11 @@ void setup() {
   setupWebEndpoints();
   webServer.begin();
 
+  // Start Direct Wireless TCP Mesh Server (Port 8266)
+  meshServer.begin();
+  meshServer.setNoDelay(true);
+  Serial.printf("[MESH] Direct Wireless TCP Socket Server active on port %d\n", DEFAULT_MESH_PORT);
+
   // Initialize Cloud MQTT Client if configured
   if (sysSecurity.mqttEnabled && connectedSTA && sysSecurity.mqttBroker.length() > 0) {
     Serial.printf("[MQTT] Cloud Bridge enabled for broker: %s:%d (Home ID: %s)\n", 
@@ -723,6 +745,48 @@ void loop() {
 #if !defined(CONFIG_IDF_TARGET_ESP32C3) && !defined(ESP32C3)
   pollBusPort(BusPort2, busRxBuf2, 2);
 #endif
+
+  // 2b. Maintain Direct Wireless TCP Mesh Clients (Port 8266)
+  if (meshServer.hasClient()) {
+    WiFiClient newClient = meshServer.available();
+    if (newClient) {
+      bool accepted = false;
+      for (uint8_t c = 0; c < MAX_MESH_CLIENTS; c++) {
+        if (!meshClients[c] || !meshClients[c].connected()) {
+          meshClients[c] = newClient;
+          meshRxBuf[c] = "";
+          accepted = true;
+          Serial.printf("[MESH] Wireless slave socket accepted on slot %d from %s\n", c, newClient.remoteIP().toString().c_str());
+          break;
+        }
+      }
+      if (!accepted) {
+        newClient.stop();
+        Serial.println("[MESH] Max wireless slave sockets reached. Rejected connection.");
+      }
+    }
+  }
+
+  for (uint8_t c = 0; c < MAX_MESH_CLIENTS; c++) {
+    if (meshClients[c] && meshClients[c].connected()) {
+      while (meshClients[c].available()) {
+        char ch = (char)meshClients[c].read();
+        if (ch == '\n') {
+          meshRxBuf[c].trim();
+          if (meshRxBuf[c].length() > 0) {
+            ParsedPacket pkt = parseProtocolLine(meshRxBuf[c]);
+            if (pkt.isValid) {
+              handleIncomingBusPacket(pkt, 3 /* PORT 3 = WIFI MESH */);
+            }
+          }
+          meshRxBuf[c] = "";
+        } else if (ch != '\r') {
+          meshRxBuf[c] += ch;
+          if (meshRxBuf[c].length() > PROTOCOL_MAX_LINE) meshRxBuf[c] = "";
+        }
+      }
+    }
+  }
 
   // 3. Evaluate Dynamic Rules & Notification Engine every 500ms
   if (millis() - lastRulePoll > 500) {
